@@ -69,7 +69,7 @@ fn mask_rgba(indices: &[u8], width: u16, height: u16) -> Vec<u8> {
 /// `palette` is 1024 bytes (256 entries of transparency, red, green, blue),
 /// `indices` the row-padded index rows. Rows shorter than the table says are
 /// padded with transparent pixels rather than failing the resource.
-fn indexed_rgba(palette: &[u8], indices: &[u8], width: u16, height: u16) -> Vec<u8> {
+pub(crate) fn indexed_rgba(palette: &[u8], indices: &[u8], width: u16, height: u16) -> Vec<u8> {
     let stride = stride8(width);
     let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
@@ -94,7 +94,7 @@ fn indexed_rgba(palette: &[u8], indices: &[u8], width: u16, height: u16) -> Vec<
 }
 
 /// Row stride of an 8bpp image: each row is padded to a multiple of four.
-fn stride8(width: u16) -> usize {
+pub(crate) fn stride8(width: u16) -> usize {
     ((width as usize) + 3) / 4 * 4
 }
 

@@ -1,9 +1,10 @@
 # DMA (Disney's Magic Artist Deluxe / Magico Artista) — asset extraction status
 
-**Pictures and scripts are DONE.** This file is the resume point for the
-remaining asset types (sounds, films), which are being reverse-engineered by
-subagents. Format write-ups live in `/workspace/docs/`: `PICTURES.md` and
-`SCRIPTS.md` (finished), plus `SOUNDS.md`/`FILMS.md` as each is understood.
+**Pictures, scripts and films are DONE.** This file is the resume point for
+the remaining asset type (sounds), which was being reverse-engineered by a
+subagent until it hit the free usage limit. Format write-ups live in
+`/workspace/docs/`: `PICTURES.md`, `SCRIPTS.md` and `FILMS.md` (finished),
+plus `SOUNDS.md` as it is understood.
 
 ---
 
@@ -15,6 +16,7 @@ subagents. Format write-ups live in `/workspace/docs/`: `PICTURES.md` and
 | Builds offline | `cargo build --release` → `target/release/mmf-extract` |
 | Extracted pictures (30,299 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
 | Extracted scripts (4,813 objects) | `/workspace/extracted/Scripts/HD/…` |
+| Extracted films (139 frames) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
 | Format findings | `/workspace/docs/PICTURES.md` (+ `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`) |
 | Game archives (read-only) | `/RawAssets/` (see table below) |
 
@@ -40,7 +42,7 @@ for **all** of them:
 | `app.MMP`, `HD.MMP`, `stmp1.MMP`, `stmp2.MMP`, `stmp3.MMP` | Pictures | images | **DONE** — 30,299 PNGs, 105 "odd" reported failed |
 | `HD.MMA`, `app.MMA` | Sounds | audio | stub writes payloads verbatim — RE in progress |
 | `HD.MMS` | Scripts | object DB | **DONE** — 4,813 objects, 3,329,791 payload bytes fully accounted |
-| `DMA.MMF` | Films | video/frames | stub writes payloads verbatim — RE in progress |
+| `DMA.MMF` | Films | video/frames | **DONE** — 1 film, 139 frames of 546×410 + manifest |
 
 > **Engine identification.** `MMFW` is the game's **in-house** container
 > family, not Clickteam Multimedia Fusion 2. Evidence from `DMA4.exe`: PDB
@@ -74,9 +76,10 @@ for **all** of them:
 * 105 odd payloads (a second-stage/effect sub-format) are **not** decoded —
   reported as failures. Decoder matrix in `/workspace/oddparse_HD.txt`.
 
-Tests: `cargo test --release` → **20/20 pass** against the real assets
-(8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 3 in `tests/scripts.rs`,
-3 unit tests in `src/picture.rs`). The color tests include a corpus-wide scan
+Tests: `cargo test --release` → **22/22 pass** against the real assets
+(8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 2 in
+`tests/film_roundtrip.rs`, 3 in `tests/scripts.rs`, 3 unit tests in
+`src/picture.rs`). The color tests include a corpus-wide scan
 of `/workspace/extracted/Pictures` (30,299 PNGs): it fails if blue is zero on
 more than 15% of opaque pixels or is far more often zero than red/green.
 Current measurement: R 5.81%, G 5.45%, B 8.71%.
@@ -105,7 +108,30 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 * `tests/scripts.rs` verifies every `--original` file byte-for-byte against
   its `[off[i], off[i+1])` container slice.
 
-## 5. Tooling notes
+## 5. Films — what is solved (see `docs/FILMS.md`)
+
+* `DMA.MMF` holds **one** film, `Intro.flm` (6,856,628 bytes). The Films
+  metadata block is `marker = 7`, one 26-byte per-film record (its four u16s
+  at `+2` are `top/left/bottom/right` = 0/0/410/546, matching the decoded
+  frame geometry) and one 1024-byte palette in the picture byte order.
+* The container `sizes[0]` for Films is **not** a decompressed size
+  (26,870,306 vs the real 6,856,628); `--original` writes `payload(0)`
+  verbatim and is SHA-256 verified byte-identical to the container slice.
+* The inner `.flm` stream is a sequence of `0xF789` chunks:
+  `0x0A` full LZ77 frame, `0x0B` delta (20 rects + LZ77 + cursor-relative
+  RLE), `0x06` timestamp, `0x02` audio block, `0x03` marker, `0x07` end.
+  412 chunks total.
+* Decoded 139 frames (133 unique, 6 duplicate timestamps), 83-tick spacing
+  (11,537 ticks), 132 deltas decode to their declared sizes; all writes are
+  bounds-checked. Audio PCM and the five fields at record `+10..+26` remain
+  uninterpreted.
+* Modern output: `frame_000.png … frame_138.png` (546×410, palette-expanded,
+  lossless) plus `manifest.json`. `tests/film_roundtrip.rs` re-decodes every
+  PNG back to the exact palette-expanded RGBA bytes.
+* `picture::stride8` / `picture::indexed_rgba` are now `pub(crate)` so the
+  film decoder reuses the verified palette expansion.
+
+## 6. Tooling notes
 
 * **Ghidra 12.2 headless** at `/root/ghidra_12.2_PUBLIC/support/analyzeHeadless`.
   Project `/tmp/ghproj/DMA` already imported (`-process DMA4.exe -noanalysis`).
@@ -122,10 +148,10 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 * Python 3 is installed (systems without it can use the Rust bins in `src/bin/`).
   Analysis bins present: `analyze`, `probe`, `owners`, `oddparse`, `cols`,
   `invariants`, `imgstat`, `imgcheck`, `chan`, `palscan`, `grid`, `dump`,
-  `scriptprobe`.
+  `scriptprobe`, `filmprobe`.
 * crates.io reachable; `cargo build --release` works offline.
 
-## 6. Next steps (sounds / films)
+## 7. Next steps (sounds)
 
 Each type is being handled by a subagent that:
 1. Parses its container with `Container::open` + a custom probe bin.
