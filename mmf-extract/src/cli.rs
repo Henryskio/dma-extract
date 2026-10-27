@@ -171,7 +171,7 @@ pub fn run(
 /// Write each picture out in the game's original format.
 ///
 /// The file written is the decompressed payload byte for byte — exactly what
-/// the MMF2 runtime would hand to its blitter, before any of the optional
+/// the game's runtime would hand to its blitter, before any of the optional
 /// byte-swap transforms. A resource whose size-table entry is zero was stored
 /// uncompressed and is copied through untouched.
 pub fn extract_pictures_original(

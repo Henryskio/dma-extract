@@ -1,7 +1,8 @@
-//! MMFW (Clickteam Multimedia Fusion 2) asset extractor.
+//! MMFW asset extractor for *Disney's Magic Artist Deluxe*.
 //!
-//! Extracts the proprietary resources of a Multimedia Fusion 2 application
-//! into modern, lossless formats.
+//! Extracts the proprietary resources of the game's `MMFW` containers into
+//! modern, lossless formats. The engine is in-house (`DMA Art Ware`/`MME`),
+//! not Clickteam Fusion.
 
 pub mod cli;
 pub mod container;

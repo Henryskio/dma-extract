@@ -1,4 +1,4 @@
-//! Extract assets from a Clickteam Multimedia Fusion 2 application.
+//! Extract assets from *Disney's Magic Artist Deluxe* (MMFW containers).
 //!
 //! `mmf-extract <asset-dir> [--output DIR] [--types all,pictures,...]
 //!              [--original]`
@@ -15,10 +15,11 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     name = "mmf-extract",
-    about = "Extract the assets of a Multimedia Fusion 2 application",
-    long_about = "Extracts the assets of a Clickteam Multimedia Fusion 2 application \
-into modern, lossless formats (PNG for pictures, FLAC/WAV for sounds). \
-With --original the resources are written in the game's own format instead."
+    about = "Extract the assets of Disney's Magic Artist Deluxe",
+    long_about = "Extracts the assets of Disney's Magic Artist Deluxe from its MMFW \
+containers into modern, lossless formats (PNG for pictures, lossless audio for \
+sounds). With --original the resources are written in the game's own format \
+instead."
 )]
 struct Args {
     /// Folder holding the unextracted assets (the .MMP/.MMA/.MMF/.MMS files).

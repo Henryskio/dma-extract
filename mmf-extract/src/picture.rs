@@ -1,4 +1,4 @@
-//! MMF2 picture resources: decode to PNG and dump the raw payload.
+//! MMFW picture resources: decode to PNG and dump the raw payload.
 //!
 //! A picture resource decompresses to one of two layouts.
 //!

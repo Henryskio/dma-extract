@@ -1,4 +1,4 @@
-//! MMF2 film resources.
+//! MMFW film resources.
 //!
 //! A film is a sequence of frames, each of which is a picture-like resource
 //! plus timing information. The frame encoding is still being

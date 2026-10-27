@@ -1,4 +1,4 @@
-//! MMF2 sound resources.
+//! MMFW sound resources.
 //!
 //! The sound container holds the same header shape as the picture container.
 //! The sample encoding is still being reverse-engineered; until it is fully

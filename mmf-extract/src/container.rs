@@ -1,4 +1,4 @@
-//! MMFW (Clickteam Multimedia Fusion 2) resource container parsing.
+//! MMFW resource container parsing (the game's in-house format, not Clickteam).
 //!
 //! Layout (all multi-byte integers big-endian on the wire unless the file
 //! declares the "II" little-endian marker):

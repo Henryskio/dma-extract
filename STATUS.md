@@ -1,4 +1,4 @@
-# DMA (Disney Magico Artista) — asset extraction status
+# DMA (Disney's Magic Artist Deluxe / Magico Artista) — asset extraction status
 
 **Pictures are DONE.** This file is the resume point for the *other* asset
 types (sounds, scripts, films), which are being reverse-engineered by
@@ -41,6 +41,15 @@ for **all** of them:
 | `HD.MMA`, `app.MMA` | Sounds | audio | stub writes payloads verbatim — RE in progress |
 | `HD.MMS` | Scripts | bytecode | stub writes payloads verbatim — RE in progress |
 | `DMA.MMF` | Films | video/frames | stub writes payloads verbatim — RE in progress |
+
+> **Engine identification.** `MMFW` is the game's **in-house** container
+> family, not Clickteam Multimedia Fusion 2. Evidence from `DMA4.exe`: PDB
+> path `C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\Release\DMAAW.pdb`;
+> MSVC 6 link date 2002-06-15; imports only Win32/MFC/QuickTime-era DLLs;
+> loader errors prefixed `MME_*` (`MME_PICTURE_RESOURCE_FILE_BAD_HEADER`, …);
+> no `Clickteam`, `CNC`, or `MMF2` string anywhere in the binary. Treat MMF2
+> documentation as a non-authoritative prior only; everything here is verified
+> against the shipped files and `FUN_*` code in `DMA4.exe`.
 
 ## 3. Pictures — what is solved (see `docs/PICTURES.md`)
 

@@ -1,7 +1,7 @@
-//! The Clickteam MMF LZ77 decompressor.
+//! The game's LZ77 decompressor.
 //!
-//! Transliterated from `FUN_004c557a` in `DMA4.exe` (the MMF2 runtime's
-//! shared "uncompress bytes" routine), cross-checked instruction by
+//! Transliterated from `FUN_004c557a` in `DMA4.exe` (the engine's shared
+//! "uncompress bytes" routine), cross-checked instruction by
 //! instruction against `objdump -d DMA4.exe` over `0x4c557a`-`0x4c56fd`.
 //!
 //! The routine is a byte-oriented LZ77. `eax` walks the input, `ecx` walks

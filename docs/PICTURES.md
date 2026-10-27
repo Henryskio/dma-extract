@@ -1,14 +1,21 @@
-# Disney Magico Artista — MMF2 Picture Format
+# Disney's Magic Artist Deluxe / Magico Artista — MMFW Picture Format
 
 Reverse-engineered notes for the `.MMP` (Pictures) containers of
-*Disney Magico Artista*. Everything here was derived from the game's own
-executable (`DMA4.exe`) plus empirical verification against the shipped
-assets; claims that were confirmed by rendering are checked numerically with
-the helper binaries in `src/bin/`.
+*Disney's Magic Artist Deluxe* (Italian release: *Disney Magico Artista*,
+2002). Everything here was derived from the game's own executable
+(`DMA4.exe`) plus empirical verification against the shipped assets; claims
+that were confirmed by rendering are checked numerically with the helper
+binaries in `src/bin/`.
 
-The reference recommended for the container header was
-<https://github.com/david47k/mmex>. It documents the header only — none of the
-picture payload format below appears there.
+> **Engine note.** Despite the `MMFW` container signature this is **not a
+> Clickteam Multimedia Fusion 2 application**. `DMA4.exe` carries the PDB
+> path `C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\Release\DMAAW.pdb`,
+> was linked with MSVC 6 on 2002-06-15, imports only Win32/MFC/QuickTime-era
+> libraries, and its resource-loader errors are prefixed `MME_*`
+> (`MME_PICTURE_RESOURCE_FILE_BAD_HEADER`, etc.). There is no `Clickteam`,
+> `CNC`, or `MMF2` string in the binary. The header was initially compared
+> against the mmex documentation; the layout below is confirmed directly
+> against the files and the game's own loader.
 
 ---
 
@@ -29,9 +36,9 @@ version 3.
       32*N      resource names, NUL-padded ASCII
 ```
 
-Payloads begin at `off[0]`. Each payload is compressed with Clickteam's own
+Payloads begin at `off[0]`. Each payload is compressed with the game's own
 LZ77 variant (a byte-oriented LZ77 with 16/32 KiB windows), implemented in
-`src/lz77.rs`.
+`src/lz77.rs` and transliterated from `FUN_004c557a` in `DMA4.exe`.
 
 ## 2. Metadata region
 

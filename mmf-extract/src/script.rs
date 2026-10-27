@@ -1,4 +1,4 @@
-//! MMF2 script resources.
+//! MMFW script resources.
 //!
 //! A script container holds compiled bytecode plus the event/action
 //! structure that references it. The bytecode is still being
