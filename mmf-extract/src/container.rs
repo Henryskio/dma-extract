@@ -1,0 +1,332 @@
+//! MMFW (Clickteam Multimedia Fusion 2) resource container parsing.
+//!
+//! Layout (all multi-byte integers big-endian on the wire unless the file
+//! declares the "II" little-endian marker):
+//!
+//! ```text
+//! 0x00  16 bytes  signature: "MMFW " + tag, NUL padded
+//!                tag = "Pictures" | "Sounds" | "Films" | "Scripts"
+//! 0x10   2 bytes  endian marker: "MM" (big-endian) or "II" (little-endian)
+//! 0x12   2 bytes  u16 version, must be 3
+//! 0x14   6 bytes  file id
+//! 0x1A   8 bytes  timestamp (double)
+//! 0x22   2 bytes  u16 resource count N
+//! 0x24  4*(N+1)  u32 offsets; resource i spans [off[i], off[i+1])
+//!         2 bytes  padding
+//!        32*N      resource names, NUL padded ASCII
+//!        4*N      u32 array A (purpose unknown)
+//!          N       flags byte array
+//!          N       kind byte array
+//!          2       padding
+//!        4*N      dimension table: {u16 height, u16 width}
+//!        4*N      decompressed size table
+//!          N       "kind" byte array (values 0/1)
+//!          2       padding
+//! ...               resource payloads, concatenated at offsets[0]
+//! ```
+//!
+//! The metadata region between the end of the names and the first payload is
+//! exactly `15 * N + 4` bytes long in every picture container in this game,
+//! which is what pins the field boundaries down.
+
+use anyhow::{bail, Context, Result};
+use std::path::PathBuf;
+
+/// The kind of payload a container holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerKind {
+    Pictures,
+    Sounds,
+    Films,
+    Scripts,
+    Unknown,
+}
+
+impl ContainerKind {
+    fn from_tag(tag: &str) -> Self {
+        match tag {
+            "Pictures" => Self::Pictures,
+            "Sounds" => Self::Sounds,
+            "Films" => Self::Films,
+            "Scripts" => Self::Scripts,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// The pixel dimensions of one picture resource.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Dimension {
+    pub width: u16,
+    pub height: u16,
+}
+
+/// A parsed MMFW resource container.
+pub struct Container {
+    pub path: PathBuf,
+    pub data: Vec<u8>,
+    pub kind: ContainerKind,
+    /// True when the file declares big-endian ("MM") storage.
+    pub big_endian: bool,
+    pub version: u16,
+    pub file_id: [u8; 6],
+    pub timestamp: f64,
+    pub resource_count: u16,
+    /// `resource_count + 1` file offsets; the last is EOF.
+    pub offsets: Vec<u32>,
+    pub names: Vec<String>,
+    /// Per-resource attribute byte (object offset 0x278). Purpose unknown;
+    /// values correlate with ink/transparency groups but no accessor was
+    /// found that reads it for pixel decoding.
+    pub attr: Vec<u8>,
+    /// Per-resource flags byte (object offset 0x284). Bit 0 selects 8 bits
+    /// per pixel; bits 2-3 and 2-6 are ink/transparency selectors.
+    pub flags: Vec<u8>,
+    /// Per-resource dimensions.
+    pub dimensions: Vec<Dimension>,
+    /// Per-resource decompressed payload size. A value of zero means the
+    /// payload is stored uncompressed.
+    pub sizes: Vec<u32>,
+    /// Per-resource u32 array of undetermined purpose.
+    pub extra_u32: Vec<u32>,
+    /// Per-resource "kind" byte (object offset 0x2a8): the palette source.
+    /// 0 = no palette, 1 = a 1024-byte palette prefixed to the payload, and
+    /// `k >= 2` means "use file palette-bank entry `k - 2`".
+    pub kinds: Vec<u8>,
+    /// Offset of the end of the names table (start of the metadata region).
+    pub names_end: usize,
+}
+
+impl Container {
+    /// Parse a container from disk.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        Self::parse(path, data)
+    }
+
+    /// Parse a container from an in-memory image.
+    pub fn parse(path: impl Into<PathBuf>, data: Vec<u8>) -> Result<Self> {
+        let path = path.into();
+        if data.len() < 0x24 {
+            bail!("{}: file too short ({})", path.display(), data.len());
+        }
+        if &data[0..4] != b"MMFW" {
+            bail!(
+                "{}: not an MMFW container (magic {:?})",
+                path.display(),
+                &data[0..4]
+            );
+        }
+        // The signature is "MMFW " followed by the tag, NUL padded.
+        let tag = String::from_utf8_lossy(&data[5..16])
+            .trim_end_matches('\0')
+            .to_string();
+        let kind = ContainerKind::from_tag(&tag);
+
+        let big_endian = match &data[0x10..0x12] {
+            b"MM" => true,
+            b"II" => false,
+            other => bail!("{}: unknown endian marker {:?}", path.display(), other),
+        };
+
+        let version = read_u16(&data, 0x12, big_endian);
+        if version != 3 {
+            bail!("{}: unexpected version {}", path.display(), version);
+        }
+
+        let mut file_id = [0u8; 6];
+        file_id.copy_from_slice(&data[0x14..0x1A]);
+
+        let mut ts_bytes = [0u8; 8];
+        ts_bytes.copy_from_slice(&data[0x1A..0x22]);
+        let timestamp = if big_endian {
+            f64::from_be_bytes(ts_bytes)
+        } else {
+            f64::from_le_bytes(ts_bytes)
+        };
+
+        let resource_count = read_u16(&data, 0x22, big_endian);
+        let n = resource_count as usize;
+
+        let off_base = 0x24;
+        let need = off_base + 4 * (n + 1);
+        if data.len() < need {
+            bail!(
+                "{}: truncated offset table (need {}, have {})",
+                path.display(),
+                need,
+                data.len()
+            );
+        }
+        let mut offsets = Vec::with_capacity(n + 1);
+        for i in 0..=n {
+            offsets.push(read_u32(&data, off_base + 4 * i, big_endian));
+        }
+
+        // 2 bytes of padding after the offset table.
+        let names_base = off_base + 4 * (n + 1) + 2;
+
+        // Resource names: 32 bytes each, NUL padded.
+        let mut names = Vec::with_capacity(n);
+        for i in 0..n {
+            let s = &data[names_base + 32 * i..names_base + 32 * (i + 1)];
+            let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+            names.push(String::from_utf8_lossy(&s[..end]).into_owned());
+        }
+
+        let names_end = names_base + 32 * n;
+        let payload_start = offsets.first().copied().unwrap_or(0) as usize;
+
+        // The metadata region is `15 * N + 4` bytes: a 4*N u32 array, two
+        // N-byte arrays, 2 bytes of padding, the 4*N dimension table, the
+        // 4*N size table, one more N-byte array and 2 bytes of padding.
+        let meta_len = 15 * n + 4;
+        let meta_end = names_end + meta_len;
+        if meta_end > payload_start || meta_end > data.len() {
+            bail!(
+                "{}: metadata region does not fit (names_end={}, meta_end={}, payload_start={}, len={})",
+                path.display(),
+                names_end,
+                meta_end,
+                payload_start,
+                data.len()
+            );
+        }
+
+        // 4*N u32 array of unknown purpose, then the attribute byte array.
+        let extra_base = names_end;
+        let mut extra_u32 = Vec::with_capacity(n);
+        for i in 0..n {
+            extra_u32.push(read_u32(&data, extra_base + 4 * i, big_endian));
+        }
+
+        // The attribute byte array (object offset 0x278).
+        let attr_base = names_end + 4 * n;
+        let mut attr = Vec::with_capacity(n);
+        for i in 0..n {
+            attr.push(data[attr_base + i]);
+        }
+
+        // The flags byte array (object offset 0x284): bit 0 = 8bpp.
+        let flags_base = attr_base + n;
+        let mut flags = Vec::with_capacity(n);
+        for i in 0..n {
+            flags.push(data[flags_base + i]);
+        }
+
+        // 2 bytes of padding, then the dimension table.
+        let dim_base = flags_base + n + 2;
+        let mut dimensions = Vec::with_capacity(n);
+        for i in 0..n {
+            // The pair is {height, width}: the SECOND u16 is the width.
+            let h = read_u16(&data, dim_base + 4 * i, big_endian);
+            let w = read_u16(&data, dim_base + 4 * i + 2, big_endian);
+            dimensions.push(Dimension {
+                width: w,
+                height: h,
+            });
+        }
+
+        // The decompressed-size table.
+        let size_base = dim_base + 4 * n;
+        let mut sizes = Vec::with_capacity(n);
+        for i in 0..n {
+            sizes.push(read_u32(&data, size_base + 4 * i, big_endian));
+        }
+
+        // The kind byte array (object offset 0x2a8): the palette source.
+        let kind_base = size_base + 4 * n;
+        let mut kinds = Vec::with_capacity(n);
+        for i in 0..n {
+            kinds.push(data[kind_base + i]);
+        }
+
+        Ok(Container {
+            path,
+            data,
+            kind,
+            big_endian,
+            version,
+            file_id,
+            timestamp,
+            resource_count,
+            offsets,
+            names,
+            attr,
+            flags,
+            dimensions,
+            sizes,
+            extra_u32,
+            kinds,
+            names_end,
+        })
+    }
+
+    /// Raw (still compressed) bytes of resource `i`.
+    pub fn payload(&self, i: usize) -> &[u8] {
+        let s = self.offsets[i] as usize;
+        let e = self.offsets[i + 1] as usize;
+        &self.data[s..e]
+    }
+
+    /// Compressed size of resource `i`.
+    pub fn payload_len(&self, i: usize) -> usize {
+        (self.offsets[i + 1] - self.offsets[i]) as usize
+    }
+
+    /// Name of resource `i`.
+    pub fn name(&self, i: usize) -> &str {
+        self.names.get(i).map(|s| s.as_str()).unwrap_or("")
+    }
+
+    /// Pixel dimensions of picture resource `i`.
+    pub fn dimension(&self, i: usize) -> Dimension {
+        self.dimensions.get(i).copied().unwrap_or_default()
+    }
+
+    /// Flags byte of resource `i` (object offset 0x284). Bit 0 selects
+    /// 8 bits per pixel.
+    pub fn flags_of(&self, i: usize) -> u8 {
+        self.flags.get(i).copied().unwrap_or(0)
+    }
+
+    /// Attribute byte of resource `i` (object offset 0x278).
+    pub fn attr_of(&self, i: usize) -> u8 {
+        self.attr.get(i).copied().unwrap_or(0)
+    }
+
+    /// Size of resource `i`'s decompressed payload as the container records
+    /// it. A zero means the payload is stored uncompressed, in which case the
+    /// stored size is the answer.
+    pub fn plain_len(&self, i: usize) -> usize {
+        if self.sizes[i] == 0 {
+            self.payload_len(i)
+        } else {
+            self.sizes[i] as usize
+        }
+    }
+
+    /// Kind byte of resource `i`.
+    pub fn kind_of(&self, i: usize) -> u8 {
+        self.kinds.get(i).copied().unwrap_or(0)
+    }
+}
+
+pub fn read_u16(d: &[u8], off: usize, big_endian: bool) -> u16 {
+    let b = [d[off], d[off + 1]];
+    if big_endian {
+        u16::from_be_bytes(b)
+    } else {
+        u16::from_le_bytes(b)
+    }
+}
+
+pub fn read_u32(d: &[u8], off: usize, big_endian: bool) -> u32 {
+    let b = [d[off], d[off + 1], d[off + 2], d[off + 3]];
+    if big_endian {
+        u32::from_be_bytes(b)
+    } else {
+        u32::from_le_bytes(b)
+    }
+}

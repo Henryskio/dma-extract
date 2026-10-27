@@ -1,0 +1,16 @@
+# Generated extraction output (30k PNGs, several hundred MB).
+/extracted/
+
+# Isolated per-asset-type working copies used by parallel reverse-engineering.
+/mmex-sound/
+/mmex-script/
+/mmex-film/
+
+# Scratch/analysis artifacts that are not part of the deliverable.
+/.tmp-channeltest/
+/.claude/
+/check_hidden_files
+*.log
+
+# Rust build output (also covered by mmf-extract/.gitignore).
+**/target/
