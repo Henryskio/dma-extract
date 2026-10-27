@@ -1,10 +1,9 @@
 # DMA (Disney's Magic Artist Deluxe / Magico Artista) — asset extraction status
 
-**Pictures are DONE.** This file is the resume point for the *other* asset
-types (sounds, scripts, films), which are being reverse-engineered by
-subagents. Format write-ups live in `/workspace/docs/`:
-`PICTURES.md` (finished), plus `SOUNDS.md`/`SCRIPTS.md`/`FILMS.md` as each
-is understood.
+**Pictures and scripts are DONE.** This file is the resume point for the
+remaining asset types (sounds, films), which are being reverse-engineered by
+subagents. Format write-ups live in `/workspace/docs/`: `PICTURES.md` and
+`SCRIPTS.md` (finished), plus `SOUNDS.md`/`FILMS.md` as each is understood.
 
 ---
 
@@ -15,6 +14,7 @@ is understood.
 | Final Rust extractor (the deliverable) | `/workspace/mmf-extract` |
 | Builds offline | `cargo build --release` → `target/release/mmf-extract` |
 | Extracted pictures (30,299 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
+| Extracted scripts (4,813 objects) | `/workspace/extracted/Scripts/HD/…` |
 | Format findings | `/workspace/docs/PICTURES.md` (+ `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`) |
 | Game archives (read-only) | `/RawAssets/` (see table below) |
 
@@ -39,7 +39,7 @@ for **all** of them:
 |---|---|---|---|
 | `app.MMP`, `HD.MMP`, `stmp1.MMP`, `stmp2.MMP`, `stmp3.MMP` | Pictures | images | **DONE** — 30,299 PNGs, 105 "odd" reported failed |
 | `HD.MMA`, `app.MMA` | Sounds | audio | stub writes payloads verbatim — RE in progress |
-| `HD.MMS` | Scripts | bytecode | stub writes payloads verbatim — RE in progress |
+| `HD.MMS` | Scripts | object DB | **DONE** — 4,813 objects, 3,329,791 payload bytes fully accounted |
 | `DMA.MMF` | Films | video/frames | stub writes payloads verbatim — RE in progress |
 
 > **Engine identification.** `MMFW` is the game's **in-house** container
@@ -74,14 +74,38 @@ for **all** of them:
 * 105 odd payloads (a second-stage/effect sub-format) are **not** decoded —
   reported as failures. Decoder matrix in `/workspace/oddparse_HD.txt`.
 
-Tests: `cargo test --release` → **17/17 pass** against the real assets
-(8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 3 unit tests in
-`src/picture.rs`). The color tests include a corpus-wide scan of
-`/workspace/extracted/Pictures` (30,299 PNGs): it fails if blue is zero on
+Tests: `cargo test --release` → **20/20 pass** against the real assets
+(8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 3 in `tests/scripts.rs`,
+3 unit tests in `src/picture.rs`). The color tests include a corpus-wide scan
+of `/workspace/extracted/Pictures` (30,299 PNGs): it fails if blue is zero on
 more than 15% of opaque pixels or is far more often zero than red/green.
 Current measurement: R 5.81%, G 5.45%, B 8.71%.
 
-## 4. Tooling notes
+## 4. Scripts — what is solved (see `docs/SCRIPTS.md`)
+
+* `HD.MMS` is **not event bytecode**. It is a serialized global object
+  database: **4,813 named objects in 89 classes**, little-endian, metadata
+  version 11.
+* It has no 32-byte names table and no picture metadata. Immediately after
+  the offset table: the type table (per-class record size + class names),
+  per-object element counts, per-object type indices, and the object-name
+  string table, ending exactly at the first payload.
+* Payloads are **stored uncompressed**; `off[i+1] - off[i]` is the length.
+  Each payload is `element_count × record_size` fixed records plus an optional
+  class-specific tail (Animation name, credits text, `StdBrush` names,
+  `AnimBrush` references, `TextList`/`StringTable` blobs).
+* Measured coverage: **3,329,791 payload bytes = 3,282,998 record bytes +
+  46,793 tail bytes**, with **0 opaque bytes**.
+* `--original` writes 4,813 verbatim `.bin` files; modern mode writes
+  `container.json`, `types.txt`, `strings.txt` and 4,813 annotated per-object
+  dumps. Decoded strings include the 130-entry UI/localization `StringTable`,
+  credits text, brush names, class names and object names. The Animation
+  records are exposed as `op` + four u16 arguments; the opcode table is still
+  unknown.
+* `tests/scripts.rs` verifies every `--original` file byte-for-byte against
+  its `[off[i], off[i+1])` container slice.
+
+## 5. Tooling notes
 
 * **Ghidra 12.2 headless** at `/root/ghidra_12.2_PUBLIC/support/analyzeHeadless`.
   Project `/tmp/ghproj/DMA` already imported (`-process DMA4.exe -noanalysis`).
@@ -97,18 +121,19 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
   `procedure_pseudo_code` rejects installed Ghidra 12.2 (wants 12.1.x).
 * Python 3 is installed (systems without it can use the Rust bins in `src/bin/`).
   Analysis bins present: `analyze`, `probe`, `owners`, `oddparse`, `cols`,
-  `invariants`, `imgstat`, `imgcheck`, `chan`, `palscan`, `grid`, `dump`.
+  `invariants`, `imgstat`, `imgcheck`, `chan`, `palscan`, `grid`, `dump`,
+  `scriptprobe`.
 * crates.io reachable; `cargo build --release` works offline.
 
-## 5. Next steps (sounds / scripts / films)
+## 6. Next steps (sounds / films)
 
 Each type is being handled by a subagent that:
 1. Parses its container with `Container::open` + a custom probe bin.
 2. Reverse-engineers the per-resource payload encoding (magic bytes first,
    then Ghidra for the decoder).
-3. Documents findings in `docs/SOUNDS.md` / `SCRIPTS.md` / `FILMS.md`.
-4. Implements extraction in `src/sound.rs` / `src/script.rs` / `src/film.rs`
-   to a modern lossless format, and a `--original` verbatim path.
+3. Documents findings in `docs/SOUNDS.md` / `FILMS.md`.
+4. Implements extraction in `src/sound.rs` / `src/film.rs` to a modern
+   lossless format, and a `--original` verbatim path.
 5. Adds a round-trip test and runs `cargo test --release`.
 
 Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.

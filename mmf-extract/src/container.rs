@@ -28,9 +28,15 @@
 //! The metadata region between the end of the names and the first payload is
 //! exactly `15 * N + 4` bytes long in every picture container in this game,
 //! which is what pins the field boundaries down.
+//!
+//! **Scripts** containers do not follow the picture layout. They have no
+//! 32-byte names table and no picture metadata. Instead, immediately after the
+//! offset table sits a serialized object database: a script version, a type
+//! table, an array of element counts, an array of type indices, and a string
+//! list of object names. See [`ScriptMeta`] and `docs/SCRIPTS.md`.
 
 use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The kind of payload a container holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +65,42 @@ impl ContainerKind {
 pub struct Dimension {
     pub width: u16,
     pub height: u16,
+}
+
+/// Metadata for a `MMFW Scripts` container.
+///
+/// Unlike picture containers, a Scripts container stores a serialized global
+/// object database. Each resource payload is one object. The metadata says
+/// what class each object is and how many fixed-size elements its payload
+/// starts with.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptMeta {
+    /// Script metadata version. Every shipped container uses 11.
+    pub version: u16,
+    /// First unknown header field (observed `0xffff`).
+    pub unknown_1: u16,
+    /// Second unknown header field (observed `0xffff`).
+    pub unknown_2: u16,
+    /// Third unknown header field (observed 2490).
+    pub unknown_3: u16,
+    /// Number of entries in `type_aux` and `types`.
+    pub type_count: u16,
+    /// Per-class fixed record size in bytes. This is the size of one element
+    /// at the start of an object payload; classes may append a string tail.
+    pub type_aux: Vec<u16>,
+    /// Class/type names in index order.
+    pub types: Vec<String>,
+    /// Per-object element count. The payload starts with this many records of
+    /// `type_aux[object_type[i]]` bytes.
+    pub element_counts: Vec<u32>,
+    /// Per-object index into `types`.
+    pub object_types: Vec<u16>,
+    /// Per-object names, in resource order. Mirrors `Container::names`.
+    pub object_names: Vec<String>,
+    /// Offset of the script metadata (immediately after the offset table).
+    pub metadata_start: usize,
+    /// Offset just past the metadata, i.e. the first payload.
+    pub metadata_end: usize,
 }
 
 /// A parsed MMFW resource container.
@@ -95,6 +137,8 @@ pub struct Container {
     pub kinds: Vec<u8>,
     /// Offset of the end of the names table (start of the metadata region).
     pub names_end: usize,
+    /// Scripts-only object-database metadata. `None` for every other kind.
+    pub script: Option<ScriptMeta>,
 }
 
 impl Container {
@@ -164,6 +208,38 @@ impl Container {
             offsets.push(read_u32(&data, off_base + 4 * i, big_endian));
         }
 
+        let payload_start = offsets.first().copied().unwrap_or(0) as usize;
+
+        // Scripts containers have no names table and no picture metadata.
+        // Their serialized object database starts immediately after the
+        // offset table, with no padding.
+        if kind == ContainerKind::Scripts {
+            let metadata_start = off_base + 4 * (n + 1);
+            let script =
+                parse_script_meta(&path, &data, metadata_start, payload_start, n, big_endian)?;
+            let names = script_names(&script, n)?;
+            return Ok(Container {
+                path,
+                data,
+                kind,
+                big_endian,
+                version,
+                file_id,
+                timestamp,
+                resource_count,
+                offsets,
+                names,
+                attr: Vec::new(),
+                flags: Vec::new(),
+                dimensions: Vec::new(),
+                sizes: vec![0; n],
+                extra_u32: Vec::new(),
+                kinds: Vec::new(),
+                names_end: metadata_start,
+                script: Some(script),
+            });
+        }
+
         // 2 bytes of padding after the offset table.
         let names_base = off_base + 4 * (n + 1) + 2;
 
@@ -176,7 +252,6 @@ impl Container {
         }
 
         let names_end = names_base + 32 * n;
-        let payload_start = offsets.first().copied().unwrap_or(0) as usize;
 
         // The metadata region is `15 * N + 4` bytes: a 4*N u32 array, two
         // N-byte arrays, 2 bytes of padding, the 4*N dimension table, the
@@ -260,6 +335,7 @@ impl Container {
             extra_u32,
             kinds,
             names_end,
+            script: None,
         })
     }
 
@@ -300,10 +376,11 @@ impl Container {
     /// it. A zero means the payload is stored uncompressed, in which case the
     /// stored size is the answer.
     pub fn plain_len(&self, i: usize) -> usize {
-        if self.sizes[i] == 0 {
+        let recorded = self.sizes.get(i).copied().unwrap_or(0);
+        if recorded == 0 {
             self.payload_len(i)
         } else {
-            self.sizes[i] as usize
+            recorded as usize
         }
     }
 
@@ -329,4 +406,179 @@ pub fn read_u32(d: &[u8], off: usize, big_endian: bool) -> u32 {
     } else {
         u32::from_le_bytes(b)
     }
+}
+
+/// Parse the serialized object database that follows a Scripts container's
+/// offset table.
+///
+/// Layout, all integers in the container's byte order:
+///
+/// ```text
+/// u16  script version (observed 11)
+/// u16  unknown (observed 0xffff)
+/// u16  unknown (observed 0xffff)
+/// u16  unknown (observed 2490)
+/// u16  type count T
+/// u16  T x type record size
+///      string list: type names (T entries)
+/// u32  N x element count
+/// u16  N x type index
+///      string list: object names (N entries)
+/// ```
+///
+/// The last byte of the name list must coincide with the first payload
+/// offset; that is what pins the boundaries down.
+fn parse_script_meta(
+    path: &Path,
+    data: &[u8],
+    metadata_start: usize,
+    payload_start: usize,
+    n: usize,
+    big_endian: bool,
+) -> Result<ScriptMeta> {
+    let mut pos = metadata_start;
+    let version = take_u16(data, &mut pos, big_endian)
+        .with_context(|| format!("{}: script metadata version", path.display()))?;
+    let unknown_1 = take_u16(data, &mut pos, big_endian)?;
+    let unknown_2 = take_u16(data, &mut pos, big_endian)?;
+    let unknown_3 = take_u16(data, &mut pos, big_endian)?;
+    let type_count = take_u16(data, &mut pos, big_endian)?;
+    let type_count_usize = type_count as usize;
+
+    let mut type_aux = Vec::with_capacity(type_count_usize);
+    for _ in 0..type_count_usize {
+        type_aux.push(take_u16(data, &mut pos, big_endian)?);
+    }
+
+    let types = read_string_list(data, &mut pos, big_endian)
+        .with_context(|| format!("{}: script type names", path.display()))?;
+    if types.len() != type_count_usize {
+        bail!(
+            "{}: script type count says {}, type-name list has {}",
+            path.display(),
+            type_count_usize,
+            types.len()
+        );
+    }
+
+    let mut element_counts = Vec::with_capacity(n);
+    for _ in 0..n {
+        element_counts.push(take_u32(data, &mut pos, big_endian)?);
+    }
+
+    let mut object_types = Vec::with_capacity(n);
+    for _ in 0..n {
+        let t = take_u16(data, &mut pos, big_endian)?;
+        if t as usize >= type_count_usize {
+            bail!(
+                "{}: object type index {} is outside the {} entry type table",
+                path.display(),
+                t,
+                type_count_usize
+            );
+        }
+        object_types.push(t);
+    }
+
+    let object_names = read_string_list(data, &mut pos, big_endian)
+        .with_context(|| format!("{}: script object names", path.display()))?;
+    if object_names.len() != n {
+        bail!(
+            "{}: container has {} resources but {} object names",
+            path.display(),
+            n,
+            object_names.len()
+        );
+    }
+
+    if pos != payload_start {
+        bail!(
+            "{}: script metadata ends at 0x{pos:x}, first payload starts at 0x{payload_start:x}",
+            path.display()
+        );
+    }
+
+    Ok(ScriptMeta {
+        version,
+        unknown_1,
+        unknown_2,
+        unknown_3,
+        type_count,
+        type_aux,
+        types,
+        element_counts,
+        object_types,
+        object_names,
+        metadata_start,
+        metadata_end: pos,
+    })
+}
+
+/// Read the name list belonging to a parsed Scripts metadata block.
+fn script_names(meta: &ScriptMeta, n: usize) -> Result<Vec<String>> {
+    if meta.object_names.len() != n {
+        bail!(
+            "script metadata has {} object names for {} resources",
+            meta.object_names.len(),
+            n
+        );
+    }
+    Ok(meta.object_names.clone())
+}
+
+/// Read one length-prefixed string list.
+///
+/// Wire format: `u16 count`, `u32 blob length`, `count x u32 offset`, then the
+/// blob. Offsets are relative to the start of the blob. Strings are NUL
+/// terminated.
+fn read_string_list(data: &[u8], pos: &mut usize, big_endian: bool) -> Result<Vec<String>> {
+    let count = take_u16(data, pos, big_endian)? as usize;
+    let blob_len = take_u32(data, pos, big_endian)? as usize;
+    let mut offsets = Vec::with_capacity(count);
+    for _ in 0..count {
+        offsets.push(take_u32(data, pos, big_endian)? as usize);
+    }
+
+    let blob_start = *pos;
+    let blob_end = blob_start
+        .checked_add(blob_len)
+        .context("string-list length overflows")?;
+    if blob_end > data.len() {
+        bail!(
+            "string list at 0x{blob_start:x} claims {blob_len} bytes but the file ends at 0x{:x}",
+            data.len()
+        );
+    }
+
+    let mut strings = Vec::with_capacity(count);
+    for off in offsets {
+        if off > blob_len {
+            bail!("string offset {off} is outside a {blob_len} byte blob");
+        }
+        let start = blob_start + off;
+        let rest = &data[start..blob_end];
+        let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+        strings.push(String::from_utf8_lossy(&rest[..end]).into_owned());
+    }
+
+    *pos = blob_end;
+    Ok(strings)
+}
+
+fn take_u16(data: &[u8], pos: &mut usize, big_endian: bool) -> Result<u16> {
+    if pos.checked_add(2).is_none_or(|end| end > data.len()) {
+        bail!("truncated u16 at 0x{pos:x}");
+    }
+    let v = read_u16(data, *pos, big_endian);
+    *pos += 2;
+    Ok(v)
+}
+
+fn take_u32(data: &[u8], pos: &mut usize, big_endian: bool) -> Result<u32> {
+    if pos.checked_add(4).is_none_or(|end| end > data.len()) {
+        bail!("truncated u32 at 0x{pos:x}");
+    }
+    let v = read_u32(data, *pos, big_endian);
+    *pos += 4;
+    Ok(v)
 }
