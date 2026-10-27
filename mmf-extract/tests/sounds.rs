@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 const SOUND_CONTAINERS: &[&str] = &["HD.MMA", "app.MMA"];
 
 fn raw_assets_dir() -> Option<PathBuf> {
-    for candidate in [
-        "/RawAssets",
-        "/var/home/Henrysk/DisneyMagicoArtista/RawAssets",
-    ] {
+    // The asset folder is normally mounted at /RawAssets; point DMA_ASSETS at
+    // another copy if needed.
+    let extra = std::env::var("DMA_ASSETS").unwrap_or_default();
+    for candidate in ["/RawAssets", extra.as_str()] {
         let path = PathBuf::from(candidate);
         if path.is_dir() {
             return Some(path);

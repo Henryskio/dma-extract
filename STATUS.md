@@ -1,12 +1,13 @@
 # DMA (Disney's Magic Artist Deluxe / Magico Artista) — asset extraction status
 
-**Game 1: all four asset types are DONE** (pictures, sounds, scripts, films).
-Format write-ups live in `/workspace/docs/`: `PICTURES.md`, `SOUNDS.md`,
-`SCRIPTS.md`, `FILMS.md`.
+**Game 3 (*Disney's Magic Artist Deluxe*, 2002): all four asset types are
+DONE** (pictures, sounds, scripts, films). Format write-ups live in
+`/workspace/docs/`: `PICTURES.md`, `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`.
 
-**The sequel (*Disney Magico Artista 2*) is also extracted** — same engine,
-same container family, two format differences handled; see
-`docs/SEQUEL.md`.
+**Game 2 (*Disney Magico Artista 2*, 1999 — the earlier build, despite the
+numbering) is also extracted** — same engine, same container family, two
+format differences handled; see `docs/SEQUEL.md`. Series order: this repo's
+primary target is the **third** game in the series.
 
 ---
 
@@ -178,22 +179,22 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
   `scriptprobe`, `filmprobe`.
 * crates.io reachable; `cargo build --release` works offline.
 
-## 8. The sequel (see `docs/SEQUEL.md`)
+## 8. The second game in the series (see `docs/SEQUEL.md`)
 
 * Source: archive.org item `disney-magico-artista-2`, file `TOPOLINO2.ISO`
   (479,662,080 bytes, MD5 `0fbcca46cd301925c65f1fba4cdc8836`, verified). Only
   the system area and the game's own files were read from it.
 * Two format differences: containers are **version 2** (the parser demanded
-  3 and rejected every sequel file), and films use marker **5** with 22-byte
+  3 and rejected every file), and films use marker **5** with 22-byte
   records, chunk numbers `0x00`/`0x01`, an unpadded raw key frame and
   RLE deltas with no LZ77 wrapper. The film record length is solved from the
   file layout, so both games parse.
 * Extracted: **38,447 pictures**, **891 sounds**, **1 film** (193 frames of
   800×600). 1,181 pictures are the same undecoded "odd payload" sub-format as
-  game 1 (RLE-like: `ITstampareaHOTSPOT*`, `ttpmo_*`, `TtuPt_*`, …).
-* Unresolved: the sequel's `Hd.mms` (`MMFW 3 Script`, `II`, version 2) does
-  not match the game-1 object database layout, and 7 of 147 film deltas drive
-  the cursor negative.
+  game 3 (RLE-like: `ITstampareaHOTSPOT*`, `ttpmo_*`, `TtuPt_*`, …).
+* Unresolved: the second game's `Hd.mms` (`MMFW 3 Script`, `II`, version 2)
+  does not match the game-3 object database layout, and 7 of 147 film deltas
+  drive the cursor negative.
 
 ## 9. Remaining work / known gaps
 
@@ -202,5 +203,4 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 * `docs/SOUNDS.md`, `docs/SCRIPTS.md` and `docs/FILMS.md` each end with an
   open-questions list (animation opcodes, film record fields and audio PCM,
   the `0x0008` metadata word, `C` bits 4-7).
-* The sequel (*Disney Magico Artista 2*) is out of scope for this repo.
 Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.

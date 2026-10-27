@@ -18,7 +18,10 @@ use std::path::{Path, PathBuf};
 
 /// Where the game's assets live.
 fn raw_assets_dir() -> Option<PathBuf> {
-    for candidate in ["/RawAssets", "/var/home/Henrysk/DisneyMagicoArtista/RawAssets"] {
+    // The asset folder is normally mounted at /RawAssets; point DMA_ASSETS at
+    // another copy if needed.
+    let extra = std::env::var("DMA_ASSETS").unwrap_or_default();
+    for candidate in ["/RawAssets", extra.as_str()] {
         let p = PathBuf::from(candidate);
         if p.is_dir() {
             return Some(p);

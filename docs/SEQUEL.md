@@ -1,9 +1,16 @@
-# Disney Magico Artista 2 — extraction from the sequel
+# Disney Magico Artista 2 — extraction of the second game in the series
 
-*Disney Magico Artista 2* (the sequel to the game handled by the rest of this
-repository) uses the **same in-house `MMFW` container family and the same
-payload encodings**, so the existing extractor works on it after two small
-format differences are handled. Nothing new had to be built.
+> **Series order.** The primary target of this repository is *Disney's Magic
+> Artist Deluxe* (Italian release *Disney Magico Artista*, `DMA4.exe`, linked
+> 2002) — that is the **third** game in the series. This page covers
+> *Disney Magico Artista 2* (`DMA.exe`, linked 1999) — the **second** game,
+> and therefore the *older* build, despite being lumped in with a
+> "sequel".
+
+*Disney Magico Artista 2* uses the **same in-house `MMFW` container family and
+the same payload encodings** as the third game, so the existing extractor
+works on it after two small format differences are handled. Nothing new had
+to be built.
 
 ## 1. Source
 
@@ -27,7 +34,7 @@ with `Disney Art Studi…`, not containers). The game executable is
 `Setup/DMA2/HD/DMA.exe` (1,645,056 bytes) — the installer ships it inside its
 own tree.
 
-## 2. Engine identification (same family as the first game)
+## 2. Engine identification (same family as the third game)
 
 `DMA.exe` carries the same `MME_*` loader errors (`MME_PICTURE_RESOURCE_FILE_*`,
 `MME_SOUND_RESOURCE_FILE_*`, `MME_FILM_RESOURCE_FILE_*`, …) and adds three new
@@ -36,9 +43,9 @@ resource classes: **movie** (`MME_MOVIE_RESOURCE_FILE_*`), **tune**
 still no `Clickteam`/`CNC`/`MMF2` marker. Its UI strings are Italian
 ("*Disney Magico Artista 2*"), and it was linked 1999-09-16.
 
-## 3. Format differences from the first game
+## 3. Format differences from the third game
 
-| | first game | sequel |
+| | third game (Deluxe, 2002) | second game (2000-ish) |
 |---|---|---|
 | container version (`0x12`) | 3 | **2** |
 | picture metadata | `15*N+4` | identical (verified: 24,004 = 15·1600+4 etc.) |
@@ -57,7 +64,7 @@ both 26- and 22-byte records are accepted.
 
 ### The 4 Galois-case picture bug
 
-`Container::open` rejected the sequel's files outright because it demanded
+`Container::open` rejected the second game's files outright because it demanded
 version 3. Allowing 2 was the only container-level change needed for
 pictures and sounds.
 
@@ -72,7 +79,7 @@ Extracted:
   films:    1            (Intro.flm: 193 frames, 141 unique, 800x600, 16,019 ticks)
   scripts:  0            (see open questions)
   failed:   1181 pictures  (the same undecoded "odd payload" sub-format as the
-                           first game — see below)
+                           third game — see below)
 ```
 
 Spot checks:
@@ -87,7 +94,7 @@ Spot checks:
 
 ### The 1,181 "odd" picture payloads
 
-These are the same undecoded sub-format as the first game's 105 (an RLE-like
+These are the same undecoded sub-format as the third game's 105 (an RLE-like
 stream; payloads start with patterns such as `00 00 49 01 52 01 …` row-offset
 tables or `ff 00 00 00 00 fe fe fe …` palette ramps). The extractor reports
 them as failures rather than guessing, exactly as before. They are named
@@ -96,12 +103,12 @@ them as failures rather than guessing, exactly as before. They are named
 
 ## 5. Open questions
 
-* The sequel's script container (`Hd.mms`, `MMFW 3 Script`, `II`, version 2,
-  declaring 61,201 resources) does not parse with the first game's object
+* The second game's script container (`Hd.mms`, `MMFW 3 Script`, `II`, version 2,
+  declaring 61,201 resources) does not parse with the third game's object
   database layout; `off[0]` only works read as little-endian and the metadata
   block after the offset table is not the same shape. Documented here rather
   than guessed.
-* 7 of 147 film delta chunks decode with the first game's cursor-relative RLE
+* 7 of 147 film delta chunks decode with the third game's cursor-relative RLE
   rule and then write at a negative frame offset, so the delta grammar must
   differ in a detail that is not yet identified.
 * The new `MME_MOVIE_*`/`MME_TUNE_*`/`MME_BLOB_*` resource classes are not
