@@ -1,7 +1,7 @@
-# Disney's Magic Artist Deluxe / Magico Artista — MMFW Sound Format
+# \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista — MMFW Sound Format
 
-Reverse-engineered notes for the `.MMA` (Sounds) containers of *Disney's
-Magic Artist Deluxe* (Italian release: *Disney Magico Artista*, 2002).
+Reverse-engineered notes for the `.MMA` (Sounds) containers of \*\*\*\*\*\*\*'s
+Magic Artist Deluxe* (Italian release: \*\*\*\*\*\* Magico Artista, 2002).
 Everything below was derived from the shipped files plus the game's own
 executable (`DMA4.exe`), and is checked numerically by the extractor and its
 tests.

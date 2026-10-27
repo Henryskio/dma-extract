@@ -1,10 +1,10 @@
-# DMA (Disney's Magic Artist Deluxe / Magico Artista) — asset extraction status
+# DMA (\*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista) — asset extraction status
 
-**Game 3 (*Disney's Magic Artist Deluxe*, 2002): all four asset types are
+**Game 3 (\*\*\*\*\*\*'s Magic Artist Deluxe, 2002): all four asset types are
 DONE** (pictures, sounds, scripts, films). Format write-ups live in
 `/workspace/docs/`: `PICTURES.md`, `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`.
 
-**Game 2 (*Disney Magico Artista 2*, 1999 — the earlier build, despite the
+**Game 2 (\*\*\*\*\*\* Magico Artista 2, 1999 — the earlier build, despite the
 numbering) is also extracted** — same engine, same container family, two
 format differences handled; see `docs/SEQUEL.md`. Series order: this repo's
 primary target is the **third** game in the series.
@@ -183,9 +183,9 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 
 ## 8. The second game in the series (see `docs/SEQUEL.md`)
 
-* Source: archive.org item `disney-magico-artista-2`, file `TOPOLINO2.ISO`
-  (479,662,080 bytes, MD5 `0fbcca46cd301925c65f1fba4cdc8836`, verified). Only
-  the system area and the game's own files were read from it.
+* Source: the original CD image `TOPOLINO2.ISO` (479,662,080 bytes, MD5
+  `0fbcca46cd301925c65f1fba4cdc8836`, verified). Only the system area and the
+  game's own files were read from it.
 * Two format differences: containers are **version 2** (the parser demanded
   3 and rejected every file), and films use marker **5** with 22-byte
   records, chunk numbers `0x00`/`0x01`, an unpadded raw key frame and

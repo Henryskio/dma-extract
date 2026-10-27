@@ -1,11 +1,11 @@
-# Disney's Magic Artist Deluxe / Magico Artista — Reverse Engineering Findings
+# \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista — Reverse Engineering Findings
 
 Working notes for extracting the proprietary `MMFW` archives in `RawAssets/`
 into lossless modern formats in `FinalizedExtractedAssets/`.
 
 > **Correction (engine identification).** These notes originally described the
 > engine as Clickteam Multimedia Fusion 2. That is wrong: `DMA4.exe` is an
-> in-house Disney build (`C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\
+> in-house \*\*\*\*\*\* build (`C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\
 > Release\DMAAW.pdb`, MSVC 6, linked 2002-06-15) whose resource-loader errors
 > are prefixed `MME_*`; there is no `Clickteam`, `CNC`, or `MMF2` string in the
 > binary. `MMFW` is the game's own container signature, not Fusion. Earlier

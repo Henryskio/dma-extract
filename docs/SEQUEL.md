@@ -1,36 +1,36 @@
-# Disney Magico Artista 2 — extraction of the second game in the series
+# \*\*\*\*\*\* Magico Artista 2 — extraction of the second game in the series
 
-> **Series order.** The primary target of this repository is *Disney's Magic
-> Artist Deluxe* (Italian release *Disney Magico Artista*, `DMA4.exe`, linked
+> **Series order.** The primary target of this repository is \*\*\*\*\*\*\*'s Magic
+> Artist Deluxe* (Italian release \*\*\*\*\*\* Magico Artista, `DMA4.exe`, linked
 > 2002) — that is the **third** game in the series. This page covers
-> *Disney Magico Artista 2* (`DMA.exe`, linked 1999) — the **second** game,
+> \*\*\*\*\*\* Magico Artista 2 (`DMA.exe`, linked 1999) — the **second** game,
 > and therefore the *older* build, despite being lumped in with a
 > "sequel".
 
-*Disney Magico Artista 2* uses the **same in-house `MMFW` container family and
+\*\*\*\*\*\* Magico Artista 2 uses the **same in-house `MMFW` container family and
 the same payload encodings** as the third game, so the existing extractor
 works on it after two small format differences are handled. Nothing new had
 to be built.
 
 ## 1. Source
 
-The game is on archive.org as `disney-magico-artista-2` (item metadata:
-`https://archive.org/metadata/disney-magico-artista-2`). The useful file is
-`TOPOLINO2.ISO` (479,662,080 bytes, MD5 `0fbcca46cd301925c65f1fba4cdc8836`,
-verified after download).
+The assets come from the game's original CD image, `TOPOLINO2.ISO`
+(479,662,080 bytes, MD5 `0fbcca46cd301925c65f1fba4cdc8836`, verified after
+download). No part of the game's data ships with this repository — only the
+format knowledge below and the scripts used to read the image.
 
 Only the *system area* of the image was needed to work out its layout, and
 only the game's own files were extracted from it:
 
 ```sh
-python3 iso_range.py list "https://archive.org/download/disney-magico-artista-2/TOPOLINO2.ISO"
+python3 iso_range.py list /tmp/sequel/TOPOLINO2.ISO      # local copy of the image
 python3 extract_iso.py copy /tmp/sequel/TOPOLINO2.ISO <dest> '^(DMA\.MMF|HD\.MMA|HD\.MMP|Hd\.mms|app\.MMA|app\.MMP|stmp1\.MMP|stmp2\.MMP|Sample|Sketch)$' '^Setup/DMA2/'
 ```
 
 The disc's root holds `app.MMA`, `app.MMP`, `HD.MMA`, `HD.MMP`, `Hd.mms`,
 `DMA.MMF`, `stmp1.MMP`, `stmp2.MMP` (no `stmp3`), plus two
 extension-less 1,856,239-byte files named `Sample` and `Sketch` (both start
-with `Disney Art Studi…`, not containers). The game executable is
+with `****** Art Studi…`, not containers). The game executable is
 `Setup/DMA2/HD/DMA.exe` (1,645,056 bytes) — the installer ships it inside its
 own tree.
 
@@ -41,7 +41,7 @@ own tree.
 resource classes: **movie** (`MME_MOVIE_RESOURCE_FILE_*`), **tune**
 (`MME_TUNE_RESOURCE_FILE_*`) and **blob** (`MME_BLOB_RESOURCE_FILE_*`). There is
 still no `Clickteam`/`CNC`/`MMF2` marker. Its UI strings are Italian
-("*Disney Magico Artista 2*"), and it was linked 1999-09-16.
+("\*\*\*\*\*\* Magico Artista 2"), and it was linked 1999-09-16.
 
 ## 3. Format differences from the third game
 

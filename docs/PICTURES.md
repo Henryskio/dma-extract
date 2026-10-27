@@ -1,7 +1,7 @@
-# Disney's Magic Artist Deluxe / Magico Artista — MMFW Picture Format
+# \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista — MMFW Picture Format
 
 Reverse-engineered notes for the `.MMP` (Pictures) containers of
-*Disney's Magic Artist Deluxe* (Italian release: *Disney Magico Artista*,
+\*\*\*\*\*\*'s Magic Artist Deluxe (Italian release: \*\*\*\*\*\* Magico Artista,
 2002). Everything here was derived from the game's own executable
 (`DMA4.exe`) plus empirical verification against the shipped assets; claims
 that were confirmed by rendering are checked numerically with the helper

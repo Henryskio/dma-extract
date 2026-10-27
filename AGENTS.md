@@ -6,7 +6,7 @@ humans; this file is for you. Read it before editing anything.
 ## Project overview
 
 `mmf-extract` is a Rust reverse-engineering tool for the proprietary `MMFW`
-containers of Disney's Magic Artist Deluxe / Magico Artista: pictures
+containers of \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista: pictures
 (`.MMP`), sounds (`.MMA`), scripts (`.MMS`) and films (`.MMF`). It turns each
 resource into a modern lossless format (PNG / WAV / JSON+text), and can also
 re-emit the game's original bytes exactly.

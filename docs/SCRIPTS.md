@@ -1,7 +1,7 @@
-# Disney's Magic Artist Deluxe — MMFW Scripts Format
+# \*\*\*\*\*\*'s Magic Artist Deluxe — MMFW Scripts Format
 
 Reverse-engineered notes for the `MMFW Scripts` container (`.MMS`) shipped in
-*Disney's Magic Artist Deluxe* (Italian release: *Disney Magico Artista*,
+\*\*\*\*\*\*'s Magic Artist Deluxe (Italian release: \*\*\*\*\*\* Magico Artista,
 2002). Everything below was derived from the game's own executable
 (`DMA4.exe`) and verified against `/RawAssets/HD.MMS`; there is only one
 Scripts container in the shipped assets.
@@ -262,8 +262,8 @@ Example records:
 ```text
 id=0  offset=0x0000 -> "Too many blueprints!  Render or remove some existing ones first."
 id=1  offset=0x0041 -> "Too many blueprints!  Render or remove some existing ones first. (Some may be on the other half of the canvas.)"
-id=8  offset=0x0109 -> "\xa9 Disney"
-id=15 offset=0x017c -> "Disney Interactive"
+id=8  offset=0x0109 -> "\xa9 ******"
+id=15 offset=0x017c -> "****** Interactive"
 ```
 
 ### 4.4 TextList

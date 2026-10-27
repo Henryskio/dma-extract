@@ -1,9 +1,9 @@
-# Disney's Magic Artist Deluxe / Magico Artista — MMFW asset extraction
+# \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista — MMFW asset extraction
 
 Reverse-engineering extraction of the proprietary `MMFW` asset archives
-(`.MMP` pictures, `.MMA` sounds, `.MMS` scripts, `.MMF` films) of Disney's
+(`.MMP` pictures, `.MMA` sounds, `.MMS` scripts, `.MMF` films) of \*\*\*\*\*\*'s
 Magic Artist Deluxe / Magico Artista, plus the second game in the series
-(*Disney Magico Artista 2*).
+(\*\*\*\*\*\* Magico Artista 2).
 
 | Start here | |
 |---|---|

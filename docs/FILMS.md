@@ -1,7 +1,7 @@
-# Disney's Magic Artist Deluxe / Magico Artista — MMFW Films Format
+# \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista — MMFW Films Format
 
 Reverse-engineered notes for the single Films container shipped with the game,
-`/RawAssets/DMA.MMF` (Italian release: *Disney Magico Artista*, 2002).
+`/RawAssets/DMA.MMF` (Italian release: \*\*\*\*\*\* Magico Artista, 2002).
 Everything below was derived from the shipped files and the game's own
 executable (`DMA4.exe`); the decoder was checked numerically against all 139
 frames. No external format documentation was used as authority.

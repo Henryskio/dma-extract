@@ -1,8 +1,8 @@
-# mmf-extract — MMFW asset extractor for Disney's Magic Artist Deluxe
+# mmf-extract — MMFW asset extractor for \*\*\*\*\*\*'s Magic Artist Deluxe
 
 A reverse-engineering extractor for the proprietary `MMFW` containers
 (`.MMP` pictures, `.MMA` sounds, `.MMS` scripts, `.MMF` films) shipped with
-*Disney's Magic Artist Deluxe* / *Disney Magico Artista*.
+\*\*\*\*\*\*'s Magic Artist Deluxe / \*\*\*\*\*\* Magico Artista.
 
 It converts the game's own asset archives into modern, lossless formats, and
 it can also re-emit every resource in the game's original on-disk format
@@ -17,7 +17,7 @@ byte-for-byte when you need to prove nothing was lost.
 
 Measured on the shipped assets of the third game in the series: **30,299
 pictures, 683 sounds, 4,813 script objects, 139 film frames**. A second game
-in the series (*Disney Magico Artista 2*, container **version 2**) parses with
+in the series (\*\*\*\*\*\* Magico Artista 2, container **version 2**) parses with
 the same code: **38,447 pictures, 891 sounds, 1 film**. See
 [`docs/SEQUEL.md`](../docs/SEQUEL.md).
 
