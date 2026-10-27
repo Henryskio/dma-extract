@@ -7,7 +7,8 @@
 //! 0x00  16 bytes  signature: "MMFW " + tag, NUL padded
 //!                tag = "Pictures" | "Sounds" | "Films" | "Scripts"
 //! 0x10   2 bytes  endian marker: "MM" (big-endian) or "II" (little-endian)
-//! 0x12   2 bytes  u16 version, must be 3
+//! 0x12   2 bytes  u16 version; 3 in the first game, 2 in the sequel
+//!                (both parse identically)
 //! 0x14   6 bytes  file id
 //! 0x1A   8 bytes  timestamp (double)
 //! 0x22   2 bytes  u16 resource count N
@@ -56,7 +57,9 @@ impl ContainerKind {
             "Pictures" => Self::Pictures,
             "Sounds" => Self::Sounds,
             "Films" => Self::Films,
-            "Scripts" => Self::Scripts,
+            // The first game writes "MMFW Scripts"; the sequel writes
+            // "MMFW 3 Script" for the same container family.
+            "Scripts" | "3 Script" => Self::Scripts,
             _ => Self::Unknown,
         }
     }
@@ -177,7 +180,10 @@ impl Container {
         };
 
         let version = read_u16(&data, 0x12, big_endian);
-        if version != 3 {
+        // Both games ship containers with these two version numbers and the
+        // metadata layout measured below is identical in each; anything else
+        // is a different writer and is rejected rather than guessed at.
+        if version != 3 && version != 2 {
             bail!("{}: unexpected version {}", path.display(), version);
         }
 

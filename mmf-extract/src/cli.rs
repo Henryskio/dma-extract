@@ -158,8 +158,14 @@ pub fn run(
             }
             ContainerKind::Films => {
                 let out_dir = output.join("Films").join(&stem);
-                let n = crate::film::extract_container(&container, &out_dir, original)?;
-                summary.films += n;
+                // A film that cannot be fully decoded is reported and skipped
+                // rather than aborting the whole run.
+                match crate::film::extract_container(&container, &out_dir, original) {
+                    Ok(n) => summary.films += n,
+                    Err(e) => summary
+                        .failed
+                        .push(format!("{}: {e:#}", path.display())),
+                }
             }
             ContainerKind::Scripts => {
                 let out_dir = output.join("Scripts").join(&stem);

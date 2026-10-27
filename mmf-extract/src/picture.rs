@@ -70,7 +70,24 @@ fn mask_rgba(indices: &[u8], width: u16, height: u16) -> Vec<u8> {
 /// `indices` the row-padded index rows. Rows shorter than the table says are
 /// padded with transparent pixels rather than failing the resource.
 pub(crate) fn indexed_rgba(palette: &[u8], indices: &[u8], width: u16, height: u16) -> Vec<u8> {
-    let stride = stride8(width);
+    indexed_rgba_stride(palette, indices, width, height, stride8(width))
+}
+
+/// Expand an 8bpp indexed image with an explicit row stride.
+///
+/// `stride` is the distance in bytes between the starts of two rows. The
+/// sequel's films store rows unpadded (`stride == width`); the first game
+/// pads to a multiple of four.
+pub(crate) fn indexed_rgba_stride(
+    palette: &[u8],
+    indices: &[u8],
+    width: u16,
+    height: u16,
+    stride: usize,
+) -> Vec<u8> {
+    if stride == 0 {
+        return Vec::new();
+    }
     let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
         let start = y * stride;

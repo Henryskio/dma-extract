@@ -37,11 +37,43 @@ pub const TYPE_AUDIO: u16 = 0x02;
 pub const TYPE_MARKER: u16 = 0x03;
 pub const TYPE_TIMESTAMP: u16 = 0x06;
 pub const TYPE_END: u16 = 0x07;
-pub const TYPE_FULL_FRAME: u16 = 0x0A;
-pub const TYPE_DELTA: u16 = 0x0B;
 
-/// Length of one per-film record in the container metadata.
-pub const RECORD_LEN: usize = 26;
+/// Key frame chunk. The first game writes type `0x0A`, the sequel `0x00`.
+pub const TYPE_FULL_FRAME: u16 = 0x0A;
+pub const TYPE_FULL_FRAME_V2: u16 = 0x00;
+/// Delta chunk. The first game writes type `0x0B`, the sequel `0x01`.
+pub const TYPE_DELTA: u16 = 0x0B;
+pub const TYPE_DELTA_V2: u16 = 0x01;
+
+/// Whether this container's films use the sequel's chunk numbering.
+fn is_film_v2(container: &Container) -> bool {
+    container.version == 2
+}
+
+/// Chunk number for the key frame of this container.
+fn full_frame_kind(container: &Container) -> u16 {
+    if is_film_v2(container) {
+        TYPE_FULL_FRAME_V2
+    } else {
+        TYPE_FULL_FRAME
+    }
+}
+
+/// Chunk number for a delta frame of this container.
+fn delta_kind(container: &Container) -> u16 {
+    if is_film_v2(container) {
+        TYPE_DELTA_V2
+    } else {
+        TYPE_DELTA
+    }
+}
+
+/// Longest per-film record seen in a Films container.
+///
+/// The first game's record is 26 bytes; the sequel's is 22.  The parser
+/// solves for the actual length from the file layout, so this is only a
+/// buffer bound.
+pub const MAX_RECORD_LEN: usize = 26;
 
 /// One chunk of the inner `.flm` stream, with offsets relative to the
 /// start of that stream.
@@ -97,7 +129,7 @@ pub struct Film {
     pub stride: usize,
     /// `[top, left, bottom, right]` from the per-film record.
     pub bounds: [u16; 4],
-    pub record: [u8; RECORD_LEN],
+    pub record: Vec<u8>,
     pub palette: Vec<u8>,
     pub palette_count: u16,
     pub frames: Vec<Frame>,
@@ -189,15 +221,16 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
 
     let full_chunks: Vec<&Chunk> = chunks
         .iter()
-        .filter(|c| c.kind == TYPE_FULL_FRAME)
+        .filter(|c| c.kind == full_frame_kind(container))
         .collect();
     if full_chunks.len() != 1 {
         bail!(
-            "film {index} ('{name}'): expected exactly one full-frame chunk (type 0x0A), found {}",
+            "film {index} ('{name}'): expected exactly one full-frame chunk (type {:#06x}), found {}",
+            full_frame_kind(container),
             full_chunks.len()
         );
     }
-    let mut buffer = decode_full_frame(data, full_chunks[0])
+    let mut buffer = decode_full_frame(data, full_chunks[0], is_film_v2(container))
         .with_context(|| format!("film {index} ('{name}'): decoding full frame"))?;
 
     let frame_size = meta
@@ -241,7 +274,7 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
                     delta: None,
                 });
             }
-            TYPE_DELTA => {
+            TYPE_DELTA | TYPE_DELTA_V2 => {
                 let event = events.last_mut().ok_or_else(|| {
                     anyhow::anyhow!(
                         "film {index} ('{name}'): delta chunk at {:#x} has no preceding timestamp",
@@ -295,19 +328,36 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
         };
 
         let mut delta_rects = Vec::new();
+        let mut wrote = true;
         if let Some(delta) = event.delta {
-            delta_rects = decode_delta(data, delta, &mut buffer).with_context(|| {
-                format!(
-                    "film {index} ('{name}'): decoding delta chunk at {:#x}",
-                    delta.offset
-                )
-            })?;
+            match decode_delta(data, delta, &mut buffer, is_film_v2(container)) {
+                Ok(rects) => delta_rects = rects,
+                Err(e) => {
+                    // The sequel's delta grammar is not fully recovered: a few
+                    // chunks drive the cursor negative. Keep the previous
+                    // frame instead of losing the whole film.
+                    if !is_film_v2(container) {
+                        return Err(e).with_context(|| {
+                            format!(
+                                "film {index} ('{name}'): decoding delta chunk at {:#x}",
+                                delta.offset
+                            )
+                        });
+                    }
+                    eprintln!(
+                        "warning: {}: film {index} ('{name}'): delta chunk at {:#x} not decoded ({e}); reusing the previous frame",
+                        container.path.display(),
+                        delta.offset
+                    );
+                    wrote = false;
+                }
+            }
         }
 
         frames.push(Frame {
             start_tick: event.tick,
             duration_tick,
-            duplicate: event.delta.is_none(),
+            duplicate: event.delta.is_none() || !wrote,
             indices: buffer.clone(),
             timestamp_chunk: Some(event.timestamp.offset),
             delta_chunk: event.delta.map(|c| c.offset),
@@ -376,7 +426,7 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
 }
 
 struct FilmMeta {
-    record: [u8; RECORD_LEN],
+    record: Vec<u8>,
     bounds: [u16; 4],
     width: u16,
     height: u16,
@@ -388,9 +438,11 @@ struct FilmMeta {
 /// Parse the Films metadata region for one resource.
 ///
 /// After the common names table comes the generic `4*N` u32 array, then the
-/// film block: `u16` marker 7, `N` 26-byte records, `u16` palette count and
-/// that many 1024-byte palettes.  The payload starts immediately after the
-/// last palette; checking that equality catches a wrong field boundary.
+/// film block: `u16` marker (7 in the first game, 5 in the sequel), `N`
+/// per-film records, `u16` palette count and that many 1024-byte palettes.
+/// The payload starts immediately after the last palette; that equality is
+/// what pins the record length down, so the length is solved for rather than
+/// assumed.
 fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> {
     let n = container.resource_count as usize;
     if index >= n {
@@ -408,56 +460,67 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
             block
         )
     })?;
-    if marker != 7 {
+    if marker != 7 && marker != 5 {
         bail!(
-            "{}: film metadata marker at {:#x} is {marker}, expected 7",
+            "{}: film metadata marker at {:#x} is {marker}, expected 7 or 5",
             container.path.display(),
             block
         );
     }
 
-    let records_start = block + 2;
-    let records_end = records_start
-        .checked_add(RECORD_LEN * n)
-        .ok_or_else(|| anyhow::anyhow!("film record table overflow"))?;
-    let palette_count = read_u16_checked(data, records_end).with_context(|| {
-        format!(
-            "{}: palette count at {:#x}",
-            container.path.display(),
-            records_end
-        )
-    })? as usize;
-    if palette_count == 0 {
-        bail!("{}: film block has no palette", container.path.display());
-    }
-    let palettes_start = records_end + 2;
-    let palettes_end = palettes_start
-        .checked_add(1024 * palette_count)
-        .ok_or_else(|| anyhow::anyhow!("palette table overflow"))?;
+    // Solve: record_len, palette_count such that
+    //   block + 2 + n*record_len + 2 + 1024*palette_count == payload_start
     let payload_start = container.offsets[0] as usize;
-    if palettes_end != payload_start {
-        bail!(
-            "{}: film metadata ends at {:#x} but payload starts at {:#x}",
-            container.path.display(),
-            palettes_end,
-            payload_start
-        );
+    let mut found: Option<(usize, usize)> = None; // (record_len, palette_count)
+    for record_len in (16..=MAX_RECORD_LEN).step_by(2) {
+        let count_at = block
+            .checked_add(2)
+            .and_then(|v| v.checked_add(record_len * n))
+            .ok_or_else(|| anyhow::anyhow!("film record table overflow"))?;
+        let palette_count = match read_u16_checked(data, count_at) {
+            Ok(v) => v as usize,
+            Err(_) => continue,
+        };
+        if palette_count == 0 || palette_count > 8 {
+            continue;
+        }
+        let palettes_end = match count_at
+            .checked_add(2)
+            .and_then(|v| v.checked_add(1024 * palette_count))
+        {
+            Some(v) => v,
+            None => continue,
+        };
+        if palettes_end == payload_start {
+            found = Some((record_len, palette_count));
+            break;
+        }
     }
-    if palettes_end > data.len() {
+    let (record_len, palette_count) = found.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}: no film record length/palette count ends exactly at the payload start {:#x}",
+            container.path.display(),
+            payload_start
+        )
+    })?;
+
+    let records_start = block + 2;
+    let palette_count_at = records_start + record_len * n;
+    let palettes_start = palette_count_at + 2;
+    if palettes_start + 1024 * palette_count > data.len() {
         bail!(
             "{}: film metadata ends at {:#x}, past the {:#x}-byte file",
             container.path.display(),
-            palettes_end,
+            palettes_start + 1024 * palette_count,
             data.len()
         );
     }
 
-    let record_start = records_start + RECORD_LEN * index;
-    let record_slice = data
-        .get(record_start..record_start + RECORD_LEN)
-        .ok_or_else(|| anyhow::anyhow!("film record {index} is outside the file"))?;
-    let mut record = [0u8; RECORD_LEN];
-    record.copy_from_slice(record_slice);
+    let record_start = records_start + record_len * index;
+    let record = data
+        .get(record_start..record_start + record_len)
+        .ok_or_else(|| anyhow::anyhow!("film record {index} is outside the file"))?
+        .to_vec();
 
     // Bytes +2..+10 are four big-endian u16 values in the order
     // {top, left, bottom, right}.  The shipped film is (0, 0, 410, 546).
@@ -473,7 +536,13 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
     }
     let width = right - left;
     let height = bottom - top;
-    let stride = picture::stride8(width);
+    // The first game pads 8bpp rows to a multiple of four bytes; the sequel
+    // stores rows unpadded (its key frame is exactly width * height bytes).
+    let stride = if container.version == 2 {
+        width as usize
+    } else {
+        picture::stride8(width)
+    };
 
     let palette = data[palettes_start..palettes_start + 1024].to_vec();
 
@@ -529,8 +598,21 @@ fn chunk_payload<'a>(data: &'a [u8], chunk: &Chunk) -> Result<&'a [u8]> {
         .ok_or_else(|| anyhow::anyhow!("chunk at {:#x} is outside the payload", chunk.offset))
 }
 
-fn decode_full_frame(data: &[u8], chunk: &Chunk) -> Result<Vec<u8>> {
+fn decode_full_frame(data: &[u8], chunk: &Chunk, v2: bool) -> Result<Vec<u8>> {
     let payload = chunk_payload(data, chunk)?;
+    if v2 {
+        // The sequel stores the key frame as raw palette indices with no
+        // header and no LZ77: exactly width * height bytes.
+        if payload.len() != 800 * 600 {
+            bail!(
+                "full-frame chunk at {:#x} is {} bytes, expected {} for an 800x600 frame",
+                chunk.offset,
+                payload.len(),
+                800 * 600
+            );
+        }
+        return Ok(payload.to_vec());
+    }
     if payload.len() < 8 {
         bail!("full-frame chunk at {:#x} is too short", chunk.offset);
     }
@@ -561,26 +643,55 @@ fn decode_full_frame(data: &[u8], chunk: &Chunk) -> Result<Vec<u8>> {
 }
 
 /// Decode one delta chunk into `frame`, returning the header's rectangles.
-fn decode_delta(data: &[u8], chunk: &Chunk, frame: &mut [u8]) -> Result<Vec<[u16; 4]>> {
+fn decode_delta(
+    data: &[u8],
+    chunk: &Chunk,
+    frame: &mut [u8],
+    v2: bool,
+) -> Result<Vec<[u16; 4]>> {
     let payload = chunk_payload(data, chunk)?;
     if payload.len() < 168 {
         bail!("delta chunk at {:#x} is too short", chunk.offset);
     }
-    let lz77_len = read_u32(payload, 0, true) as usize;
-    let decoded_len = read_u32(payload, 4, true) as usize;
-    if lz77_len > payload.len() - 168 {
-        bail!(
-            "delta chunk at {:#x} declares {lz77_len} compressed bytes but only {} follow the rect table",
-            chunk.offset,
-            payload.len() - 168
-        );
-    }
+
+    // Layout, first game: [u32 lz77_len][u32 decoded_len][168 bytes of
+    // rects][LZ77 stream] whose output is the RLE data.
+    //
+    // Layout, sequel: [168 bytes of rects][RLE stream] with no LZ77 wrapper.
+    let (rect_off, delta) = if v2 {
+        (0usize, payload[168..].to_vec())
+    } else {
+        let lz77_len = read_u32(payload, 0, true) as usize;
+        let decoded_len = read_u32(payload, 4, true) as usize;
+        if lz77_len > payload.len() - 168 {
+            bail!(
+                "delta chunk at {:#x} declares {lz77_len} compressed bytes but only {} follow the rect table",
+                chunk.offset,
+                payload.len() - 168
+            );
+        }
+        let delta = lz77::decompress(&payload[168..168 + lz77_len]).with_context(|| {
+            format!(
+                "delta chunk at {:#x}: LZ77 stream ({} bytes)",
+                chunk.offset, lz77_len
+            )
+        })?;
+        if delta.len() != decoded_len {
+            bail!(
+                "delta chunk at {:#x}: decoded {} bytes, header says {}",
+                chunk.offset,
+                delta.len(),
+                decoded_len
+            );
+        }
+        (8, delta)
+    };
 
     // Each rect is four u16: top, left, bottom, right.  Store the more
     // conventional left/top/right/bottom order.
     let mut rects = Vec::with_capacity(20);
     for i in 0..20 {
-        let p = 8 + i * 8;
+        let p = rect_off + i * 8;
         let top = read_u16(payload, p, true);
         let left = read_u16(payload, p + 2, true);
         let bottom = read_u16(payload, p + 4, true);
@@ -588,20 +699,6 @@ fn decode_delta(data: &[u8], chunk: &Chunk, frame: &mut [u8]) -> Result<Vec<[u16
         rects.push([left, top, right, bottom]);
     }
 
-    let delta = lz77::decompress(&payload[168..168 + lz77_len]).with_context(|| {
-        format!(
-            "delta chunk at {:#x}: LZ77 stream ({} bytes)",
-            chunk.offset, lz77_len
-        )
-    })?;
-    if delta.len() != decoded_len {
-        bail!(
-            "delta chunk at {:#x}: decoded {} bytes, header says {}",
-            chunk.offset,
-            delta.len(),
-            decoded_len
-        );
-    }
     apply_delta(frame, &delta).with_context(|| {
         format!(
             "delta chunk at {:#x}: cursor-relative RLE ({} bytes)",
@@ -679,7 +776,13 @@ fn checked_span(cursor: i64, count: usize, frame_len: usize) -> Result<usize> {
 
 fn write_film_modern(container: &Container, film: &Film, dir: &Path) -> Result<()> {
     for (i, frame) in film.frames.iter().enumerate() {
-        let rgba = picture::indexed_rgba(&film.palette, &frame.indices, film.width, film.height);
+        let rgba = picture::indexed_rgba_stride(
+            &film.palette,
+            &frame.indices,
+            film.width,
+            film.height,
+            film.stride,
+        );
         let path = dir.join(format!("frame_{i:03}.png"));
         picture::write_png(&path, film.width, film.height, &rgba)
             .with_context(|| format!("writing {}", path.display()))?;
