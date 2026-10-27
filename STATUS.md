@@ -22,6 +22,8 @@ primary target is the **third** game in the series.
 | Extracted films (139 frames) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
 | Extracted sounds (683 WAVs) | `/workspace/extracted/Sounds/{HD,app}/…` |
 | Format findings | `/workspace/docs/PICTURES.md` (+ `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`) |
+| Workspace layout contract | `/workspace/docs/WORKSPACE.md` |
+| Agent instructions | `/workspace/AGENTS.md` (agents.md format) |
 | Game archives (read-only) | `/RawAssets/` (see table below) |
 
 CLI of the deliverable (`src/main.rs`, `src/cli.rs`):
