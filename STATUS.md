@@ -1,10 +1,9 @@
 # DMA (Disney's Magic Artist Deluxe / Magico Artista) — asset extraction status
 
-**Pictures, scripts and films are DONE.** This file is the resume point for
-the remaining asset type (sounds), which was being reverse-engineered by a
-subagent until it hit the free usage limit. Format write-ups live in
-`/workspace/docs/`: `PICTURES.md`, `SCRIPTS.md` and `FILMS.md` (finished),
-plus `SOUNDS.md` as it is understood.
+**All four asset types are DONE** (pictures, sounds, scripts, films).
+Format write-ups live in `/workspace/docs/`: `PICTURES.md`, `SOUNDS.md`,
+`SCRIPTS.md`, `FILMS.md`. Out-of-scope for this repo: the sequel's assets
+(see `docs/SEQUEL.md` if present).
 
 ---
 
@@ -17,6 +16,7 @@ plus `SOUNDS.md` as it is understood.
 | Extracted pictures (30,299 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
 | Extracted scripts (4,813 objects) | `/workspace/extracted/Scripts/HD/…` |
 | Extracted films (139 frames) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
+| Extracted sounds (683 WAVs) | `/workspace/extracted/Sounds/{HD,app}/…` |
 | Format findings | `/workspace/docs/PICTURES.md` (+ `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`) |
 | Game archives (read-only) | `/RawAssets/` (see table below) |
 
@@ -40,7 +40,7 @@ for **all** of them:
 | file | tag | type | status |
 |---|---|---|---|
 | `app.MMP`, `HD.MMP`, `stmp1.MMP`, `stmp2.MMP`, `stmp3.MMP` | Pictures | images | **DONE** — 30,299 PNGs, 105 "odd" reported failed |
-| `HD.MMA`, `app.MMA` | Sounds | audio | stub writes payloads verbatim — RE in progress |
+| `HD.MMA`, `app.MMA` | Sounds | audio | **DONE** — 683 WAVs (8-bit PCM + custom 16-bit DPCM) |
 | `HD.MMS` | Scripts | object DB | **DONE** — 4,813 objects, 3,329,791 payload bytes fully accounted |
 | `DMA.MMF` | Films | video/frames | **DONE** — 1 film, 139 frames of 546×410 + manifest |
 
@@ -76,10 +76,9 @@ for **all** of them:
 * 105 odd payloads (a second-stage/effect sub-format) are **not** decoded —
   reported as failures. Decoder matrix in `/workspace/oddparse_HD.txt`.
 
-Tests: `cargo test --release` → **22/22 pass** against the real assets
-(8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 2 in
-`tests/film_roundtrip.rs`, 3 in `tests/scripts.rs`, 3 unit tests in
-`src/picture.rs`). The color tests include a corpus-wide scan
+Tests: `cargo test --release` → **28/28 pass** against the real assets
+(5 unit tests, 8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 4 in
+`tests/sounds.rs`, 3 in `tests/scripts.rs`, 2 in `tests/film_roundtrip.rs`). The color tests include a corpus-wide scan
 of `/workspace/extracted/Pictures` (30,299 PNGs): it fails if blue is zero on
 more than 15% of opaque pixels or is far more often zero than red/green.
 Current measurement: R 5.81%, G 5.45%, B 8.71%.
@@ -131,7 +130,32 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 * `picture::stride8` / `picture::indexed_rgba` are now `pub(crate)` so the
   film decoder reuses the verified palette expansion.
 
-## 6. Tooling notes
+## 6. Sounds — what is solved (see `docs/SOUNDS.md`)
+
+* Sound metadata is **`14 * N + 2` bytes**, not the picture layout's
+  `15 * N + 4`: a `4*N` Mac-timestamp u32 array, a 2-byte word (`0x0008` in
+  both shipped files), the format byte array `C`, the flags byte array `E`, the
+  (zero) dimension table and the decoded-size table. `Container::open` now
+  branches on this; there is no trailing kind array.
+* `C` (attr byte) = playback format: bits 0-1 sample rate (11025/22050/44100),
+  bit 2 = 16-bit, bit 3 = stereo. `E & 3` = encoding selector: 0 = stored PCM,
+  nonzero = the game's differential codec.
+* Two encodings: **unsigned 8-bit PCM** stored verbatim (192 resources), and a
+  table-driven **differential codec** (491 resources) whose 256-entry `i16`
+  predictor table lives at `DMA4.exe` offset `0x132778` (decoder
+  `FUN_004c6b80`): one stored byte → one signed 16-bit sample, with per-channel
+  predictors and a silence code `0xF8`. Decoded size is `2 ×` stored bytes.
+* All 683 resources decode with zero failures; the decoded-size table is used
+  as an integrity check and any mismatch is reported and skipped.
+* `--original` writes the decoded sample stream verbatim as `.pcm`; modern mode
+  writes `WAVE_FORMAT_PCM` WAVs with the rate/channel/bit depth from `C`
+  (lossless: the tests read each WAV back with `hound` and compare samples).
+* Known-file checks: `Ball30sec.AIF` → 28.799 s at 22,050 Hz stereo, and
+  `silence.aif` → exactly one second of zeros — both confirm the format byte.
+* Open: the `0x0008` word and `C` bits 4-7 are not yet interpreted; the codec
+  has no vendor name in the executable.
+
+## 7. Tooling notes
 
 * **Ghidra 12.2 headless** at `/root/ghidra_12.2_PUBLIC/support/analyzeHeadless`.
   Project `/tmp/ghproj/DMA` already imported (`-process DMA4.exe -noanalysis`).
@@ -151,15 +175,13 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
   `scriptprobe`, `filmprobe`.
 * crates.io reachable; `cargo build --release` works offline.
 
-## 7. Next steps (sounds)
+## 8. Remaining work / known gaps
 
-Each type is being handled by a subagent that:
-1. Parses its container with `Container::open` + a custom probe bin.
-2. Reverse-engineers the per-resource payload encoding (magic bytes first,
-   then Ghidra for the decoder).
-3. Documents findings in `docs/SOUNDS.md` / `FILMS.md`.
-4. Implements extraction in `src/sound.rs` / `src/film.rs` to a modern
-   lossless format, and a `--original` verbatim path.
-5. Adds a round-trip test and runs `cargo test --release`.
+* 105 "odd" picture payloads in `HD.MMP` (an effect-specific sub-format) are
+  still undecoded and reported as failures; see `oddparse_HD.txt`.
+* `docs/SOUNDS.md`, `docs/SCRIPTS.md` and `docs/FILMS.md` each end with an
+  open-questions list (animation opcodes, film record fields and audio PCM,
+  the `0x0008` metadata word, `C` bits 4-7).
+* The sequel (*Disney Magico Artista 2*) is out of scope for this repo.
 
 Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.

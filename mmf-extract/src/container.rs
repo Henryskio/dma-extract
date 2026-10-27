@@ -14,20 +14,22 @@
 //! 0x24  4*(N+1)  u32 offsets; resource i spans [off[i], off[i+1])
 //!         2 bytes  padding
 //!        32*N      resource names, NUL padded ASCII
-//!        4*N      u32 array A (purpose unknown)
+//!        4*N      u32 array (pictures: CRC/hash; sounds: Mac timestamp)
+//!        [2]      2-byte word, sounds only
+//!          N       attribute/format byte array
 //!          N       flags byte array
-//!          N       kind byte array
-//!          2       padding
-//!        4*N      dimension table: {u16 height, u16 width}
-//!        4*N      decompressed size table
-//!          N       "kind" byte array (values 0/1)
-//!          2       padding
+//!        [2]      padding, pictures only
+//!        4*N      dimension table: {u16 height, u16 width} (zero for sounds)
+//!        4*N      decoded-size table
+//!          N       "kind" byte array, pictures only
+//!        [2]      padding, pictures only
 //! ...               resource payloads, concatenated at offsets[0]
 //! ```
 //!
-//! The metadata region between the end of the names and the first payload is
-//! exactly `15 * N + 4` bytes long in every picture container in this game,
-//! which is what pins the field boundaries down.
+//! Picture metadata is exactly `15 * N + 4` bytes; sound metadata is
+//! `14 * N + 2` bytes. Both were measured against every shipped container and
+//! pin the field boundaries down. The sound layout matches the loader in
+//! `DMA4.exe`, which reads the 2-byte word after the timestamp array.
 //!
 //! **Scripts** containers do not follow the picture layout. They have no
 //! 32-byte names table and no picture metadata. Instead, immediately after the
@@ -253,10 +255,16 @@ impl Container {
 
         let names_end = names_base + 32 * n;
 
-        // The metadata region is `15 * N + 4` bytes: a 4*N u32 array, two
-        // N-byte arrays, 2 bytes of padding, the 4*N dimension table, the
-        // 4*N size table, one more N-byte array and 2 bytes of padding.
-        let meta_len = 15 * n + 4;
+        // The metadata region is `15 * N + 4` bytes for picture containers:
+        // a 4*N u32 array, two N-byte arrays, 2 bytes of padding, the 4*N
+        // dimension table, the 4*N size table, one more N-byte array and
+        // 2 bytes of padding. Sounds containers are `14 * N + 2` bytes: they
+        // have the extra 2-byte word *before* the two byte arrays and no
+        // trailing kind array.
+        let meta_len = match kind {
+            ContainerKind::Sounds => 14 * n + 2,
+            _ => 15 * n + 4,
+        };
         let meta_end = names_end + meta_len;
         if meta_end > payload_start || meta_end > data.len() {
             bail!(
@@ -276,8 +284,14 @@ impl Container {
             extra_u32.push(read_u32(&data, extra_base + 4 * i, big_endian));
         }
 
-        // The attribute byte array (object offset 0x278).
-        let attr_base = names_end + 4 * n;
+        // The attribute byte array (object offset 0x278). In a sound
+        // container it sits after the extra 2-byte word instead.
+        let byte_arrays = if kind == ContainerKind::Sounds {
+            extra_base + 4 * n + 2
+        } else {
+            extra_base + 4 * n
+        };
+        let attr_base = byte_arrays;
         let mut attr = Vec::with_capacity(n);
         for i in 0..n {
             attr.push(data[attr_base + i]);
@@ -290,8 +304,13 @@ impl Container {
             flags.push(data[flags_base + i]);
         }
 
-        // 2 bytes of padding, then the dimension table.
-        let dim_base = flags_base + n + 2;
+        // 2 bytes of padding, then the dimension table. The padding exists
+        // only in picture containers.
+        let dim_base = if kind == ContainerKind::Sounds {
+            flags_base + n
+        } else {
+            flags_base + n + 2
+        };
         let mut dimensions = Vec::with_capacity(n);
         for i in 0..n {
             // The pair is {height, width}: the SECOND u16 is the width.
@@ -311,10 +330,13 @@ impl Container {
         }
 
         // The kind byte array (object offset 0x2a8): the palette source.
-        let kind_base = size_base + 4 * n;
+        // Sounds and Films containers have no kind array.
         let mut kinds = Vec::with_capacity(n);
-        for i in 0..n {
-            kinds.push(data[kind_base + i]);
+        if meta_len >= 15 * n + 4 {
+            let kind_base = size_base + 4 * n;
+            for i in 0..n {
+                kinds.push(data[kind_base + i]);
+            }
         }
 
         Ok(Container {

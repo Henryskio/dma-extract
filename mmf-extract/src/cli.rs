@@ -148,8 +148,13 @@ pub fn run(
             }
             ContainerKind::Sounds => {
                 let out_dir = output.join("Sounds").join(&stem);
-                let n = crate::sound::extract_container(&container, &out_dir, original)?;
-                summary.sounds += n;
+                let report = crate::sound::extract_container(&container, &out_dir, original)?;
+                summary.sounds += report.written;
+                for (i, name, why) in report.failed {
+                    summary
+                        .failed
+                        .push(format!("{}: resource {i} '{name}': {why}", path.display()));
+                }
             }
             ContainerKind::Films => {
                 let out_dir = output.join("Films").join(&stem);
