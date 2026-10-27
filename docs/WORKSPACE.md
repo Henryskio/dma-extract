@@ -10,7 +10,7 @@ where it is supposed to live.
 /workspace/
 ├── LICENSE                      # AGPL v3 — covers the code AND the docs
 ├── AGENTS.md                    # instructions for coding agents (agents.md format)
-├── README.md                    # optional human front door (mmf-extract/README.md is the main one)
+├── README.md                     # short human front door; mmf-extract/README.md is the main one
 │
 ├── mmf-extract/                 # THE DELIVERABLE: the Rust extractor
 │   ├── README.md                # what it extracts, usage, notes
