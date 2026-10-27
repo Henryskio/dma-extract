@@ -328,5 +328,31 @@ than guessing. Every other resource in all five containers decodes.
 
 ---
 
+## 8. Colour tests
+
+Colour correctness is covered by automated tests, added after a
+channel-order bug tinted the whole corpus yellow:
+
+* **Unit tests** (`src/picture.rs`): the exact byte mapping
+  `[transparency,R,G,B] → RGBA` (including blue and half-transparent cases),
+  the mask expansion (white RGB, byte as alpha), and the palette entry order.
+* **Named-sprite tests** (`tests/colors.rs`):
+  * `ITXTmustard24` → dominant opaque RGB(255, 239, 90), yellow;
+  * `ITXTcarrot24` → contains green foliage;
+  * `ISbigBALc` → contains warm colours *and* a real cyan/blue;
+  * `IStriFIRa01` (8bpp palette) → contains orange RGB(254, 151, 4);
+  * `MarkerStrokeBANANA04` and `ITeraserPHASE_A05_1` → bare 8bpp decodes as
+    a white coverage mask with many alpha levels.
+* **Corpus scan** (`corpus_has_no_systematic_zero_blue_channel`): decodes all
+  30,299 extracted PNGs and asserts that the fraction of opaque pixels with
+  blue = 0 is below 15% and comparable to the red/green fractions. Current
+  measurement: red 5.81%, green 5.45%, blue 8.71% (the old bug made blue
+  exactly 100%). Pure black is only 4.30%.
+
+`cargo test --release` runs the whole suite (17 tests). The standalone
+`src/bin/imgcheck` prints the same corpus statistics for manual checks.
+
+---
+
 Progress/resume notes for this session live in `/workspace/STATUS.md`;
 the extractor source is `/workspace/mmf-extract`.
