@@ -26,6 +26,9 @@ not re-ploughed.
 | F13 | Every "row sum" failure is the **same signature: the row's run lengths sum to the width, plus trailing bytes**, and it is always at or near the last row. `#112 ITXTcarrot02` row 149 = `[60,06,22]` (=136) + `[94,01,00]`; `#113 ITXTcarrot03` row 124 = `[5b,08,20]` (=131) + `[10]`; game-3 `#750` row 40 = `[3a,06,03]` (=67) + `[c0]`. | `src/bin/oddscan`. 677 such rows in game-2 `app.MMP`. |
 | F14 | For kind-0 resources the second section's 4-byte records have a **sparse first byte** and three payload bytes: `(a, b, c, d)` where `a` is mostly small/zero with occasional large values, and `b, c, d` carry the data. Example run from game-2 `#112` slice 162: `(f9,00,00,00) (40,1e,13,04) (00,44,29,09) (00,47,2a,09) … (0a,28,17,03) (85,06,03,00) (f5,00,00,00)`. Here `b` peaks at 0x79, `c` at 0x3d, `d` at 0x15 — all below the 136-pixel width. | `src/bin/oddslices /tmp/sequel/files/app.MMP 112`. |
 | F15 | Section 1's rows are strikingly uniform in run count — game-2 `#112` has **all 150 rows as exactly 3 runs**; game-3 `#6221` has rows 8–41 as exactly 3 runs while section 2's slice lengths span 13–35 bytes. So the two sections do **not** have matching per-row counts. | `src/bin/oddslices` on both containers. |
+| F16 | **Section 2's 4-byte records are `(T, R, G, B)` colours forming a smooth gradient.** In game-2 `#112` slice 162 the `(R,G,B)` triples rise monotonically from `(30,19,4)` to `(194,121,21)` and fall back to `(0,0,0)` — a glow around the carrot. `T` is 0 (opaque) for almost every record, non-zero only at a few points. | `src/bin/oddslices /tmp/sequel/files/app.MMP 112`. |
+| F17 | Section 2's record count is far larger than section 1's run count, and far smaller than the pixel count. Game-2 `#112`: **486 run-length bytes over 150 rows, 12,925 records, 20,400 pixels**. Game-2 `#113`: 438 runs, 10,160 records, 16,375 pixels. Game-3 `#6221`: 118 runs, 250 records, 1,936 pixels. | `src/bin/oddtot`. |
+| F18 | Section 2 is **not** a flat pixel RLE: reading it as `(count,R,G,B)` or `(R,G,B,count)` or `(count,index)` pairs gives count sums of 1.19 M / 90 k / 1.82 M against 20,400 pixels for `#112` — nowhere close. | `src/bin/oddtot`. |
 
 **F7 — the open question.** Slices `[0..h-1]` give every row's run lengths. Where the colour for each run comes from is unknown.
 
@@ -201,9 +204,48 @@ happens to need) while section 1's run counts stay flat.
 per run, and check that the record counts per slice exactly cover the run
 counts — i.e. whether `sum(records in slice i) == runs in row i` for the
 *concatenated* interpretation, or whether the total record count equals the
-total run count. Game-3 `#6221`: 118 runs vs 250 records (1000/4) — these do not
-match, so this needs the records counted under the kind-1 byte encoding
+total run count. **RESULT: disproved.** Game-2 `#112` has 486 runs and 12,925
+records; `#113` has 438 runs and 10,160 records; game-3 `#6221` has 118 runs and
+250 records. There is no one-record-per-run relationship at any granularity.
+
+### H16 — section 2 is a **colour gradient table consulted by the runs' values**
+F16 shows section 2 holds a smooth `(T,R,G,B)` ramp per row. Section 1's run
+*lengths* are known; if the run's **value is not a length but a colour index**,
+then a 3-byte row would be three colour indices and the "sums to the width"
+property would be a coincidence of the gradient — which it cannot be, given it
+holds for 94,486 of 95,163 rows. So the values in section 1 really are lengths,
+and section 2 must be reached by some other index.
+
+*Decisive test:* for a row with `n` runs, check whether the row's slice in
+section 2 contains exactly `n` records **when the records are read as 4-byte
+units starting at a per-row offset that is itself derived from the table** — i.e.
+whether the table's second-half entries are byte offsets into a record stream
+rather than slice boundaries.
+
+### H17 — the table's second half addresses a **record stream**, and section 1's
+runs consume it with their own cursor
+F17's numbers (486 runs vs 12,925 records for `#112`) make a one-to-one mapping
+impossible, but a *fan-out* is possible: each run might consume several records
+(e.g. one per distinct colour inside the run, or a gradient segment). This would
+also explain why section 2's slice lengths follow a bell curve — the middle rows
+have the longest runs and therefore the most records.
+
+*Decisive test:* for each row, divide the row's record count by its run count and
+check whether the quotient is stable or proportional to the run lengths. For
+`#112` row 147: 3 runs and 14 records; row 148: 3 runs and 11 records — the
+quotient is not stable, so test whether it is proportional to the run lengths
 instead.
+
+### H18 — the two halves are **(run lengths) and (colour stops)**, and the image
+is drawn by interpolating between colour stops
+If section 1 gives `n` run lengths summing to the width and section 2 gives `n+1`
+colour stops for that row, the row is painted by walking the runs and stepping
+through the gradient. The record counts would then exceed the run counts, which
+matches F17.
+
+*Decisive test:* for each row, check whether `records_in_slice == runs_in_row + 1`
+under some alignment, or whether the first and last records of a slice are the
+row's start and end colours.
 
 ---
 
