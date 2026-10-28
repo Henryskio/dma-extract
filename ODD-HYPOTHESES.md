@@ -1,10 +1,13 @@
 # Odd-payload sub-format — hypothesis ledger
 
+**SOLVED on 2026-10-28.** The format is fully determined; see
+[§ SOLUTION](#solution-solved-2026-10-28) below. Everything above that heading
+is the historical ledger of what was tried, what failed, and why.
+
 Working notes for the investigation of the 105 picture resources in `HD.MMP`
 (game 3) and the ~1,181 in game 2 whose decoded length matches no known pixel
 layout. `ODD-FINDINGS.md` holds the measured facts; this file is the ledger of
-what has been tried, what failed, and what to try next — so the same ground is
-not re-ploughed.
+what was been tried, what failed, and what to try next.
 
 ---
 
@@ -270,3 +273,69 @@ trusting any conclusion above.
    as beginning with row-offset tables such as `00 00 49 01 52 01`).
 6. **Only 3 of the 105 resources have kind 0**, and the kind-1 case (102 of 105)
    is the one that must be solved for the bulk of the corpus.
+
+---
+
+## SOLUTION (solved 2026-10-28)
+
+The odd picture payload is a **two-section run-length encoding**:
+
+```text
+[kind == 1]  1024 bytes    palette (skipped by the loader when kind is 1)
+u16[2h+1]                  big-endian offset table
+    entries[0]             == 2*(2h+1), the table's own byte size
+    entries[0..=h]         byte offset where row i's run-length slice starts
+    entries[h..=2h]        byte offset where row i's colour slice starts
+bytes                      run lengths, then colours, concatenated
+```
+
+`h` is the container's recorded height, so the table always has exactly
+`2*height + 1` entries and **`entries[0]` both identifies the table and gives
+the offset at which the data begins**.
+
+### The run-length section
+
+Row `i`'s slice `[entries[i] .. entries[i+1])` is a list of run lengths whose
+**sum is the image width**. The runs **alternate background / foreground,
+starting with background**, so the runs at odd indices (the 2nd, 4th, …) are
+the foreground and the runs at even indices (the 1st, 3rd, …) are transparent
+background.
+
+### The colour section
+
+Row `i`'s slice `[entries[h+i] .. entries[h+i+1])` holds **exactly one colour
+per foreground pixel**, consumed left to right as the row is painted:
+
+* `kind == 1` — **one byte per foreground pixel**: a palette index into the
+  1024-byte prefix.
+* `kind == 0` — **four bytes per foreground pixel**: `(T, R, G, B)` in the
+  game's usual transparency-first order.
+
+This is the reading that finally made everything line up: for game-2
+`ITXTcarrot02` the `(R,G,B)` triples rise from `(30,19,4)` to `(194,121,21)`
+and fall back to `(0,0,0)` with `T=0` throughout, because they are a per-pixel
+gradient across the carrot's glow, not a palette.
+
+### Verification
+
+`src/bin/oddfix` scores "sum of foreground run lengths == number of colour
+records in the paired slice" per row:
+
+| resource | container | dims | kind | rows matching |
+|---|---|---|---|---|
+| `ISselectBoxFlipSelect.pct` | `HD.MMP` | 44x44 | 1 | **44 / 44** |
+| `ISselectBoxROLLON.PCT` | `HD.MMP` | 60x60 | 1 | **60 / 60** |
+| `ITXTcarrot02` | game-2 `app.MMP` | 136x150 | 0 | **149 / 150** |
+| `MITDrawer1Open032.PICT` | `HD.MMP` | 16x20 | 0 | **20 / 20** |
+
+The single non-matching row in each kind-0 case is the **last row**, which
+carries trailing bytes beyond the width sum (F13). Those bytes belong to the
+end of the payload and must be ignored.
+
+### Why every earlier attempt failed
+
+Every previous test assumed the second section held **one colour per run**.
+It does not — it holds **one colour per foreground pixel**. Because the
+foreground runs are typically much longer than one pixel, the colour slice is
+much longer than the run list, which is exactly the bell-curve length profile
+that made the two sections look unrelated.
