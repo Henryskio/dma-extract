@@ -13,7 +13,8 @@
 //! 0x1A   8 bytes  timestamp (double)
 //! 0x1E   2 bytes  u16 resource count N  -- **version 1 only**
 //! 0x22   2 bytes  u16 resource count N  -- versions 2 and 3
-//! 0x24  4*(N+1)  u32 offsets; resource i spans [off[i], off[i+1])
+//! 0x20  4*(N+1)  u32 offsets, version 1; resource i spans [off[i], off[i+1])
+//! 0x24  4*(N+1)  u32 offsets, versions 2 and 3
 //!         2 bytes  padding
 //!        32*N      resource names, NUL padded ASCII
 //!        4*N      u32 array (pictures: CRC/hash; sounds: Mac timestamp)
@@ -28,14 +29,34 @@
 //! ...               resource payloads, concatenated at offsets[0]
 //! ```
 //!
-//! **Version 1** (the first game, 1997) differs in three measured ways:
+//! **Version 1** (the first game, 1997) differs in two measured ways:
 //!
-//! * the resource count is the u16 at `0x1E` — the u16 at `0x22` holds an
-//!   unrelated value (in `HD.PIC` it reads 20288 while the real count is 1681);
-//! * names are 30-byte fields, not 32;
-//! * there is no per-resource metadata region between the names and the first
-//!   payload, and payloads are stored **uncompressed**. The byte range between
-//!   the end of the names and `offsets[0]` is unused padding.
+//! * the resource count is the u16 at `0x1E`, and it is `N` — the u16 at
+//!   `0x22` holds an unrelated value (in `HD.PIC` it reads 20288 while the
+//!   real count is 1682);
+//! * the offsets table starts at **`0x20`**, four bytes earlier than the
+//!   `0x24` the later versions use. The table still holds `N + 1` entries and
+//!   its last entry is the file size, which is what pins the base: in every
+//!   shipped container `u32@(0x20 + 4*N)` equals the file length.
+//!
+//! Names are 32-byte fields in every version, at `0x20 + 4*(N+1) + 2` under
+//! version 1 and `0x24 + 4*(N+1) + 2` under versions 2 and 3.
+//!
+//! Version 1 *does* have a per-resource metadata region, but it is its own
+//! layout, measured against every shipped container and confirmed by the
+//! loader in `DMA1.exe`. All three kinds start with a `4*N` u32 array (sound
+//! containers store Mac timestamps there); what follows differs by kind:
+//!
+//! * **Pictures** — a 2-byte marker of `0x0007`, then `N` flags bytes,
+//!   `N` kind bytes, a `4*N` `{u16 height, u16 width}` dimension table, a
+//!   `4*N` stored-size table (all zeros in the shipped files, so v1 payloads
+//!   read as uncompressed), one more `N` byte array, a u16 palette count and
+//!   then `count` 1024-byte palettes. Total `15*N + 4` plus the bank.
+//! * **Sounds** — one `N` byte array (the format byte) and 2 bytes.
+//! * **Blobs** — nothing beyond the array plus 2 bytes.
+//!
+//! The region must end exactly at `offsets[0]`, and the parser rejects a
+//! container where it does not rather than guessing. See `docs/GAME1.md`.
 //!
 //! Picture metadata is exactly `15 * N + 4` bytes; sound metadata is
 //! `14 * N + 2` bytes. Both were measured against every shipped container and
@@ -48,6 +69,7 @@
 //! table, an array of element counts, an array of type indices, and a string
 //! list of object names. See [`ScriptMeta`] and `docs/SCRIPTS.md`.
 
+use crate::picture::PALETTE_BYTES;
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -213,20 +235,24 @@ impl Container {
             f64::from_le_bytes(ts_bytes)
         };
 
-        // Version 1 stores the *offset-entry count* (N + 1) at 0x1E; versions
-        // 2 and 3 store the resource count N at 0x22. In v1 the 0x22 field
-        // holds an unrelated value (in HD.PIC it reads 20288 while the real
-        // resource count is 1681). Verified against all nine shipped v1
-        // containers: the offsets table runs from 0x24 until an entry equal to
-        // the file size, and that entry index is exactly `u16@0x1E - 1`.
+        // Version 1 (the first game, 1997) stores the **resource count N**
+        // at 0x1E and starts its offsets table at **0x20**, four bytes
+        // earlier than versions 2 and 3 (which store N at 0x22 and start the
+        // table at 0x24). The table holds `N + 1` entries and its last entry
+        // is the file size, which is what pins both the count and the base
+        // down: in every shipped version-1 container `read_u32(0x20 + 4*N)`
+        // equals the file length. Measured on all nine v1 containers
+        // (HD.PIC N=1682, mpApp.PIC 384, pack.PIC 10893, Topolino.CPK 2,
+        // HD.SND 66, mpApp.SND 152, pack.SND 234, pack.BLB 305, HD.mms 295,
+        // pack.mms 988).
         let resource_count = if version == 1 {
-            read_u16(&data, 0x1e, big_endian).saturating_sub(1)
+            read_u16(&data, 0x1e, big_endian)
         } else {
             read_u16(&data, 0x22, big_endian)
         };
         let n = resource_count as usize;
 
-        let off_base = 0x24;
+        let off_base = if version == 1 { 0x20 } else { 0x24 };
         let need = off_base + 4 * (n + 1);
         if data.len() < need {
             bail!(
@@ -276,12 +302,20 @@ impl Container {
             });
         }
 
-        // Version 1 (the first game, 1997) has the same shape as later
-        // versions -- 2 bytes of padding after the offsets table, then 32-byte
-        // name fields -- but **no per-resource metadata region at all**. The
-        // bytes between the end of the names and the first payload are
-        // padding, and payloads are stored uncompressed, which the caller
-        // learns from a zero size table.
+        // Version 1 (the first game, 1997) keeps the later versions' shape --
+        // 2 bytes of padding after the offsets table, then 32-byte name
+        // fields -- but its per-resource metadata region is different and
+        // *smaller* in places. It is measured from the loader in
+        // `DMA1.exe` (`0x4183xx`, the `MMPictureResourceFile` reader) and
+        // verified against the shipped files: the region between the end of
+        // the names and `offsets[0]` is exactly long enough for the arrays
+        // below plus the palette bank, and no longer.
+        //
+        // All three v1 container kinds begin with a `4*N` u32 array. In sound
+        // containers the values decode as Mac timestamps (seconds since
+        // 1904-01-01): `0xaedb282b` is 1997-04-15, matching the game's build
+        // date. In picture containers the same array holds the per-resource
+        // id/handle word the loader uses to look a picture up.
         if version == 1 {
             let names_base = off_base + 4 * (n + 1) + 2;
             let names_len = 32 * n;
@@ -299,6 +333,103 @@ impl Container {
                 let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
                 names.push(String::from_utf8_lossy(&s[..end]).into_owned());
             }
+            let names_end = names_base + names_len;
+
+            // The `4*N` header array, then a container-kind-specific tail.
+            let base = names_end;
+            let need = base + 4 * n;
+            if need > data.len() {
+                bail!(
+                    "{}: version 1 metadata does not fit (need {}, have {})",
+                    path.display(),
+                    need,
+                    data.len()
+                );
+            }
+            let mut extra_u32 = Vec::with_capacity(n);
+            for i in 0..n {
+                extra_u32.push(read_u32(&data, base + 4 * i, big_endian));
+            }
+
+            let mut attr = Vec::new();
+            let mut flags = Vec::new();
+            let mut dimensions = Vec::new();
+            let mut kinds = Vec::new();
+            // No size table exists in v1, so every payload reads as "stored
+            // uncompressed".
+            let sizes = vec![0u32; n];
+
+            let mut cursor = base + 4 * n;
+            match kind {
+                // Pictures: `N` flags, `N` kind bytes, a `4*N` dimension
+                // table, a `4*N` size table, one more `N` byte array, a u16
+                // palette count and then `count` 1024-byte palettes.
+                ContainerKind::Pictures => {
+                    // The 2-byte sub-version marker. Every shipped picture
+                    // container reads 7 here (`0x4183`'s reader requires it).
+                    if read_u16(&data, cursor, big_endian) != 7 {
+                        bail!(
+                            "{}: version 1 picture metadata marker is not 7",
+                            path.display()
+                        );
+                    }
+                    cursor += 2;
+                    flags.reserve(n);
+                    for i in 0..n {
+                        flags.push(data[cursor + i]);
+                    }
+                    cursor += n;
+                    kinds.reserve(n);
+                    for i in 0..n {
+                        kinds.push(data[cursor + i]);
+                    }
+                    cursor += n;
+                    dimensions.reserve(n);
+                    for i in 0..n {
+                        // The pair is {height, width}: the SECOND u16 is the
+                        // width, exactly as in versions 2 and 3.
+                        let h = read_u16(&data, cursor + 4 * i, big_endian);
+                        let w = read_u16(&data, cursor + 4 * i + 2, big_endian);
+                        dimensions.push(Dimension {
+                            width: w,
+                            height: h,
+                        });
+                    }
+                    cursor += 4 * n;
+                    // The 4*N array of stored payload sizes. Every shipped
+                    // container leaves it all zeros, which is why v1 payloads
+                    // read as uncompressed.
+                    cursor += 4 * n;
+                    // One more N-byte array whose meaning is not yet known.
+                    cursor += n;
+                    let palette_count = read_u16(&data, cursor, big_endian);
+                    cursor += 2;
+                    cursor += palette_count as usize * PALETTE_BYTES;
+                }
+                // Sounds: one `N` byte array (the format byte) and 2 bytes of
+                // padding. The 4*N array ahead of it holds the Mac
+                // timestamps.
+                ContainerKind::Sounds => {
+                    attr.reserve(n);
+                    for i in 0..n {
+                        attr.push(data[cursor + i]);
+                    }
+                    cursor += n + 2;
+                }
+                // Blobs: nothing beyond the 4*N array plus 2 bytes.
+                ContainerKind::Blobs => cursor += 2,
+                // Scripts: the layout is still undecoded, so nothing is read.
+                _ => {}
+            }
+            if cursor != payload_start {
+                bail!(
+                    "{}: version 1 metadata ends at {} but the first payload starts at {}",
+                    path.display(),
+                    cursor,
+                    payload_start
+                );
+            }
+
             return Ok(Container {
                 path,
                 data,
@@ -310,15 +441,13 @@ impl Container {
                 resource_count,
                 offsets,
                 names,
-                attr: Vec::new(),
-                flags: Vec::new(),
-                dimensions: Vec::new(),
-                // No size table exists in v1, so every payload reads as
-                // "stored uncompressed".
-                sizes: vec![0; n],
-                extra_u32: Vec::new(),
-                kinds: Vec::new(),
-                names_end: names_base + names_len,
+                attr,
+                flags,
+                dimensions,
+                sizes,
+                extra_u32,
+                kinds,
+                names_end,
                 script: None,
             });
         }

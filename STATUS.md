@@ -9,6 +9,21 @@ numbering) is also extracted** — same engine, same container family, two
 format differences handled; see `docs/SEQUEL.md`. Series order: this repo's
 primary target is the **third** game in the series.
 
+**Game 1 (\*\*\*\*\*\* Magico Artista 1, 1997) is partly extracted.** Its
+`MMFW` containers are **version 1**, and the whole first game used to be
+stuck on one thing: version 1 stores no dimension table, so the extractor
+could not know any picture's geometry and 12,935 of 14,026 pictures failed.
+That is fixed. The dimension table was always there — the version-1 metadata
+block is `15*N + 4` bytes long and holds `{u16 height, u16 width}` pairs, and
+the offsets table starts at `0x20` rather than `0x24`. See `docs/GAME1.md` for
+the measured layout; `tests/game1.rs` pins it down.
+
+Current game-1 totals: 7,146 of 12,961 pictures, 451 of 452 sounds, 305 blobs,
+`--original` byte-exact for 13,717 of 13,718 resources. `HD.PIC` and
+`Topolino.CPK` extract with zero failures; the remaining picture failures are
+two still-undecoded `kind` values (`0x15`, `0x17`) in `mpApp.PIC` and
+`pack.PIC`.
+
 ---
 
 ## 1. Where the work is
@@ -215,3 +230,33 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
   open-questions list (animation opcodes, film record fields and audio PCM,
   the `0x0008` metadata word, `C` bits 4-7).
 Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
+
+---
+
+## 10. The first game's version-1 containers (see `docs/GAME1.md`)
+
+* Source: the original CD image `TOPOLINO.ISO` (548,222,976 bytes), whose
+  `Dati/` folder holds the ten containers and `DMA1.exe`.
+* **Version 1 parses from `0x20`, not `0x24`.** The resource count is the u16
+  at `0x1E` and is `N` (not `N+1`); the offsets table holds `N+1` entries with
+  the last equal to the file size. Reading from `0x24` shifts every resource by
+  one and drops the first, which is why `pack.BLB` used to yield 304 of 305
+  records.
+* **Version 1 *has* a per-resource metadata block**, `15*N + 4` bytes plus the
+  palette bank: a `4*N` u32 handle array, a `0x0007` marker, `N` flags bytes,
+  `N` kind bytes, the `4*N` `{u16 height, u16 width}` **dimension table**, a
+  `4*N` all-zero size table, one `N` byte array, a u16 palette count and the
+  palette bank. Sounds are `5*N + 2` (the handle array holds Mac timestamps,
+  then the format byte); blobs are `4*N + 2`.
+* Extracted: **7,146 of 12,961 pictures, 451 of 452 sounds, 305 blobs**;
+  `--original` is byte-exact for 13,717 of 13,718 resources. `HD.PIC` (1682)
+  and `Topolino.CPK` (2) are at zero failures.
+* 590 of `HD.PIC`'s pictures use the **same two-section run-length sub-format**
+  as games 2 and 3 (`docs/PICTURES.md` §7.3), so that decoder covers all three
+  games.
+* Unresolved: the `0x15`/`0x17` picture sub-format (`37merge*`, `dismag*`,
+  `tooLong*`, `MdyLa*` in `mpApp.PIC`/`pack.PIC`, 5,815 resources), the
+  `goofy 2.6.3` blob payload format, the v1 script object database, and one
+  sound (`SifBtS10.aif`) whose format byte disagrees with its length.
+* Tools: `src/bin/v1pic` reports per-resource dims/kind/layout/decoder, which
+  is what the `tests/game1.rs` floors are measured from.

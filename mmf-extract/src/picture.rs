@@ -33,6 +33,10 @@ pub const PALETTE_BYTES: usize = 1024;
 pub enum PixelFormat {
     /// 32 bits per pixel: transparency (inverted alpha), red, green, blue.
     TranspRgb32,
+    /// 32 bits per pixel with every row padded to a multiple of four bytes.
+    /// The first game stores a handful of pictures this way, which makes the
+    /// payload longer than a flat `4*w*h` array.
+    TranspRgb32Padded,
     /// 8 bits per pixel, with a 1024-byte palette prefix.
     Paletted8,
     /// 8 bits per pixel without a palette: each byte is alpha coverage.
@@ -418,6 +422,46 @@ pub struct Decoded {
 ///
 /// The bit depth is taken from the container's flags byte (bit 0 set means
 /// 8 bits per pixel), and cross-checked against the payload length.
+/// Which decoder consumes `data` for resource `index`, if any.
+///
+/// The selection is driven by the payload length, which is unambiguous: the
+/// container's flags byte is only a hint and the `kind` byte only feeds the
+/// run-length sub-format. Returns `None` when the payload matches no known
+/// layout, so the caller can report the resource as a failure rather than
+/// guessing at it. Shared by [`decode`] and by `src/bin/v1pic.rs`, so the
+/// probe bin reports what the real decoder does rather than a second opinion.
+pub fn pixel_format(container: &Container, index: usize, data: &[u8]) -> Option<PixelFormat> {
+    let dim = container.dimension(index);
+    let (width, height) = (dim.width, dim.height);
+    let pixels = width as usize * height as usize;
+    let as32 = pixels * 4;
+    // 32 bits per pixel with each row padded to a multiple of four bytes. The
+    // first game stores a handful of pictures this way, and the padding makes
+    // the payload longer than a flat `4*w*h` array. It is only distinguishable
+    // from `as32` when the width is not a multiple of four, so the flat layout
+    // is tried first.
+    let stride32 = 4 * stride8(width) * height as usize;
+    let as8 = PALETTE_BYTES + stride8(width) * height as usize;
+    let bare8 = stride8(width) * height as usize;
+
+    if data.len() == as32 {
+        Some(PixelFormat::TranspRgb32)
+    } else if data.len() == stride32 {
+        Some(PixelFormat::TranspRgb32Padded)
+    } else if data.len() == as8 {
+        Some(PixelFormat::Paletted8)
+    } else if pixels > 0 && data.len() == bare8 {
+        // No palette: the bytes are an alpha coverage mask.
+        Some(PixelFormat::AlphaMask8)
+    } else if rle_rgba(data, width, height, container.kind_of(index) == 1).is_some() {
+        // The run-length sub-format; the payload length does not have to match
+        // any raw layout because the runs compress the image.
+        Some(PixelFormat::RunLengthRle)
+    } else {
+        None
+    }
+}
+
 pub fn decode(container: &Container, index: usize) -> Result<Decoded> {
     let raw = container.payload(index);
     // A zero in the container's decompressed-size table means the payload was
@@ -436,30 +480,17 @@ pub fn decode(container: &Container, index: usize) -> Result<Decoded> {
     let dim = container.dimension(index);
     let (width, height) = (dim.width, dim.height);
     let pixels = width as usize * height as usize;
-
-    // Decide the storage layout from the payload length, which is
-    // unambiguous; the flags byte is only a fallback.
     let as32 = pixels * 4;
-    let as8 = PALETTE_BYTES + stride8(width) * height as usize;
-    let bare8 = stride8(width) * height as usize;
+    let stride32 = 4 * stride8(width) * height as usize;
 
-    let format = if data.len() == as32 {
-        PixelFormat::TranspRgb32
-    } else if data.len() == as8 {
-        PixelFormat::Paletted8
-    } else if pixels > 0 && data.len() == bare8 {
-        // No palette: the bytes are an alpha coverage mask.
-        PixelFormat::AlphaMask8
-    } else if rle_rgba(&data, width, height, container.kind_of(index) == 1).is_some() {
-        // The run-length sub-format; the payload length does not have to match
-        // any raw layout because the runs compress the image.
-        PixelFormat::RunLengthRle
-    } else {
+    let Some(format) = pixel_format(container, index, &data) else {
+        let as8 = PALETTE_BYTES + stride8(width) * height as usize;
+        let bare8 = stride8(width) * height as usize;
         bail!(
-            "resource {index} ('{}'): {} bytes match neither the 32bpp ({as32}) nor the 8bpp ({as8}, bare {bare8}) layout of a {width}x{height} picture",
+            "resource {index} ('{}'): {} bytes match neither the 32bpp ({as32} or {stride32} padded) nor the 8bpp ({as8}, bare {bare8}) layout of a {width}x{height} picture",
             container.name(index),
             data.len()
-        )
+        );
     };
 
     let rgba = match format {
@@ -474,6 +505,23 @@ pub fn decode(container: &Container, index: usize) -> Result<Decoded> {
             let mut rgba = Vec::with_capacity(as32);
             for chunk in data[..as32].chunks_exact(4) {
                 rgba.extend_from_slice(&to_rgba([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            }
+            rgba
+        }
+        PixelFormat::TranspRgb32Padded => {
+            // Rows are `4*stride8(width)` bytes apart; the tail of each row is
+            // padding and is skipped.
+            let row = 4 * stride8(width);
+            let mut rgba = Vec::with_capacity(as32);
+            for y in 0..height as usize {
+                let start = y * row;
+                let end = (start + width as usize * 4).min(data.len());
+                for chunk in data[start..end].chunks_exact(4) {
+                    rgba.extend_from_slice(&to_rgba([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+                for _ in (end - start) / 4..width as usize {
+                    rgba.extend_from_slice(&[0, 0, 0, 0]);
+                }
             }
             rgba
         }
