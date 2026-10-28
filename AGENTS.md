@@ -62,6 +62,16 @@ colour/byte claim that the tests do not check.
 * **Do not send images or audio to an AI or paste them in review.** Verify
   renders programmatically with the helper bins (`imgstat`, `imgcheck`,
   `grid`, `chan`) or by decoding PNGs back in tests.
+  * **Exception — other-provider vision APIs.** It *is* allowed to send
+    images to vision models hosted on other providers, so a render can be
+    checked for "is this what the game shows". The reason this rule exists
+    is that Claude Code once forwarded images back into the session's own
+    model API, which errored with "too many images" and wedged the run;
+    nothing about the game assets is at risk. The exception covers Groq
+    (`qwen/qwen3.8-27b`, key in `$GROQ_API_KEY` / `$MSB_GROQ_API_KEY`) and
+    the `thaitea/laya-vision-demo` Hugging Face space. Two constraints
+    survive: **never send to NVIDIA NIM** (the session's own provider),
+    and **never print an API key** — pass it through the environment only.
 * **Payload length is ground truth.** The metadata `flags`/`attr`/`kind` bytes
   are hints only; when they disagree with the byte counts, the byte counts
   win. When a payload matches no known layout, report it as a failure — do not

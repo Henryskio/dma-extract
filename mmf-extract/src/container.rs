@@ -178,6 +178,17 @@ pub struct Container {
     pub kinds: Vec<u8>,
     /// Offset of the end of the names table (start of the metadata region).
     pub names_end: usize,
+    /// Version-1 picture containers only: the palette bank.
+    ///
+    /// The first game stores its palettes at the *end* of the metadata region,
+    /// immediately before the first payload, instead of prefixing them to each
+    /// payload the way versions 2 and 3 do. Each is 1024 bytes (256 entries of
+    /// transparency, red, green, blue), and a run-length sub-format resource
+    /// whose colour records are single palette indices indexes into one of
+    /// them. Measured on all three shipped v1 picture containers: the region
+    /// between the metadata and `offsets[0]` is exactly the u16 count plus
+    /// `count * PALETTE_BYTES` bytes. Empty for every other version and kind.
+    pub palettes: Vec<Vec<u8>>,
     /// Scripts-only object-database metadata. `None` for every other kind.
     pub script: Option<ScriptMeta>,
 }
@@ -298,6 +309,7 @@ impl Container {
                 extra_u32: Vec::new(),
                 kinds: Vec::new(),
                 names_end: metadata_start,
+                palettes: Vec::new(),
                 script: Some(script),
             });
         }
@@ -355,6 +367,7 @@ impl Container {
             let mut flags = Vec::new();
             let mut dimensions = Vec::new();
             let mut kinds = Vec::new();
+            let mut palettes = Vec::new();
             // No size table exists in v1, so every payload reads as "stored
             // uncompressed".
             let sizes = vec![0u32; n];
@@ -404,6 +417,25 @@ impl Container {
                     cursor += n;
                     let palette_count = read_u16(&data, cursor, big_endian);
                     cursor += 2;
+                    // The palette bank: `palette_count` 1024-byte palettes,
+                    // immediately before the first payload. Pictures whose
+                    // `kind` byte asks for a palette index into it rather than
+                    // carrying one inline, which is the only way the
+                    // `palette_of` codes below can find one.
+                    palettes.reserve(palette_count as usize);
+                    for k in 0..palette_count as usize {
+                        let at = cursor + k * PALETTE_BYTES;
+                        let want = at + PALETTE_BYTES;
+                        if want > data.len() {
+                            bail!(
+                                "{}: palette bank overruns the file (need {}, have {})",
+                                path.display(),
+                                want,
+                                data.len()
+                            );
+                        }
+                        palettes.push(data[at..want].to_vec());
+                    }
                     cursor += palette_count as usize * PALETTE_BYTES;
                 }
                 // Sounds: one `N` byte array (the format byte) and 2 bytes of
@@ -448,6 +480,7 @@ impl Container {
                 extra_u32,
                 kinds,
                 names_end,
+                palettes,
                 script: None,
             });
         }
@@ -567,6 +600,7 @@ impl Container {
             extra_u32,
             kinds,
             names_end,
+            palettes: Vec::new(),
             script: None,
         })
     }
@@ -619,6 +653,23 @@ impl Container {
     /// Kind byte of resource `i`.
     pub fn kind_of(&self, i: usize) -> u8 {
         self.kinds.get(i).copied().unwrap_or(0)
+    }
+
+    /// The palette resource `i` index into, or `None` when it carries its own.
+    ///
+    /// Version-1 picture containers keep a palette bank at the end of their
+    /// metadata region, and the first game's run-length sub-format resources
+    /// with one-byte colour records index into it rather than prefixing a
+    /// palette to their payload. Entry 0 is the one used: `mpApp.PIC` ships
+    /// two palettes and the two agree with the vision checks of the decoded
+    /// `dmalog074/079` and `nameLess_230/231` stamps, which all index the low
+    /// numbered entries. This is a judgement resting on the vision check, not
+    /// a measured field — the container carries no per-resource palette
+    /// selector. Empty for versions 2 and 3, which prefix the palette to the
+    /// payload instead.
+    pub fn palette_of(&self, i: usize) -> Option<&[u8]> {
+        let _ = i;
+        self.palettes.first().map(|p| p.as_slice())
     }
 }
 

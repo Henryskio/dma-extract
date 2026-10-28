@@ -173,11 +173,37 @@ Two notes on how those rows were separated:
 
 ### 4.1 Palette handling
 
-`mpApp.PIC` carries a 2-palette bank and `pack.PIC` a 1-palette bank, each
-1024 bytes per palette, stored immediately before the first payload. `HD.PIC`
-has none. Resources that prefix their own 1024-byte palette to the payload
-(`kind 0x02` and `0x06`) do not need the bank; the rest of the 8bpp resources
-are coverage masks the game tints at runtime, as in versions 2 and 3.
+Version 1 stores its palettes in a **bank at the end of the metadata
+region**, immediately before the first payload, rather than prefixing them to
+each payload the way versions 2 and 3 do. A u16 count is followed by `count`
+1024-byte palettes:
+
+| container | palettes in bank |
+|---|---:|
+| `HD.PIC` | 0 |
+| `Topolino.CPK` | 0 |
+| `mpApp.PIC` | 2 |
+| `pack.PIC` | 1 |
+
+The bank is what makes the `0x15`/`0x17` run-length resources decodable: 7,748
+resources in `pack.PIC` and 35 in `mpApp.PIC` have **one-byte colour records
+that are palette indices**, their table starting at offset 0 so no palette can
+be prefixed or suffixed to the payload. Before the bank was plumbed through,
+`picture::decode` had nowhere to look and reported all of them as failures.
+
+`mpApp.PIC` ships two palettes and **nothing in the container says which entry
+a picture indexes into** — there is no per-resource selector field. Entry 0 is
+the one used, and that choice rests on a vision check rather than a measured
+field: rendering `dmalog074`/`dmalog079` and `nameLess_230`/`nameLess_231`
+through both entries and asking `qwen/qwen3.8-27b` which is the intended
+rendering returns "FIRST" (entry 0) for two independent pictures. The two
+entries differ in 254 of 256 slots including the low-numbered ones the
+resources actually use, so the choice is real for those 35 resources and it
+affects colour only — every entry in both palettes is opaque.
+
+Resources with a palette prefixed to the payload (`kind 0x02` and `0x06`) do
+not need the bank at all; it is consulted only as a fallback after every
+in-payload placement has failed to line up.
 
 ### 4.2 The run-length sub-format
 
@@ -276,14 +302,14 @@ game-3 layout.
 |---|---:|---:|
 | sounds | 451 | 1 (`SifBtS10.aif`, see §5) |
 | blobs | 305 | 0 |
-| pictures | 7,146 | 5,815 — almost all `mpApp.PIC`/`pack.PIC` kinds `0x15`/`0x17` |
+| pictures | 9,840 | 3,121 |
 
 `--original` output is byte-exact for **13,717 of 13,718** resources; the one
 exception is the sound that cannot be decoded at all.
 
-`HD.PIC` (1682) and `Topolino.CPK` (2) extract with **zero failures**.
-`mpApp.PIC` reaches 260 of 384 and `pack.PIC` 5202 of 10893; the gap is the
-runoff kinds listed in §4.2, which `src/bin/v1pic` reports per resource:
+`HD.PIC` (1682) and `Topolino.CPK` (2) extract with **zero failures**;
+`mpApp.PIC` reaches 274 of 384 and `pack.PIC` 7,882 of 10,893.
+`src/bin/v1pic` reports what each resource is stored as, per resource:
 
 ```sh
 ./target/release/v1pic /PathAssets/Dati/HD.PIC
@@ -303,6 +329,11 @@ runoff kinds listed in §4.2, which `src/bin/v1pic` reports per resource:
 | sound format byte is the `N` byte array | **measured** position; bit meaning **open** (§5) |
 | payloads uncompressed | **measured** on pictures and sounds |
 | picture pixel word is `[T,R,G,B]` | **measured** on `HD.PIC` resource 0 |
-| kinds `0x15`/`0x17` payload format | **unknown** — reported as failures |
+| kinds `0x15`/`0x17` payload format | **measured** for the 7,748 `pack.PIC`
+  resources — RLE with 1-byte palette-index colour records; the remainder
+  still fail |
+| kinds `0x02`/`0x06` payload format | **unknown** — no table, no raw layout |
+| which palette entry `mpApp.PIC` indexes into | **judgement**, not measured —
+  entry 0, confirmed by `qwen/qwen3.8-27b` on two pictures (§4.1) |
 | v1 script object-database layout | **unknown** — reported as failures |
 | `goofy 2.6.3` identifies a video codec | **inferred** from the string alone |

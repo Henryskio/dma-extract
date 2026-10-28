@@ -18,11 +18,9 @@ block is `15*N + 4` bytes long and holds `{u16 height, u16 width}` pairs, and
 the offsets table starts at `0x20` rather than `0x24`. See `docs/GAME1.md` for
 the measured layout; `tests/game1.rs` pins it down.
 
-Current game-1 totals: 7,146 of 12,961 pictures, 451 of 452 sounds, 305 blobs,
-`--original` byte-exact for 13,717 of 13,718 resources. `HD.PIC` and
-`Topolino.CPK` extract with zero failures; the remaining picture failures are
-two still-undecoded `kind` values (`0x15`, `0x17`) in `mpApp.PIC` and
-`pack.PIC`.
+Current game-1 totals: **9,840 of 12,961 pictures**, 451 of 452 sounds, 305
+blobs, `--original` byte-exact for 13,717 of 13,718 resources. `HD.PIC` and
+`Topolino.CPK` extract with zero failures; `pack.PIC` reaches 7,882 of 10,893.
 
 ---
 
@@ -248,15 +246,21 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   `4*N` all-zero size table, one `N` byte array, a u16 palette count and the
   palette bank. Sounds are `5*N + 2` (the handle array holds Mac timestamps,
   then the format byte); blobs are `4*N + 2`.
-* Extracted: **7,146 of 12,961 pictures, 451 of 452 sounds, 305 blobs**;
-  `--original` is byte-exact for 13,717 of 13,718 resources. `HD.PIC` (1682)
-  and `Topolino.CPK` (2) are at zero failures.
+* Extracted: **9,840 of 12,961 pictures, 451 of 452 sounds, 305 blobs**;
+  `--original` is byte-exact for 13,717 of 13,718 resources. `HD.PIC` (1682),
+  `Topolino.CPK` (2) and most of `mpApp.PIC` (274/384) are at zero failures.
 * 590 of `HD.PIC`'s pictures use the **same two-section run-length sub-format**
   as games 2 and 3 (`docs/PICTURES.md` §7.3), so that decoder covers all three
   games.
-* Unresolved: the `0x15`/`0x17` picture sub-format (`37merge*`, `dismag*`,
-  `tooLong*`, `MdyLa*` in `mpApp.PIC`/`pack.PIC`, 5,815 resources), the
-  `goofy 2.6.3` blob payload format, the v1 script object database, and one
-  sound (`SifBtS10.aif`) whose format byte disagrees with its length.
+* **Version 1 keeps its palettes in a bank at the end of the metadata
+  region**, not prefixed to the payload, so the run-length decoder needed the
+  bank plumbed through to read the 7,748 `kind 0x17` pictures in `pack.PIC`
+  whose colour records are single palette indices. `mpApp.PIC` ships two
+  entries with no per-resource selector; entry 0 is a vision-confirmed
+  judgement, not a measurement.
+* Unresolved: the `kind 0x02`/`0x06` picture sub-format (no `2h+1` table and no
+  raw layout, roughly 1,500 resources), the `goofy 2.6.3` blob payload format,
+  the v1 script object database, and one sound (`SifBtS10.aif`) whose format
+  byte disagrees with its length.
 * Tools: `src/bin/v1pic` reports per-resource dims/kind/layout/decoder, which
   is what the `tests/game1.rs` floors are measured from.

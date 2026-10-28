@@ -148,11 +148,19 @@ pub(crate) fn stride8(width: u16) -> usize {
 ///
 /// Returns `None` when the payload does not have this shape, so the caller can
 /// fall back to reporting the resource as undecodable rather than guessing.
-pub(crate) fn rle_rgba(data: &[u8], width: u16, height: u16, has_palette: bool) -> Option<Vec<u8>> {
+pub(crate) fn rle_rgba(
+    data: &[u8],
+    width: u16,
+    height: u16,
+    has_palette: bool,
+    bank: Option<&[u8]>,
+) -> Option<Vec<u8>> {
     // The palette is normally a prefix when the container says kind == 1, but
     // some resources (the sequel's `TtuPt_*`) keep the table at offset 0 and
-    // either carry no palette at all or suffix it. Try every placement and
-    // keep the one whose per-row colour counts line up exactly.
+    // either carry no palette at all or suffix it. The first game goes further
+    // and keeps its palettes out of the payload entirely, in a bank at the end
+    // of the metadata region, so the bank is the last place to look. Try every
+    // placement and keep the one whose per-row colour counts line up exactly.
     let mut bases: Vec<usize> = vec![0];
     if data.len() > PALETTE_BYTES {
         bases.push(PALETTE_BYTES);
@@ -163,15 +171,19 @@ pub(crate) fn rle_rgba(data: &[u8], width: u16, height: u16, has_palette: bool) 
         if table_base > data.len() {
             continue;
         }
-        // kind 1: one palette index per foreground pixel, so a palette must be
-        // available somewhere that does not overlap the table. kind 0: four
+        // rec 1: one palette index per foreground pixel, so a palette must be
+        // available somewhere that does not overlap the table. rec 4: four
         // bytes per foreground pixel and no palette.
         for rec in [1usize, 4] {
-            let palette_sources: Vec<Option<usize>> = if rec == 1 {
-                vec![Some(0), Some(PALETTE_BYTES), Some(data.len() - PALETTE_BYTES), None]
+            let mut palette_sources: Vec<Option<usize>> = if rec == 1 {
+                vec![Some(0), Some(PALETTE_BYTES), Some(data.len() - PALETTE_BYTES)]
             } else {
-                vec![None]
+                Vec::new()
             };
+            // The container's palette bank: 7,748 `pack.PIC` resources index
+            // into it, because their table starts at offset 0 and no palette
+            // is prefixed or suffixed to the payload.
+            palette_sources.push(None);
             for pal_at in palette_sources {
                 let palette: Option<&[u8]> = match pal_at {
                     Some(off) if off + PALETTE_BYTES <= data.len() => {
@@ -185,6 +197,16 @@ pub(crate) fn rle_rgba(data: &[u8], width: u16, height: u16, has_palette: bool) 
                         }
                     }
                     _ => None,
+                };
+                // Fall back to the bank only when the payload has no palette
+                // of its own at this placement; `rows_line_up` below is what
+                // decides whether the result is right.
+                let palette = match (palette, bank) {
+                    (Some(p), _) => Some(p),
+                    (None, Some(b)) if rec == 1 && b.len() >= PALETTE_BYTES => {
+                        Some(&b[..PALETTE_BYTES])
+                    }
+                    (None, _) => None,
                 };
                 if rec == 1 && palette.is_none() {
                     continue;
@@ -453,7 +475,15 @@ pub fn pixel_format(container: &Container, index: usize, data: &[u8]) -> Option<
     } else if pixels > 0 && data.len() == bare8 {
         // No palette: the bytes are an alpha coverage mask.
         Some(PixelFormat::AlphaMask8)
-    } else if rle_rgba(data, width, height, container.kind_of(index) == 1).is_some() {
+    } else if rle_rgba(
+        data,
+        width,
+        height,
+        container.kind_of(index) == 1,
+        container.palette_of(index),
+    )
+    .is_some()
+    {
         // The run-length sub-format; the payload length does not have to match
         // any raw layout because the runs compress the image.
         Some(PixelFormat::RunLengthRle)
@@ -527,8 +557,14 @@ pub fn decode(container: &Container, index: usize) -> Result<Decoded> {
         }
         PixelFormat::Paletted8 => indexed_rgba(&data[..PALETTE_BYTES], &data[PALETTE_BYTES..], width, height),
         PixelFormat::AlphaMask8 => mask_rgba(&data, width, height),
-        PixelFormat::RunLengthRle => rle_rgba(&data, width, height, container.kind_of(index) == 1)
-            .unwrap_or_default(),
+        PixelFormat::RunLengthRle => rle_rgba(
+            &data,
+            width,
+            height,
+            container.kind_of(index) == 1,
+            container.palette_of(index),
+        )
+        .unwrap_or_default(),
     };
 
     Ok(Decoded {
