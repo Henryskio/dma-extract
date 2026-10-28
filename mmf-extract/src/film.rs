@@ -59,15 +59,6 @@ fn full_frame_kind(container: &Container) -> u16 {
     }
 }
 
-/// Chunk number for a delta frame of this container.
-fn delta_kind(container: &Container) -> u16 {
-    if is_film_v2(container) {
-        TYPE_DELTA_V2
-    } else {
-        TYPE_DELTA
-    }
-}
-
 /// Longest per-film record seen in a Films container.
 ///
 /// The first game's record is 26 bytes; the sequel's is 22.  The parser

@@ -5,13 +5,14 @@
 //!
 //! ```text
 //! 0x00  16 bytes  signature: "MMFW " + tag, NUL padded
-//!                tag = "Pictures" | "Sounds" | "Films" | "Scripts"
+//!                tag = "Pictures" | "Sounds" | "Films" | "Scripts" | "Blobs"
 //! 0x10   2 bytes  endian marker: "MM" (big-endian) or "II" (little-endian)
 //! 0x12   2 bytes  u16 version; 3 in the first game, 2 in the sequel
 //!                (both parse identically)
 //! 0x14   6 bytes  file id
 //! 0x1A   8 bytes  timestamp (double)
-//! 0x22   2 bytes  u16 resource count N
+//! 0x1E   2 bytes  u16 resource count N  -- **version 1 only**
+//! 0x22   2 bytes  u16 resource count N  -- versions 2 and 3
 //! 0x24  4*(N+1)  u32 offsets; resource i spans [off[i], off[i+1])
 //!         2 bytes  padding
 //!        32*N      resource names, NUL padded ASCII
@@ -26,6 +27,15 @@
 //!        [2]      padding, pictures only
 //! ...               resource payloads, concatenated at offsets[0]
 //! ```
+//!
+//! **Version 1** (the first game, 1997) differs in three measured ways:
+//!
+//! * the resource count is the u16 at `0x1E` — the u16 at `0x22` holds an
+//!   unrelated value (in `HD.PIC` it reads 20288 while the real count is 1681);
+//! * names are 30-byte fields, not 32;
+//! * there is no per-resource metadata region between the names and the first
+//!   payload, and payloads are stored **uncompressed**. The byte range between
+//!   the end of the names and `offsets[0]` is unused padding.
 //!
 //! Picture metadata is exactly `15 * N + 4` bytes; sound metadata is
 //! `14 * N + 2` bytes. Both were measured against every shipped container and
@@ -47,6 +57,9 @@ pub enum ContainerKind {
     Pictures,
     Sounds,
     Films,
+    /// Undifferentiated opaque payloads. The first game uses one to carry
+    /// its videos (`pack.BLB`, tag "Blobs").
+    Blobs,
     Scripts,
     Unknown,
 }
@@ -57,9 +70,10 @@ impl ContainerKind {
             "Pictures" => Self::Pictures,
             "Sounds" => Self::Sounds,
             "Films" => Self::Films,
-            // The first game writes "MMFW Scripts"; the sequel writes
-            // "MMFW 3 Script" for the same container family.
-            "Scripts" | "3 Script" => Self::Scripts,
+            "Blobs" => Self::Blobs,
+            // The first game writes "MMFW Script"; the third writes
+            // "MMFW Scripts"; the second "MMFW 3 Script".
+            "Scripts" | "3 Script" | "Script" => Self::Scripts,
             _ => Self::Unknown,
         }
     }
@@ -180,10 +194,11 @@ impl Container {
         };
 
         let version = read_u16(&data, 0x12, big_endian);
-        // Both games ship containers with these two version numbers and the
-        // metadata layout measured below is identical in each; anything else
-        // is a different writer and is rejected rather than guessed at.
-        if version != 3 && version != 2 {
+        // Version 3 = the third game, 2 = the second game, 1 = the first
+        // game. The metadata layout measured below is identical in each, but
+        // an unknown version means an unmeasured writer, so it is rejected
+        // rather than guessed at.
+        if version != 3 && version != 2 && version != 1 {
             bail!("{}: unexpected version {}", path.display(), version);
         }
 
@@ -198,7 +213,17 @@ impl Container {
             f64::from_le_bytes(ts_bytes)
         };
 
-        let resource_count = read_u16(&data, 0x22, big_endian);
+        // Version 1 stores the *offset-entry count* (N + 1) at 0x1E; versions
+        // 2 and 3 store the resource count N at 0x22. In v1 the 0x22 field
+        // holds an unrelated value (in HD.PIC it reads 20288 while the real
+        // resource count is 1681). Verified against all nine shipped v1
+        // containers: the offsets table runs from 0x24 until an entry equal to
+        // the file size, and that entry index is exactly `u16@0x1E - 1`.
+        let resource_count = if version == 1 {
+            read_u16(&data, 0x1e, big_endian).saturating_sub(1)
+        } else {
+            read_u16(&data, 0x22, big_endian)
+        };
         let n = resource_count as usize;
 
         let off_base = 0x24;
@@ -221,7 +246,10 @@ impl Container {
         // Scripts containers have no names table and no picture metadata.
         // Their serialized object database starts immediately after the
         // offset table, with no padding.
-        if kind == ContainerKind::Scripts {
+        // Version-1 Script containers carry a different, still-undecoded
+        // layout (their object database does not start right after the
+        // offsets table). They are rejected rather than guessed at.
+        if kind == ContainerKind::Scripts && version != 1 {
             let metadata_start = off_base + 4 * (n + 1);
             let script =
                 parse_script_meta(&path, &data, metadata_start, payload_start, n, big_endian)?;
@@ -245,6 +273,53 @@ impl Container {
                 kinds: Vec::new(),
                 names_end: metadata_start,
                 script: Some(script),
+            });
+        }
+
+        // Version 1 (the first game, 1997) has the same shape as later
+        // versions -- 2 bytes of padding after the offsets table, then 32-byte
+        // name fields -- but **no per-resource metadata region at all**. The
+        // bytes between the end of the names and the first payload are
+        // padding, and payloads are stored uncompressed, which the caller
+        // learns from a zero size table.
+        if version == 1 {
+            let names_base = off_base + 4 * (n + 1) + 2;
+            let names_len = 32 * n;
+            if names_base + names_len > data.len() {
+                bail!(
+                    "{}: version 1 names table does not fit (need {}, have {})",
+                    path.display(),
+                    names_base + names_len,
+                    data.len()
+                );
+            }
+            let mut names = Vec::with_capacity(n);
+            for i in 0..n {
+                let s = &data[names_base + 32 * i..names_base + 32 * (i + 1)];
+                let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+                names.push(String::from_utf8_lossy(&s[..end]).into_owned());
+            }
+            return Ok(Container {
+                path,
+                data,
+                kind,
+                big_endian,
+                version,
+                file_id,
+                timestamp,
+                resource_count,
+                offsets,
+                names,
+                attr: Vec::new(),
+                flags: Vec::new(),
+                dimensions: Vec::new(),
+                // No size table exists in v1, so every payload reads as
+                // "stored uncompressed".
+                sizes: vec![0; n],
+                extra_u32: Vec::new(),
+                kinds: Vec::new(),
+                names_end: names_base + names_len,
+                script: None,
             });
         }
 

@@ -22,6 +22,8 @@ pub struct AssetSelection {
     pub sounds: bool,
     pub films: bool,
     pub scripts: bool,
+    /// Opaque payload containers (`Blobs`) — written verbatim in both modes.
+    pub blobs: bool,
 }
 
 impl AssetSelection {
@@ -35,6 +37,7 @@ impl AssetSelection {
             sounds: false,
             films: false,
             scripts: false,
+            blobs: false,
         };
         for raw in names {
             for part in raw.split(',') {
@@ -48,18 +51,20 @@ impl AssetSelection {
                         sel.sounds = true;
                         sel.films = true;
                         sel.scripts = true;
+                        sel.blobs = true;
                     }
                     "pictures" | "picture" | "images" | "image" => sel.pictures = true,
                     "sounds" | "sound" | "audio" => sel.sounds = true,
                     "films" | "film" | "videos" | "video" => sel.films = true,
                     "scripts" | "script" => sel.scripts = true,
+                    "blobs" | "blob" => sel.blobs = true,
                     other => anyhow::bail!(
-                        "unknown asset type '{other}' (expected all, pictures, sounds, films or scripts)"
+                        "unknown asset type '{other}' (expected all, pictures, sounds, films, scripts or blobs)"
                     ),
                 }
             }
         }
-        if !(sel.pictures || sel.sounds || sel.films || sel.scripts) {
+        if !(sel.pictures || sel.sounds || sel.films || sel.scripts || sel.blobs) {
             anyhow::bail!("no asset types selected");
         }
         Ok(sel)
@@ -72,6 +77,7 @@ impl AssetSelection {
             ContainerKind::Sounds => self.sounds,
             ContainerKind::Films => self.films,
             ContainerKind::Scripts => self.scripts,
+            ContainerKind::Blobs => self.blobs,
             ContainerKind::Unknown => false,
         }
     }
@@ -84,12 +90,13 @@ pub struct Summary {
     pub sounds: usize,
     pub films: usize,
     pub scripts: usize,
+    pub blobs: usize,
     pub failed: Vec<String>,
 }
 
 impl Summary {
     pub fn total(&self) -> usize {
-        self.pictures + self.sounds + self.films + self.scripts
+        self.pictures + self.sounds + self.films + self.scripts + self.blobs
     }
 }
 
@@ -171,6 +178,24 @@ pub fn run(
                 let out_dir = output.join("Scripts").join(&stem);
                 let n = crate::script::extract_container(&container, &out_dir, original)?;
                 summary.scripts += n;
+            }
+            ContainerKind::Blobs => {
+                // Opaque payloads. The first game's Blobs container is
+                // undecoded, so both modes write the stored bytes verbatim;
+                // the extension records which container a payload came from.
+                let out_dir = output.join("Blobs").join(&stem);
+                std::fs::create_dir_all(&out_dir)?;
+                for index in 0..container.resource_count as usize {
+                    let name = sanitize(container.name(index), index);
+                    let file = out_dir.join(format!("{index:05}_{name}.blb"));
+                    if let Err(e) = std::fs::write(&file, container.payload(index)) {
+                        summary
+                            .failed
+                            .push(format!("{}: resource {index} '{name}': {e}", path.display()));
+                    } else {
+                        summary.blobs += 1;
+                    }
+                }
             }
             ContainerKind::Unknown => {}
         }
@@ -263,6 +288,9 @@ pub fn print_summary(summary: &Summary) {
     }
     if summary.scripts > 0 {
         eprintln!("  scripts:  {}", summary.scripts);
+    }
+    if summary.blobs > 0 {
+        eprintln!("  blobs:    {}", summary.blobs);
     }
     eprintln!("  total:    {}", summary.total());
     if !summary.failed.is_empty() {
