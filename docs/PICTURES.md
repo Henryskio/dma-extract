@@ -312,26 +312,63 @@ old channel order was an artifact of the blue-channel bug). The extractor now
 writes them as white RGBA with `alpha = byte`, which preserves the mask
 exactly; `--original` writes the raw coverage bytes.
 
-### 7.3 The 105 odd payloads (still open)
+### 7.3 The 105 odd payloads (resolved: a two-section run-length format)
 
 Their `attr`/`flags` bytes cluster as `attr=0x31, flags=0x1d` (98 of them),
 plus a few `MITDrawer1Open032/033/034` (`attr=0x30, flags=0x0c/0x1c`). They
-decode from LZ77 to a length that matches **no** pixel layout, e.g.
+decompress to a length that matches **no** raw pixel layout, because they are
+not raw pixels at all: the payload is a **run-length description**.
 
-* `ISselectBoxFlipSelect.pct` 44x44 → 2320 bytes (would need 1936 or 7744):
-  `ff000000 eb000000 8e000000 58000000 1b000000 00000000 36000000 …`
-* `ISsingleStampBWRender.PCT` 60x60 → 1557 bytes (would need 3600/14400/4624):
-  `ff000000 d4000000 b0000000 90000000 27090909 00000000 49090909 f6000000
-  0a808080 0ad0d0d0 0a737373 …` — runs that look like `(count, colour)`.
-* `MITDrawer1Open032.PICT` 16x20 → 820 bytes: a smooth big-endian u16 ramp
-  `0052 0054 0056 0058 005a …`, i.e. a LUT rather than pixels.
+```text
+[kind == 1]  1024 bytes  palette (skipped by the loader when kind is 1)
+u16[2h+1]                big-endian offset table, h = the container's height
+    entries[0]           the table's own byte size, 2*(2h+1); it is also the
+                         offset at which the data begins
+    entries[0..=h]       byte offset where row i's run-length slice starts
+    entries[h..=2h]      byte offset where row i's colour slice starts
+bytes                    run lengths, then colours, concatenated
+```
 
-A decoder matrix (PackBits plus `(count,byte)`/`(count,3)`/`(count,4)` RLE
-with `0→1` and `0→256`) scored **0 hits on all 105** — see
-`/workspace/oddparse_HD.txt`. These are a distinct sub-format (a second-stage
-compression or an effect-specific layout, e.g. the "select box" and "stamp
-render" UI elements) that the extractor currently reports as *failed* rather
-than guessing. Every other resource in all five containers decodes.
+Row `i`'s run lengths are the bytes `[entries[i], entries[i+1])` and **sum to
+the image width**. The runs **alternate background / foreground, starting with
+background**, so the runs at odd indices paint pixels and the ones at even
+indices are fully transparent.
+
+Row `i`'s colour slice `[entries[h+i], entries[h+i+1])` holds **exactly one
+colour per foreground pixel**, consumed left to right:
+
+* `kind == 1` — one **palette index** per foreground pixel, into the
+  1024-byte prefix;
+* `kind == 0` — four bytes per foreground pixel, `(T, R, G, B)`, the same
+  transparency-first order as everywhere else.
+
+The single fact that unlocked this was that the colour slice is **one colour
+per foreground pixel**, not one per run. That is why the colour slice is much
+longer than the run list — the per-row slice lengths follow a bell curve
+because the middle rows have the longest foreground runs — and why rows that
+are a single full-width background run have an **empty** colour slice.
+
+Verified on `HD.MMP` with `src/bin/oddfix`, which scores
+`sum(foreground run lengths) == number of colour records` per row:
+
+| resource | dims | kind | rows matching |
+|---|---|---|---|
+| `ISselectBoxFlipSelect.pct` | 44x44 | 1 | 44 / 44 |
+| `ISselectBoxROLLON.PCT` | 60x60 | 1 | 60 / 60 |
+| `MITDrawer1Open032.PICT` | 16x20 | 0 | 20 / 20 |
+| `ISsingleStampBWRender.PCT` | 60x60 | 1 | 60 / 60 |
+
+The same format is present in the sequel's `app.MMP`, where 1,177 of 1,181
+odd resources carry the identical `2h+1` table (`src/bin/oddscan`).
+
+The last row of a `kind == 0` payload carries a few trailing bytes past the
+width sum; they are not pixels and are ignored.
+
+Rendered results confirm the reading rather than merely satisfying it:
+`ISsingleStampBWRender.PCT` decodes to a greyscale ramp (255 / 128 / 45 / 9),
+matching its name; `ISselectBoxFlipSelect.pct` produces white, red
+`(205,29,20)` and 47 distinct semi-transparent tones — a selection highlight.
+All 105 resources now decode; `HD.MMP` has **zero** failures.
 
 ---
 

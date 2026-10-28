@@ -17,7 +17,7 @@ primary target is the **third** game in the series.
 |---|---|
 | Final Rust extractor (the deliverable) | `/workspace/mmf-extract` |
 | Builds offline | `cargo build --release` → `target/release/mmf-extract` |
-| Extracted pictures (30,299 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
+| Extracted pictures (30,404 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
 | Extracted scripts (4,813 objects) | `/workspace/extracted/Scripts/HD/…` |
 | Extracted films (139 frames) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
 | Extracted sounds (683 WAVs) | `/workspace/extracted/Sounds/{HD,app}/…` |
@@ -46,7 +46,7 @@ for **all** of them:
 
 | file | tag | type | status |
 |---|---|---|---|
-| `app.MMP`, `HD.MMP`, `stmp1.MMP`, `stmp2.MMP`, `stmp3.MMP` | Pictures | images | **DONE** — 30,299 PNGs, 105 "odd" reported failed |
+| `app.MMP`, `HD.MMP`, `stmp1.MMP`, `stmp2.MMP`, `stmp3.MMP` | Pictures | images | **DONE** — 30,404 PNGs, 0 failures (the 105 odd payloads now decode) |
 | `HD.MMA`, `app.MMA` | Sounds | audio | **DONE** — 683 WAVs (8-bit PCM + custom 16-bit DPCM) |
 | `HD.MMS` | Scripts | object DB | **DONE** — 4,813 objects, 3,329,791 payload bytes fully accounted |
 | `DMA.MMF` | Films | video/frames | **DONE** — 1 film, 139 frames of 546×410 + manifest |
@@ -80,13 +80,19 @@ for **all** of them:
   0 = transparent; white + alpha in PNG), *not* palette images. Verified
   spatially with `src/bin/grid` (banana-shaped ramp, uniform eraser field,
   nib gradients). The earlier "borrowed palette" rule was wrong and removed.
-* 105 odd payloads (a second-stage/effect sub-format) are **not** decoded —
-  reported as failures. Decoder matrix in `/workspace/oddparse_HD.txt`.
+* 105 odd payloads are a **two-section run-length format**, now fully decoded
+  (see `docs/PICTURES.md` §7.3). After the optional 1024-byte palette there is
+  a big-endian u16 table of `2*height+1` entries whose first entry is the
+  table's own byte size; the first half of the table addresses each row's run
+  lengths (which sum to the width and alternate background/foreground starting
+  with background), and the second half addresses each row's **colour records —
+  one per foreground pixel** (a palette index when kind is 1, four bytes
+  `(T,R,G,B)` when kind is 0). The same format is in the sequel's `app.MMP`.
 
-Tests: `cargo test --release` → **28/28 pass** against the real assets
+Tests: `cargo test --release` → **33/33 pass** against the real assets
 (5 unit tests, 8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 4 in
 `tests/sounds.rs`, 3 in `tests/scripts.rs`, 2 in `tests/film_roundtrip.rs`). The color tests include a corpus-wide scan
-of `/workspace/extracted/Pictures` (30,299 PNGs): it fails if blue is zero on
+of `/workspace/extracted/Pictures` (30,404 PNGs): it fails if blue is zero on
 more than 15% of opaque pixels or is far more often zero than red/green.
 Current measurement: R 5.81%, G 5.45%, B 8.71%.
 
@@ -191,18 +197,20 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
   3 and rejected every file), and films use marker **5** with 22-byte
   records, chunk numbers `0x00`/`0x01`, an unpadded raw key frame and
   RLE deltas with no LZ77 wrapper. The film record length is solved from the
-  file layout, so both games parse.
-* Extracted: **38,447 pictures**, **891 sounds**, **1 film** (193 frames of
-  800×600). 1,181 pictures are the same undecoded "odd payload" sub-format as
-  game 3 (RLE-like: `ITstampareaHOTSPOT*`, `ttpmo_*`, `TtuPt_*`, …).
+  file layout, so both games parse. The 1,181 "odd payload" pictures decode with the same two-section run-length format as game 3 (`docs/PICTURES.md` §7.3), so `app.MMP` and `HD.MMP` now extract with **zero** failures.
+* Extracted: **39,628 pictures**, **891 sounds**, **1 film** (193 frames of
+  800×600). 1,181 pictures used the same undecoded "odd payload" sub-format as
+  game 3 (`ITstampareaHOTSPOT*`, `ttpmo_*`, `TtuPt_*`, …); that format is now
+  solved — see `docs/PICTURES.md` §7.3 — so they decode too.
 * Unresolved: the second game's `Hd.mms` (`MMFW 3 Script`, `II`, version 2)
   does not match the game-3 object database layout, and 7 of 147 film deltas
   drive the cursor negative.
 
 ## 9. Remaining work / known gaps
 
-* 105 "odd" picture payloads in `HD.MMP` (an effect-specific sub-format) are
-  still undecoded and reported as failures; see `oddparse_HD.txt`.
+* ~~"odd" picture payloads~~ — **solved**: 105 in game 3 and 1,181 in game 2
+  are a two-section run-length format (`docs/PICTURES.md` §7.3). Both games'
+  picture containers now extract with **zero** failures.
 * `docs/SOUNDS.md`, `docs/SCRIPTS.md` and `docs/FILMS.md` each end with an
   open-questions list (animation opcodes, film record fields and audio PCM,
   the `0x0008` metadata word, `C` bits 4-7).
