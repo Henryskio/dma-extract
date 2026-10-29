@@ -105,7 +105,7 @@ kinds begin with a `4*N` u32 array; what follows differs by kind.
         N       flags byte array   (object offset 0x380; bits 0-1 read)
         N       kind byte array    (object offset 0x384; bits 2-3 read)
        4*N      {u16 height, u16 width} dimension table   (0x388)
-       4*N      u32 stored-size table, all zeros          (0x38c)
+       4*N      u32 uncompressed-size table               (0x38c)
         N       byte array whose accessor is unknown      (0x390)
         2 bytes palette count
    count*1024    palette bank: 1024 bytes per palette
@@ -221,13 +221,53 @@ and the colour records are four bytes `(T, R, G, B)` each. 590 of `HD.PIC`'s
 resources decode this way; the acceptance test is that every row holds exactly
 one colour record per foreground pixel.
 
-**Still open:** kinds `0x15` and `0x17` in `mpApp.PIC` and `pack.PIC`
-(`37merge*`, `dismag*`, `tooLong*`, `MdyLa*`) keep a payload that matches no
-raw layout and does not carry the `2h+1` table. Their bytes begin with u16
-values whose high byte is `0x00`/`0x01`/`0x02`/`0x03` and whose low byte
-climbs by 3–5, e.g. `ff 03 7a 03 7d 03 80 03 85 ff 03 8a 03 8f 03 94 03 99`,
-and end in 4-byte records with a constant first byte. `src/bin/v1pic` reports
-them as failures.
+**The remaining failures are compressed, not a new layout.** The `4*N` array
+at object offset `0x38c` — long read as an all-zero "stored size" table — is
+the **uncompressed size** of each payload, and it separates the failures
+perfectly:
+
+| container | `size == 0` | `size == len` | `size > len` |
+|---|---|---|---|
+| `HD.PIC` | 1682 decoded, 0 failed | — | — |
+| `Topolino.CPK` | 2 decoded, 0 failed | — | — |
+| `mpApp.PIC` | 274 decoded, 0 failed | — | 0 decoded, 110 failed |
+| `pack.PIC` | 7775 decoded, 0 failed | 107 decoded, 18 failed | 0 decoded, 2993 failed |
+
+So `size == 0` means "stored as-is" and covers every resource that decodes,
+while `size > len` means **compressed** and accounts for 3,103 of the 3,121
+failures. (The other 18 failures have `size == len` and are a separate, mostly
+`kind 0x00`/`0x02` question.)
+
+### 4.3 The compressed payloads — what is measured
+
+For a compressed resource the payload is a **token stream** that expands to
+`size` bytes, and that expanded stream is an ordinary run-length payload: the
+same `2*(2h+1)` count word, the same `2h+1` big-endian offset table, the same
+alternating transparent/opaque run bytes and one colour record per foreground
+pixel. `pack.PIC` index 9062 (`mickey_j.PICT`, 222×202, length 10280) is the
+worked example: its table's last entry is **23300**, which is exactly the
+declared uncompressed size.
+
+Two things about the token stream are measured:
+
+* The stream opens with **`0xff` literal blocks**: `0xff` followed by 8
+  literal bytes. Resource 9062 carries 122 of them in a row, which is
+  `8 * 122 = 976` expanded bytes, and those first 976 bytes are precisely the
+  890-byte table plus the first 86 bytes of the runs section. Reading the
+  table that way — count word 890 = `2*(2*222+1)` at expanded offset 0, then
+  445 big-endian u16 entries — reproduces a valid table whose rows 0–17 give
+  run lengths summing to exactly the width, 202.
+* Beyond that point the tokens are **not** `0xff` literal blocks. Their tag
+  bytes take many values (`fb`, `1d`, `31`, `1a`, `ba`, `02`, …) and the run
+  bytes stop summing to the width, so the token semantics for the compressed
+  region are not yet known. The game's own mask encoder at `0x402eea`
+  (`DMA1.exe`) writes run lengths as *a sum of bytes stopped at the first
+  byte that is not `0xff`* — `0xff` contributing 255 — which is the shape a
+  matching decoder would need, but that has not been confirmed against these
+  payloads.
+
+**Open:** the token semantics after the literal blocks, which is what stands
+between the current 9,840 extracted pictures and the remaining 3,121.
 
 ## 5. Sounds — extracted, lossless
 
@@ -327,12 +367,20 @@ exception is the sound that cannot be decoded at all.
 | `kind` bit 4 marks the compressed sub-formats | **measured** (kinds `0x14`–`0x18` vs `0x00`–`0x08`) |
 | sound `4*N` array is Mac timestamps | **measured** — `0xaedb282b` decodes to 1997-04-15 |
 | sound format byte is the `N` byte array | **measured** position; bit meaning **open** (§5) |
-| payloads uncompressed | **measured** on pictures and sounds |
+| payloads uncompressed | **measured** for `size == 0` (every resource that
+  decodes); **disproved** as a blanket claim — see §4.3 |
 | picture pixel word is `[T,R,G,B]` | **measured** on `HD.PIC` resource 0 |
 | kinds `0x15`/`0x17` payload format | **measured** for the 7,748 `pack.PIC`
   resources — RLE with 1-byte palette-index colour records; the remainder
   still fail |
-| kinds `0x02`/`0x06` payload format | **unknown** — no table, no raw layout |
+| kinds `0x02`/`0x06` payload format | **measured** that these are the
+  *compressed* payloads of §4.3, not a distinct layout |
+| compressed payloads expand to an ordinary RLE payload | **measured** for the
+  table region — `pack.PIC` 9062's table ends at 23300 = the declared
+  uncompressed size, and rows 0–17 sum to the width |
+| the token semantics after the literal blocks | **unknown** — the exact
+  thing blocking the remaining 3,121 pictures |
+| the `0xff`-literal-block prefix | **measured** on `pack.PIC` 9062 |
 | which palette entry `mpApp.PIC` indexes into | **judgement**, not measured —
   entry 0, confirmed by `qwen/qwen3.8-27b` on two pictures (§4.1) |
 | v1 script object-database layout | **unknown** — reported as failures |

@@ -243,9 +243,9 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
 * **Version 1 *has* a per-resource metadata block**, `15*N + 4` bytes plus the
   palette bank: a `4*N` u32 handle array, a `0x0007` marker, `N` flags bytes,
   `N` kind bytes, the `4*N` `{u16 height, u16 width}` **dimension table**, a
-  `4*N` all-zero size table, one `N` byte array, a u16 palette count and the
-  palette bank. Sounds are `5*N + 2` (the handle array holds Mac timestamps,
-  then the format byte); blobs are `4*N + 2`.
+  `4*N` **uncompressed-size** table, one `N` byte array, a u16 palette count
+  and the palette bank. Sounds are `5*N + 2` (the handle array holds Mac
+  timestamps, then the format byte); blobs are `4*N + 2`.
 * Extracted: **9,840 of 12,961 pictures, 451 of 452 sounds, 305 blobs**;
   `--original` is byte-exact for 13,717 of 13,718 resources. `HD.PIC` (1682),
   `Topolino.CPK` (2) and most of `mpApp.PIC` (274/384) are at zero failures.
@@ -258,8 +258,26 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   whose colour records are single palette indices. `mpApp.PIC` ships two
   entries with no per-resource selector; entry 0 is a vision-confirmed
   judgement, not a measurement.
-* Unresolved: the `kind 0x02`/`0x06` picture sub-format (no `2h+1` table and no
-  raw layout, roughly 1,500 resources), the `goofy 2.6.3` blob payload format,
+* **The remaining picture failures are compressed payloads, not a new
+  layout.** The `4*N` u32 array I had documented as an all-zero size table is
+  the **uncompressed size**, and it separates failures perfectly: every
+  resource that decodes has size `0` (stored as-is; 9,733 of them across the
+  four containers), and 3,103 of the 3,121 failures have a size *greater* than
+  their payload length. Verified on all four v1 picture containers — see the
+  table in `docs/GAME1.md` §4.3.
+* **Measured about the compressed payloads** (`docs/GAME1.md` §4.3): the
+  expanded stream is an ordinary RLE payload (same `2*(2h+1)` count word and
+  `2h+1` big-endian offset table), and `pack.PIC` 9062's table ends at
+  **23300**, exactly its declared uncompressed size. The token stream opens
+  with `0xff`-prefixed 8-literal-byte blocks: 122 of them give the table plus
+  the first 86 run bytes, and the runs decoded that way sum to exactly the
+  width for rows 0–17. After the literal blocks the token tags vary (`fb`,
+  `1d`, `31`, `1a`, `ba`…) and the meaning is unknown; the game's own mask
+  encoder at `0x402eea` in `DMA1.exe` writes run lengths as *a sum of bytes
+  stopped at the first byte that is not `0xff`*, which is the shape a matching
+  decoder would need. That last step is what blocks the remaining 3,121.
+* Unresolved: the compressed payload's token semantics after the literal
+  blocks (3,121 pictures), the `goofy 2.6.3` blob payload format,
   the v1 script object database, and one sound (`SifBtS10.aif`) whose format
   byte disagrees with its length.
 * Tools: `src/bin/v1pic` reports per-resource dims/kind/layout/decoder, which
