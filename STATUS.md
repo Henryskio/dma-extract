@@ -295,8 +295,18 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   differ, and reading that column as "not compressed" is what left 18 of them
   failing after the other 3,103 were fixed (the other 107 decoded anyway).
   Measured with `v1pic`: `pack.PIC` 7,775 plain / 3,118 lzss.
+* **Version-1 Script containers now open, and are byte-exact in `--original`**
+  (1,283 objects: `HD.mms` 295, `pack.mms` 988). They used to fail to parse
+  entirely. They share neither shape with versions 2/3 — **no names table and
+  no metadata region**; there is an offsets table, a `u16` measured as 4, then
+  the payloads. Verified on both containers: the first payload starts at
+  `0x20 + 4*(N+1) + 2` and the last offset equals the file length. See
+  `GAME1.md` §7 and `src/v1/scripts.rs`.
 * Unresolved: the `goofy 2.6.3` blob payload format (305 resources, likely the
-  game's videos), the v1 script object database, and one sound
+  game's videos), the **per-class record size** in a v1 script payload (the
+  count's distribution is strongly peaked — 210 `pack.mms` payloads with a
+  lead of 14 are all exactly 152 bytes — but no single record width fits the
+  payloads, which is the `type_aux` signature), and one sound
   (`SifBtS10.aif`) whose format byte disagrees with its length. `GAME1.md` §6.1
   now records what *is* measured about the blobs so the next attempt starts from
   there: the stamp is a watermark the loader never validates (no `cmp`/`mov` of

@@ -213,7 +213,16 @@ pub fn run(
             }
             ContainerKind::Scripts => {
                 let out_dir = output.join("Scripts").join(&stem);
-                let n = crate::script::extract_container(&container, &out_dir, original)?;
+                // The first game's Scripts container is not the versions-2/3
+                // object database: no names table, no metadata region, and a
+                // different marker after the offsets table. Its own module
+                // opens it; the shared one must never be asked to guess at a
+                // layout it has never measured.
+                let n = if container.version == 1 {
+                    crate::v1::scripts::extract_container(&container, &out_dir, original)?
+                } else {
+                    crate::script::extract_container(&container, &out_dir, original)?
+                };
                 summary.scripts += n;
             }
             ContainerKind::Blobs => {

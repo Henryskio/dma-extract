@@ -272,11 +272,11 @@ impl Container {
         let payload_start = offsets.first().copied().unwrap_or(0) as usize;
 
         // Scripts containers have no names table and no picture metadata.
-        // Their serialized object database starts immediately after the
-        // offset table, with no padding.
-        // Version-1 Script containers carry a different, still-undecoded
-        // layout (their object database does not start right after the
-        // offsets table). They are rejected rather than guessed at.
+        // Their serialized object database starts immediately after the offset
+        // table, with no padding. Version 1's Scripts containers are handled
+        // further down: they have no names table either, but their payloads
+        // start two bytes after the offsets table rather than immediately
+        // after it, and their marker is measured rather than assumed.
         if kind == ContainerKind::Scripts && version != 1 {
             let metadata_start = off_base + 4 * (n + 1);
             let script =
@@ -303,6 +303,41 @@ impl Container {
                 palettes: Vec::new(),
                 uncompressed_sizes: Vec::new(),
                 script: Some(script),
+            });
+        }
+
+        // A version-1 Scripts container has no names table at all: its
+        // payloads start two bytes after the offsets table. The names are read
+        // from each payload instead (`v1::scripts`), so `names` stays empty
+        // here and names_end is where the payloads begin.
+        if kind == ContainerKind::Scripts && version == 1 {
+            let names = vec![String::new(); n];
+            let payload_start = offsets.first().copied().unwrap_or(0) as usize;
+            return Ok(Container {
+                path,
+                data,
+                kind,
+                big_endian,
+                version,
+                file_id,
+                timestamp,
+                resource_count,
+                offsets,
+                names,
+                attr: Vec::new(),
+                flags: Vec::new(),
+                dimensions: Vec::new(),
+                sizes: vec![0; n],
+                extra_u32: Vec::new(),
+                kinds: Vec::new(),
+                names_end: payload_start,
+                palettes: Vec::new(),
+                uncompressed_sizes: Vec::new(),
+                // No version-1 script object database is decoded, so there is
+                // no shared ScriptMeta to hand out. Reporting the container as
+                // having none is what makes the shared extractor say "no
+                // version-1 layout" rather than mis-read a payload.
+                script: None,
             });
         }
 

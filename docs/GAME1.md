@@ -464,22 +464,54 @@ zeroes fields at `this+0x0e`, `+0x12`, `+0x16`, `+0x1a`, `+0x1e`, `+0x20023`,
 `+0x20027` and calls `0x4546bc` at `0x4a777c`. Following that constructor to the
 record parser is the next step, and nothing past it has been read yet.
 
-## 7. Scripts — deliberately not decoded
+## 7. Scripts — the container opens, the object database does not
 
-`HD.mms` and `pack.mms` use the singular tag `Script`. Their object database
-does **not** start right after the offsets table, so the game-3 `ScriptMeta`
-parser rejects them and the extractor reports `missing script metadata`
-rather than guessing.
+`HD.mms` and `pack.mms` use the singular tag `Script`. They carry **no names
+table and no metadata region** at all, which is why the versions-2/3
+`ScriptMeta` parser rejected them outright and the extractor used to report
+`missing script metadata` for the whole container. What they have instead:
 
-The offset tables themselves are valid, so per-resource verbatim extraction is
-straightforward once the layout is known: `HD.mms`'s first payload starts at
-1622 and `pack.mms`'s at 4336.
+```text
+0x1E  u16  resource count N            (N = 295 and 988)
+0x20  4*(N+1)  u32 offsets; resource i spans [off[i], off[i+1])
+        2 bytes  u16, measured as 4 in both containers
+        …       payloads, concatenated, starting at offsets[0]
+```
 
-**Open:** the v1 script object-database layout. The 404-byte region between
-the names and the first `HD.mms` payload holds `00 00 00 64 05 7a 00 00 05 7b
-00 00 …` — repeating 4-byte records whose second u16 climbs by one, which
-looks like a per-object table of some kind but does not scroll to the
-game-3 layout.
+Two independent checks pin this down on both containers, and both are asserted
+in `tests/game1.rs`: the first payload starts exactly at
+`0x20 + 4*(N+1) + 2`, and the last offset equals the file length — `HD.mms`
+1218 / 75,889 and `pack.mms` 3990 / 574,861. The `u16` is called a version
+rather than padding because it is a constant 4 across both files; a container
+reading anything else is rejected, because treating it as padding would be a
+guess.
+
+**Extracted: 1,283 objects, byte-exact in `--original` mode.** The payload is
+never compressed here, so the stored bytes *are* the payload, and the
+byte-exactness test asserts each one against the container's own bytes.
+
+**What is measured about a payload.** Each one opens with a `u32` that reads as
+an element count, and ends with a NUL-terminated ASCII **object name**:
+`char606`, `char1a`, `rdy53`, `sky333`. The count's distribution is strongly
+peaked — `pack.mms` has 210 payloads whose lead is 14 and all 210 are exactly
+152 bytes, and 46 whose lead is 51 and all 46 are exactly 521 — so it is a
+count of something per-object rather than a class id. 126 of 295 `HD.mms`
+payloads and 664 of 988 `pack.mms` payloads carry a trailing name; the rest
+carry none, which is the same behaviour `docs/SCRIPTS.md` records for the
+later games ("some classes append string data after that fixed prefix" — some
+classes append none). Those names are what `src/v1/scripts` uses for
+filenames, and the module documents them as an inference for exactly that
+reason.
+
+**Open:** the per-class record size between the count and the name. Reading
+the region as `count` records of a single fixed length fits almost nowhere —
+120 of 295 `HD.mms` payloads fit a 10-byte record, 496 of 988 `pack.mms`
+payloads do, and the rest fit 4, 12, 16 or several other widths, one width
+sometimes fitting only a handful of payloads. That is the signature of a
+per-class `type_aux` table like the one the shared format has, and finding the
+per-class widths is the step that turns this into a structured extraction.
+The `--original` and `objects/*.txt` outputs report the count and the payload
+length per object so the mapping can be built from them.
 
 ## 8. Results so far
 
@@ -492,6 +524,7 @@ game-3 layout.
 | sounds | 451 | 1 (`SifBtS10.aif`, see §5) |
 | blobs | 305 | 0 |
 | pictures | **12,961** | **0** |
+| scripts (objects) | **1,283** | **0** (§7; `--original` only) |
 
 Every first-game picture now decodes. The split that got it there:
 

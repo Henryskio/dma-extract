@@ -301,6 +301,94 @@ fn original_mode_writes_the_expanded_payload() {
     assert_eq!(checked, 12_961);
 }
 
+/// The first game's Scripts containers open, and `--original` is byte-exact.
+///
+/// The layout used to be counted as "still undecoded" and the containers
+/// failed to parse at all. They do not share the versions-2/3 shape: there is
+/// no 32-byte names table and no object-database metadata region. What is there
+/// is an offsets table, a `u16` measured as **4** in every shipped container,
+/// and then the payloads. Both checks are asserted here against the containers'
+/// own bytes.
+#[test]
+fn version_1_scripts_open_and_original_is_byte_exact() {
+    let Some(dir) = game1_dir() else {
+        eprintln!("skipping: first game assets not present");
+        return;
+    };
+    let mut checked = 0usize;
+    for (name, count) in [("HD.mms", 295usize), ("pack.mms", 988usize)] {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let data = std::fs::read(&path).expect("read container");
+        let c = Container::open(&path).expect("parse container");
+        assert_eq!(c.version, 1, "{name}: version");
+        assert_eq!(c.kind, ContainerKind::Scripts, "{name}: kind");
+        assert_eq!(c.resource_count as usize, count, "{name}: resource count");
+
+        // The layout: the table ends at 0x20 + 4*(N+1), the marker u16 sits
+        // there, and the payloads start exactly two bytes later.
+        let table_end = 0x20 + 4 * (count + 1);
+        let marker = be16(&data, table_end);
+        assert_eq!(marker, 4, "{name}: the version-1 script marker must be 4");
+        assert_eq!(
+            c.names_end, table_end + 2,
+            "{name}: no names table exists, so names_end is where the payloads start"
+        );
+        assert_eq!(c.offsets[count], data.len() as u32, "{name}: last offset must be EOF");
+
+        // Names come from each payload's string tail, not from the container.
+        let scripts = mmf_extract::v1::scripts::parse(
+            std::path::Path::new(&path),
+            &data,
+            &c,
+            table_end,
+        )
+        .expect("parse v1 scripts");
+        let named = scripts.names.iter().filter(|n| !n.is_empty()).count();
+        assert!(
+            named >= count / 3,
+            "{name}: only {named} of {count} payloads carry a name"
+        );
+
+        // And every payload is a byte-exact slice of the container, which is
+        // what `--original` must write.
+        for i in 0..count {
+            let payload = c.payload(i);
+            assert_eq!(
+                payload,
+                &data[c.offsets[i] as usize..c.offsets[i + 1] as usize],
+                "{name}[{i}]: payload is not the container's own bytes"
+            );
+            assert!(!payload.is_empty(), "{name}[{i}]: an empty payload");
+        }
+
+        // Through the real `--original` path.
+        let out_dir = tempdir("v1-scripts-original").join(name);
+        let written = mmf_extract::v1::scripts::extract_container(&c, &out_dir, true)
+            .expect("extract originals");
+        assert_eq!(written, count, "{name}: every object must be written");
+        for i in 0..count {
+            let safe = scripts.names[i].replace(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' && ch != '.', "_");
+            let stem = if safe.is_empty() {
+                format!("object{i}")
+            } else {
+                safe
+            };
+            let written_bytes =
+                std::fs::read(out_dir.join(format!("{i:05}_{stem}.bin"))).expect("read .bin");
+            assert_eq!(
+                written_bytes,
+                &data[c.offsets[i] as usize..c.offsets[i + 1] as usize],
+                "{name}[{i}]: --original must write the container's own bytes"
+            );
+        }
+        checked += count;
+    }
+    assert_eq!(checked, 1283, "the two script containers hold 1,283 objects");
+}
+
 /// A scratch directory that removes itself when the test ends, even on a
 /// panic.
 struct Cleanup<'a>(&'a Path);

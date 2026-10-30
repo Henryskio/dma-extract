@@ -27,12 +27,16 @@
 //!   picture decoder should read: the stored payload when the declared size is
 //!   zero, the LZSS expansion otherwise.
 //! * [`palette_of`] supplies the palette bank to [`crate::picture::decode`].
+//! * [`scripts::parse`] opens a version-1 Scripts container, whose layout
+//!   shares nothing with the versions-2/3 object database;
+//!   [`scripts::extract_container`] writes its payloads byte-exactly.
 //! * [`picture::decode`] is the whole first-game picture path, which begins
 //!   with the decompression step the shared decoders do not do.
 
 pub mod lzss;
 pub mod metadata;
 pub mod picture;
+pub mod scripts;
 
 pub use metadata::V1Metadata;
 
