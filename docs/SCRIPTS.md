@@ -9,10 +9,12 @@ Scripts container in the shipped assets.
 > **Which game this covers.** Container versions 2 and 3, whose Scripts
 > containers differ only in tag spelling — `"MMFW Scripts"` versus
 > `"MMFW 3 Script"`. The object database documented here is the shape
-> `src/script.rs` decodes. The first game's version has **no equivalent
-> region**: its Scripts containers carry a different, still-undecoded layout,
-> so they are reported as failures rather than guessed at. That gap is
-> recorded in **`GAME1.md`** §7.
+> `src/script.rs` decodes. The first game is in **`GAME1.md`** §7: its Scripts
+> containers have **no names table and no metadata region** at all, so they
+> open through `src/v1/scripts.rs` and extract byte-exactly in `--original`
+> mode. What still blocks a structured extraction there is the same thing this
+> document solves here with `type_aux` — the per-class record size — and §7
+> records it as the open question rather than guessing.
 
 > **Engine note.** Despite the `MMFW` signature this is **not a Clickteam
 > Multimedia Fusion 2 application**. `DMA4.exe` carries the PDB path

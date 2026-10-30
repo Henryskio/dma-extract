@@ -583,7 +583,9 @@ them is what says a payload was compressed:
   `0xff` + 8 bytes (§4.3) |
 | which palette entry `mpApp.PIC` indexes into | **judgement**, not measured —
   entry 0, confirmed by `qwen/qwen3.8-27b` on two pictures (§4.1) |
-| v1 script object-database layout | **unknown** — reported as failures |
+| v1 script container layout (no names table, no metadata region) | **measured** — first payload at `0x20+4*(N+1)+2` and the marker `4`, both asserted in `tests/game1.rs` (§7) |
+| v1 script object names come from the payload tail | **measured** — `char606`, `char1a`, `sky333`; an inference as a *rule*, in 126/295 and 664/988 payloads (§7) |
+| v1 script per-class record size | **unknown** — no single width fits; this is the open question (§7) |
 | the `Blobs` payload is a `goofy` codec stream | **inferred** from the
   string, the 8-byte record period, and a body drawn from a 32-symbol alphabet
   (§6.1) — **not** decoded |
