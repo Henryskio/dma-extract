@@ -4,7 +4,10 @@ Reverse-engineering notes for the **first** game in the series:
 *\*\*\*\*\* Magico Artista 1* (Italy, v1.0 Win/Mac, 1997). It is the oldest
 build and differs from the third game (`DMA4.exe`) and the second
 (`DMA.exe`) in several structural ways, so it is documented separately from
-`PICTURES.md` / `SOUNDS.md` rather than being folded into them.
+`PICTURES.md` / `SOUNDS.md` rather than being folded into them. This file
+states **only what version 1 changes**; anything the games share is written
+down once in the shared document and referenced from here, the same rule
+`src/v1/` follows against `src/`.
 
 Everything below is derived from the shipped files and the game's own
 executable, and checked numerically.
@@ -42,6 +45,32 @@ side of this Win/Mac hybrid disc, which no directory record references. The
 Windows side — every file above — is byte-identical between the two, and the
 counts in the table were re-measured against it. `pack.BLB` is 73,074,150 bytes
 on both, which is the check that they are the same disc.
+
+`iso_range.py list` prints `# 0 files` on these images: the disc carries a
+Joliet volume descriptor and the tool's directory walker rejects UCS-2 names,
+so the ISO9660 tree was read by hand. That hand-read table, ready for
+`iso_range.py save <url> <out> <lba> <size>`, is:
+
+| file in `Dati/` | LBA | bytes |
+|---|---:|---:|
+| `HD.PIC` | 3071 | 11,706,931 |
+| `HD.SND` | 8788 | 1,626,231 |
+| `HD.MMS` | 9583 | 75,889 |
+| `TOPOLINO.CPK` | 10052 | 72,344 |
+| `MPAPP.PIC` | 10090 | 7,958,866 |
+| `PACK.BLB` | 29715 | 73,074,150 |
+| `PACK.PIC` | 65396 | 50,029,743 |
+| `PACK.SND` | 89825 | 99,991,486 |
+| `PACK.MMS` | 138649 | 574,861 |
+| `DISNEYMA.EXE` | 2455 | 1,217,536 |
+
+**The executable.** Throughout this document the game's binary is called
+`DMA1.exe`, which is its local name here. The file on the disc is
+`Disney's Magic Artist.exe` (the installer also ships it under the Italian
+title), carved from the table above as `DISNEYMA.EXE`. Every function address
+cited below — `FUN_42e0d4`, `FUN_002eea`, the `0x4183xx` loader family — refers
+to that 1,217,536-byte image at its preferred base of `0x400000`, with the
+`CODE` section mapped from file offset `0x600`. It is a Win32 PE, i386.
 
 The executable is `Dati/\*\*\*\*\*\* Magico Artista.exe`; the installer ships it
 inside its own tree. Note the extensions differ from the later games
@@ -387,6 +416,54 @@ stamp. The container is very likely the carrier for the game's **videos**
 stride is resolved (§2: the table starts at `0x20` and holds `N + 1`
 entries), so all 305 resources are now addressed correctly.
 
+### 6.1 What is measured about the payload
+
+These are facts, taken on all 305 payloads of the recovered `pack.BLB`, that
+the next reader should not have to re-derive. They narrow the open question
+without settling it:
+
+* **The stamp is a constant, not a magic the loader checks.** Every one of the
+  305 payloads opens with the same 14 bytes: `u16` `0x000c` then the 12-byte
+  string `"goofy 2.6.3\0"`. But `DISNEYMA.EXE` contains **no** `cmp`/`mov`
+  using those bytes as an immediate (the only occurrence of `66 6f 6f 66` in
+  the file is the string itself), and the string's address `0x512aac` has
+  exactly one reference in the image and it is a data table, not code. So the
+  loader does not validate the stamp; it is a writer's watermark.
+* **The body repeats on an 8-byte period.** Autocorrelation peaks sharply at
+  8 (0.79 on `session 1`, 0.81 on `smallsession`), and the repeating unit reads
+  as `u32, u16, u16`: `00 00 00 13 | 0c f0 | 0c e0`, then `00 00 00 13 | 0d 30 |
+  0c e0`, and so on. The `u32` takes only a handful of small values (`0x13`,
+  `0x01`, `0x00`); the two `u16`s usually sit close together, and in some
+  payloads one is constant while the other climbs. One of the smallest
+  (`session 1`, 430 bytes) starts `00 00 00 00 | 01 | 00 00 00 0c | 00 00 00 28
+  | 17 00 00 ff | …`, so the header before the records is not fixed-length
+  either.
+* **The payloads are not a container.** No `RIFF`, `AVI`, `ftyp`, `moov`,
+  `mdat`, `MACE`, `OggS`, `PK` or PNG/GIF/BM magic occurs in any of them.
+  A stray `1f 8b` appears in 117 of 305, which is a coincidence of the byte
+  distribution below, not gzip.
+* **The body is low-entropy and small-valued.** `SbfSs_01`'s 324,396 body bytes
+  use the range `0x00`–`0x1f` almost exclusively (histogram: `0x00`,
+  `0x13`, `0x10`, `0x14`, `0x15`, `0x11`, `0x16`, `0x12`, `0x17`, `0x19`,
+  `0x1d`, `0x1c` …), giving 5.04 bits/byte, with runs of length 1 (197,769) and
+  3 (40,131) and almost nothing longer (only 1,203 of length 2). A stream that
+  packs symbols from a 32-entry alphabet this tightly is arithmetic- or
+  Huffman-coded, which is consistent with `goofy` being a codec rather than a
+  container.
+* **The first several bytes of a payload are a length-ish header.** Reading
+  the two `u32`s at payload offsets 14 and 18 as a pair (`SbfSs_01`: 755, 9060;
+  `SbfSs_04`: 1123, 13476; `smallsession`: 7, 84) suggests a count and a
+  stride, but no reading of them reproduces the payload's own length across
+  the 305 resources, so they are not a payload size in any obvious unit.
+
+What would settle it: locating the function in `DISNEYMA.EXE` that consumes
+these 8-byte records. The string `"session done sound"` at `0x51041c` has one
+reference in the image: the immediate operand of `push 0x51041c` at `0x4a77a5`,
+inside the function that starts at `0x4a7763` — an object constructor that
+zeroes fields at `this+0x0e`, `+0x12`, `+0x16`, `+0x1a`, `+0x1e`, `+0x20023`,
+`+0x20027` and calls `0x4546bc` at `0x4a777c`. Following that constructor to the
+record parser is the next step, and nothing past it has been read yet.
+
 ## 7. Scripts — deliberately not decoded
 
 `HD.mms` and `pack.mms` use the singular tag `Script`. Their object database
@@ -474,4 +551,14 @@ them is what says a payload was compressed:
 | which palette entry `mpApp.PIC` indexes into | **judgement**, not measured —
   entry 0, confirmed by `qwen/qwen3.8-27b` on two pictures (§4.1) |
 | v1 script object-database layout | **unknown** — reported as failures |
-| `goofy 2.6.3` identifies a video codec | **inferred** from the string alone |
+| the `Blobs` payload is a `goofy` codec stream | **inferred** from the
+  string, the 8-byte record period, and a body drawn from a 32-symbol alphabet
+  (§6.1) — **not** decoded |
+| the `goofy` stamp is validated by the loader | **disproved** — no `cmp`/`mov`
+  of the bytes exists in `DISNEYMA.EXE` and the string's only reference is a
+  data table, so it is a writer's watermark (§6.1) |
+| `pack.BLB` holds an RSS/AVI/QuickTime container | **disproved** — no such
+  magic occurs in any of the 305 payloads (§6.1) |
+| where the blob record parser lives | **partially traced** — `push
+  "session done sound"` at `0x4a77a5`, inside a constructor starting at
+  `0x4a7763`; nothing beyond it has been read (§6.1) |

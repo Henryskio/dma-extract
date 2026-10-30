@@ -38,14 +38,24 @@ pub const TYPE_MARKER: u16 = 0x03;
 pub const TYPE_TIMESTAMP: u16 = 0x06;
 pub const TYPE_END: u16 = 0x07;
 
-/// Key frame chunk. The first game writes type `0x0A`, the sequel `0x00`.
+/// Key frame chunk. The third game writes type `0x0A`, the second game `0x00`.
+///
+/// These are the only two values ever measured: `docs/FILMS.md` reads them off
+/// the version-3 `/RawAssets/DMA.MMF` and `docs/SEQUEL.md` off the version-2
+/// container. The first game ships no Films container (`docs/GAME1.md` §1), so
+/// no version-1 chunk type is asserted here.
 pub const TYPE_FULL_FRAME: u16 = 0x0A;
 pub const TYPE_FULL_FRAME_V2: u16 = 0x00;
-/// Delta chunk. The first game writes type `0x0B`, the sequel `0x01`.
+/// Delta chunk. The third game writes type `0x0B`, the second game `0x01`.
 pub const TYPE_DELTA: u16 = 0x0B;
 pub const TYPE_DELTA_V2: u16 = 0x01;
 
-/// Whether this container's films use the sequel's chunk numbering.
+/// Whether this container's films use the second game's chunk numbering.
+///
+/// Everything else is the third game's, which is the only other layout that
+/// has been measured. Version 1 is **not** folded in here: it has no Films
+/// container on the disc, so routing it down the third game's path would be a
+/// guess, and `parse_film_metadata` rejects it instead.
 fn is_film_v2(container: &Container) -> bool {
     container.version == 2
 }
@@ -61,7 +71,7 @@ fn full_frame_kind(container: &Container) -> u16 {
 
 /// Longest per-film record seen in a Films container.
 ///
-/// The first game's record is 26 bytes; the sequel's is 22.  The parser
+/// The third game's record is 26 bytes; the second game's is 22. The parser
 /// solves for the actual length from the file layout, so this is only a
 /// buffer bound.
 pub const MAX_RECORD_LEN: usize = 26;
@@ -429,7 +439,7 @@ struct FilmMeta {
 /// Parse the Films metadata region for one resource.
 ///
 /// After the common names table comes the generic `4*N` u32 array, then the
-/// film block: `u16` marker (7 in the first game, 5 in the sequel), `N`
+/// film block: `u16` marker (7 in the third game, 5 in the second), `N`
 /// per-film records, `u16` palette count and that many 1024-byte palettes.
 /// The payload starts immediately after the last palette; that equality is
 /// what pins the record length down, so the length is solved for rather than
@@ -438,6 +448,17 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
     let n = container.resource_count as usize;
     if index >= n {
         bail!("film index {index} out of range");
+    }
+    // Only versions 2 and 3 have been measured. The first game ships no Films
+    // container, so it has no measured marker, record length or chunk type;
+    // assuming it looks like version 3 would be a guess, which is exactly what
+    // `AGENTS.md` forbids.
+    if container.version == 1 {
+        bail!(
+            "{}: version 1 has no measured Films layout (no Film container ships \
+             with the first game; see docs/GAME1.md §1)",
+            container.path.display()
+        );
     }
     let data = &container.data;
     let block = container
@@ -527,8 +548,9 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
     }
     let width = right - left;
     let height = bottom - top;
-    // The first game pads 8bpp rows to a multiple of four bytes; the sequel
-    // stores rows unpadded (its key frame is exactly width * height bytes).
+    // The third game pads 8bpp rows to a multiple of four bytes; the second
+    // game stores rows unpadded (its key frame is exactly width * height
+    // bytes).
     let stride = if container.version == 2 {
         width as usize
     } else {
@@ -645,10 +667,11 @@ fn decode_delta(
         bail!("delta chunk at {:#x} is too short", chunk.offset);
     }
 
-    // Layout, first game: [u32 lz77_len][u32 decoded_len][168 bytes of
-    // rects][LZ77 stream] whose output is the RLE data.
+    // Layout, third game (version 3): [u32 lz77_len][u32 decoded_len][168
+    // bytes of rects][LZ77 stream] whose output is the RLE data.
     //
-    // Layout, sequel: [168 bytes of rects][RLE stream] with no LZ77 wrapper.
+    // Layout, second game (version 2): [168 bytes of rects][RLE stream] with
+    // no LZ77 wrapper.
     let (rect_off, delta) = if v2 {
         (0usize, payload[168..].to_vec())
     } else {

@@ -239,7 +239,11 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   exist on archive.org — `disney-magico-artista`, `MagicoArtista`,
   `disney_magico_artista`). Its `Dati/` folder holds the ten containers.
   Working copy carved at **`/PathAssets/Dati`** (265 MB) with `iso_range.py`,
-  so `tests/game1.rs` finds it with no `DMA_ASSETS`/`GAME1_ASSETS` set. The
+  so `tests/game1.rs` finds it with no `DMA_ASSETS`/`GAME1_ASSETS` set;
+  `docs/GAME1.md` §1 tabulates every file's LBA and size so the carve is
+  reproducible. The executable cited below as `DMA1.exe` is the disc's
+  `Disney's Magic Artist.exe`, carved as `DISNEYMA.EXE` (1,217,536 bytes, i386
+  PE, preferred base `0x400000`). The
   image is a fuller dump than the 548,222,976-byte one the earlier notes used:
   the ISO9660 tree ends at sector 147,066 and the rest is the Mac side of this
   Win/Mac hybrid disc, referenced by no directory record. The Windows side is
@@ -293,7 +297,21 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   Measured with `v1pic`: `pack.PIC` 7,775 plain / 3,118 lzss.
 * Unresolved: the `goofy 2.6.3` blob payload format (305 resources, likely the
   game's videos), the v1 script object database, and one sound
-  (`SifBtS10.aif`) whose format byte disagrees with its length.
+  (`SifBtS10.aif`) whose format byte disagrees with its length. `GAME1.md` §6.1
+  now records what *is* measured about the blobs so the next attempt starts from
+  there: the stamp is a watermark the loader never validates (no `cmp`/`mov` of
+  those bytes in `DISNEYMA.EXE`; the string's single reference is a data table),
+  the body repeats on an 8-byte `(u32, u16, u16)` period, no container magic
+  occurs in any payload, and the body draws from a 32-symbol alphabet at 5.04
+  bits/byte — a coded stream, not a container. The furthest traced entry point
+  is `push "session done sound"` at `0x4a77a5`, in a constructor at `0x4a7763`.
+* *Corrected:* `src/film.rs` attributed the version-3 film layout (marker 7,
+  26-byte records, chunk types `0x0A`/`0x0B`, padded 8bpp rows, LZ77-wrapped
+  deltas) to "the first game". Those measurements are of `DMA.MMF`, which is
+  **version 3**; `SEQUEL.md` already had it right. Renamed throughout, and
+  version 1 is now rejected in `parse_film_metadata` instead of being folded
+  into the third game's path, because no Films container ships with the first
+  game (`docs/GAME1.md` §1) and assuming otherwise is a guess.
 * Code layout: everything version-1 specific lives in **`src/v1/`**
   (`lzss.rs`, `metadata.rs`, `picture.rs`). `container.rs` keeps only the
   dispatch (count at `0x1E`, table at `0x20`, region handed to

@@ -7,6 +7,13 @@ Reverse-engineered notes for the `.MMP` (Pictures) containers of
 that were confirmed by rendering are checked numerically with the helper
 binaries in `src/bin/`.
 
+> **Which game this covers.** Container versions 2 and 3 parse identically, so
+> this document describes both and carries no version branch — the rule
+> `src/picture.rs` follows. The first game's pictures differ enough that their
+> deltas have their own file: **`GAME1.md`**, whose §4.1 is the palette
+> placement and §4.3 the LZSS payload step this document does not do. Where a
+> sub-format is shared, `GAME1.md` points back here rather than restating it.
+
 > **Engine note.** Despite the `MMFW` container signature this is **not a
 > Clickteam Multimedia Fusion 2 application**. `DMA4.exe` carries the PDB
 > path `C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\Release\DMAAW.pdb`,

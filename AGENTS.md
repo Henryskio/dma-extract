@@ -12,16 +12,33 @@ resource into a modern lossless format (PNG / WAV / JSON+text), and can also
 re-emit the game's original bytes exactly.
 
 The formats are **not documented publicly**. Everything known about them is in
-`docs/` (`PICTURES.md`, `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`, `SEQUEL.md`).
-Read the relevant file before touching a decoder, and update it when you learn
-something new — the docs are the project's memory, `STATUS.md` is its resume
-notes.
+`docs/`, and the docs are layered the same way the code is — one chain of
+documents per game, never one document describing two:
+
+* **Shared (container versions 2 and 3).** `docs/PICTURES.md`,
+  `docs/SOUNDS.md`, `docs/SCRIPTS.md` and `docs/FILMS.md` describe the format
+  the second and third games share, whose containers differ only in the two
+  bytes at `0x12`. `src/*.rs` mirrors them: one code chain, no version branches.
+* **Second game (version 2).** `docs/SEQUEL.md` holds *only* its deltas.
+* **First game (version 1).** `docs/GAME1.md` holds the 1997 build, whose
+  header bases, metadata layout, palette placement and payload compression all
+  differ. `src/v1/*.rs` mirrors it for the same reason.
+
+The rule both sides follow: a game's own file states that game's deltas and
+points at the shared document rather than restating it, so an edit inside one
+game's chain cannot silently change the other's. Read the relevant file before
+touching a decoder, and update it when you learn something new — the docs are
+the project's memory, `STATUS.md` is its resume notes.
 
 **The engine is in-house, not Clickteam Fusion.** The `MMFW` signature is not
 Multimedia Fusion; `DMA4.exe` (third game, container version 3) and `DMA.exe`
 (second game, container version 2) are custom builds. Do not use MMF2 or
 Clickteam documentation as authority; verify against the binaries (`FUN_*`
-functions in `DMA4.exe`) and the shipped files.
+functions) and the shipped files. There are three of them, one per game, and
+each is the authority for its own container version — `DMA4.exe` for versions
+2/3 (`docs/PICTURES.md` & co.), `DMA.exe` for version 2 (`docs/SEQUEL.md`), and
+the first game's `DMA1.exe`, the disc's `Disney's Magic Artist.exe`, for
+version 1 (`docs/GAME1.md` §1 has the carve table).
 
 ## Setup
 
@@ -40,11 +57,16 @@ audio codecs, `sha2`, `anyhow`, `clap` are already there).
 cargo test --release                                   # full suite
 DMA_ASSETS=/PathAssets cargo test --release       # point at the game's assets
 DMA_ASSETS=/PathAssets cargo test --release --test colors   # one suite
+GAME1_ASSETS=/PathAssets/Dati cargo test --release --test game1
 ```
 
 * `DMA_ASSETS` — folder with the `.MMP/.MMA/.MMS/.MMF` files. Defaults to
   `/RawAssets`. If the folder is missing the asset-dependent tests **skip and
   pass**; they never fail for a missing asset folder.
+* `GAME1_ASSETS` — the same for the first game's `.PIC/.SND/.BLB/.mms`
+  containers, which live in a `Dati/` folder of their own (`docs/GAME1.md` §1
+  has the URLs). Defaults to `/PathAssets/Dati`. It is consulted before
+  `DMA_ASSETS`, because the first game's tests are version-1 specific.
 * `MMF_PNG_DIR` — where the colour corpus scan looks for extracted PNGs.
   Defaults to `/workspace/extracted/Pictures`.
 * `MMF_TEST_TMP` — scratch directory used by extraction round-trip tests.
@@ -80,9 +102,14 @@ colour/byte claim that the tests do not check.
   `tests/roundtrip.rs`: write the resource's original bytes and assert
   byte-equality against the container slice. Modern output must also decode
   back to the same pixels/samples.
-* `src/container.rs` is the shared parser for every container kind. A new kind
-  (or a new container version) is a branch there plus a module in `src/`;
-  do not fork the parser per asset type.
+* `src/container.rs` is the single parser for every container kind, and holds
+  the common header plus the dispatch by **kind** and by **version**. Do not
+  fork it per asset type, and do not add a version check inside a decoder: a
+  container version whose layout differs is its own module — `src/v1/` is the
+  worked example — reached through the two dispatchers in `src/cli.rs`
+  (`picture_decoder`, `picture_payload`), which are the only places in the
+  program that map a version to code. That is what keeps an edit to one game's
+  path off the other's.
 * Failures are per-resource, not fatal: warn on stderr, count them in the
   report, keep extracting the rest.
 * Surface format constants as named `const`s with the evidence in a doc
@@ -98,7 +125,10 @@ colour/byte claim that the tests do not check.
 1. `cargo build --release` — no warnings for new code.
 2. `cargo test --release` — green.
 3. If you changed a format: update the relevant `docs/*.md` **and**
-   `STATUS.md` (counts, open questions, what is measured vs inferred).
+   `STATUS.md` (counts, open questions, what is measured vs inferred). Which
+   file follows the layering above — a change that affects all three games goes
+   in the shared document, and a change to one game's deltas goes in that
+   game's file, never both.
 4. Commit with a message that says *what changed and how you know* (which
    function, which container, which measurement). Commit early and often.
 

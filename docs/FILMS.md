@@ -6,6 +6,14 @@ Everything below was derived from the shipped files and the game's own
 executable (`DMA4.exe`); the decoder was checked numerically against all 139
 frames. No external format documentation was used as authority.
 
+> **Which game this covers.** Container versions 2 and 3, whose `.MMF` files
+> differ only in the film fields listed at the end. The decoder in
+> `src/film.rs` has no version branch. The first game ships no `.MMF` at all:
+> its videos sit in an opaque `Blobs` container (`pack.BLB`) whose inner
+> format is undecoded, so there is nothing to describe here yet. The blob
+> payload's header *is* measured, though, and that measurement lives in
+> **`GAME1.md`** §6.
+
 > **Engine note.** Despite the `MMFW` container signature this is **not a
 > Clickteam Multimedia Fusion 2 application**. `DMA4.exe` carries the PDB path
 > `C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\Release\DMAAW.pdb`,

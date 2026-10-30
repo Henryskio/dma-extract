@@ -6,6 +6,13 @@ Everything below was derived from the shipped files plus the game's own
 executable (`DMA4.exe`), and is checked numerically by the extractor and its
 tests.
 
+> **Which game this covers.** Container versions 2 and 3 share this format, so
+> this document describes both — the codec and the metadata layout below are
+> version-independent, which is the rule `src/sound.rs` follows. The first
+> game's sounds differ only in *where* the format byte is read: its metadata
+> region ends in an `N`-byte array instead of the `attr`/`flags` pairs used
+> here. Those deltas and the shipped counts live in **`GAME1.md`** §5.
+
 > **Engine note.** Despite the `MMFW` container signature this is **not** a
 > Clickteam Multimedia Fusion 2 application. `DMA4.exe` carries the PDB path
 > `C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\Release\DMAAW.pdb`,

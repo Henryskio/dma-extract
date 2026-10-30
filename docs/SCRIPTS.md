@@ -6,6 +6,14 @@ Reverse-engineered notes for the `MMFW Scripts` container (`.MMS`) shipped in
 (`DMA4.exe`) and verified against `/RawAssets/HD.MMS`; there is only one
 Scripts container in the shipped assets.
 
+> **Which game this covers.** Container versions 2 and 3, whose Scripts
+> containers differ only in tag spelling — `"MMFW Scripts"` versus
+> `"MMFW 3 Script"`. The object database documented here is the shape
+> `src/script.rs` decodes. The first game's version has **no equivalent
+> region**: its Scripts containers carry a different, still-undecoded layout,
+> so they are reported as failures rather than guessed at. That gap is
+> recorded in **`GAME1.md`** §7.
+
 > **Engine note.** Despite the `MMFW` signature this is **not a Clickteam
 > Multimedia Fusion 2 application**. `DMA4.exe` carries the PDB path
 > `C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\Release\DMAAW.pdb`,
