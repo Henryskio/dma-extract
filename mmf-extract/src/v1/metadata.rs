@@ -39,20 +39,31 @@
 //!
 //! The `4*N` u32 array after the dimension table is **not** a size of the
 //! stored payload and is not all zeros, which is how it was first read. It is
-//! the size each payload expands to:
+//! the size each payload expands to, and it is the discriminator that says
+//! which storage form a payload is in:
 //!
 //! | container | `size == 0` | `size == len` | `size > len` |
 //! |---|---|---|---|
-//! | `HD.PIC` | 1682 decoded, 0 failed | — | — |
-//! | `Topolino.CPK` | 2 decoded, 0 failed | — | — |
-//! | `mpApp.PIC` | 274 decoded, 0 failed | — | 0 decoded, 110 failed |
-//! | `pack.PIC` | 7775 decoded, 0 failed | 107 decoded, 18 failed | 0 decoded, 2993 failed |
+//! | `HD.PIC` | 1682 | — | — |
+//! | `Topolino.CPK` | 2 | — | — |
+//! | `mpApp.PIC` | 274 | — | 110 |
+//! | `pack.PIC` | 7775 | 125 | 2993 |
 //!
-//! A zero means "stored as-is" and covers every resource the existing
-//! decoders read. A value larger than the payload length means the payload is
-//! an LZSS stream ([`super::lzss`]) and accounts for 3,103 of the 3,121
-//! first-game picture failures. The 18 `size == len` failures are a separate
-//! question.
+//! * `size == 0` means the payload is stored as-is. This is 9,733 of the
+//!   12,961 first-game pictures.
+//! * `size > len` means the payload is an LZSS stream ([`super::lzss`])
+//!   expanding to `size` bytes. 3,103 pictures (`pack.PIC` 2,993, `mpApp.PIC`
+//!   110).
+//! * `size == len` **also** means a stream. 125 `pack.PIC` resources declare a
+//!   size equal to their own payload length, so the column reads like "stored"
+//!   but the bytes differ; 107 of them decoded anyway, and treating the column
+//!   as "not compressed" is what left the other 18 failing after the rest were
+//!   fixed.
+//!
+//! Together that is 3,228 streams, 12,961 pictures, and **zero** undecoded
+//! resources. The table in `docs/GAME1.md` §4.2 records the same counts as
+//! they stood *before* the decompressor existed, which is the measurement that
+//! identified the compressed set in the first place.
 
 use crate::picture::PALETTE_BYTES;
 use crate::{container::ContainerKind, container::Dimension};

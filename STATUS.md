@@ -233,8 +233,20 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
 
 ## 10. The first game's version-1 containers (see `docs/GAME1.md`)
 
-* Source: the original CD image `TOPOLINO.ISO` (548,222,976 bytes), whose
-  `Dati/` folder holds the ten containers and `DMA1.exe`.
+* Source: the public disc image
+  <https://archive.org/download/disney-magico-artista/TOPOLINO.ISO>
+  (574,132,224 bytes, range-capable; three uploads of the same Windows tree
+  exist on archive.org — `disney-magico-artista`, `MagicoArtista`,
+  `disney_magico_artista`). Its `Dati/` folder holds the ten containers.
+  Working copy carved at **`/PathAssets/Dati`** (265 MB) with `iso_range.py`,
+  so `tests/game1.rs` finds it with no `DMA_ASSETS`/`GAME1_ASSETS` set. The
+  image is a fuller dump than the 548,222,976-byte one the earlier notes used:
+  the ISO9660 tree ends at sector 147,066 and the rest is the Mac side of this
+  Win/Mac hybrid disc, referenced by no directory record. The Windows side is
+  byte-identical on both (`pack.BLB` is 73,074,150 bytes on each) and every
+  count in this section was re-measured against it. Beware
+  `disney-magico-artista-pc-italy/Topolino.bin`: it is a raw `MODE1/2352`
+  image, which `iso_range.py` cannot parse.
 * **Version 1 parses from `0x20`, not `0x24`.** The resource count is the u16
   at `0x1E` and is `N` (not `N+1`); the offsets table holds `N+1` entries with
   the last equal to the file size. Reading from `0x24` shifts every resource by
@@ -246,39 +258,56 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   `4*N` **uncompressed-size** table, one `N` byte array, a u16 palette count
   and the palette bank. Sounds are `5*N + 2` (the handle array holds Mac
   timestamps, then the format byte); blobs are `4*N + 2`.
-* Extracted: **9,840 of 12,961 pictures, 451 of 452 sounds, 305 blobs**;
-  `--original` is byte-exact for 13,717 of 13,718 resources. `HD.PIC` (1682),
-  `Topolino.CPK` (2) and most of `mpApp.PIC` (274/384) are at zero failures.
+* Extracted: **12,961 of 12,961 pictures (zero failures), 451 of 452 sounds,
+  305 blobs**; `--original` is byte-exact for 13,717 of 13,718 resources.
+  Per container: `HD.PIC` 1682, `mpApp.PIC` 384, `pack.PIC` 10893,
+  `Topolino.CPK` 2. Split by storage form: 9,733 stored plain (`size == 0`),
+  3,228 LZSS streams (3,103 with `size > len`, 125 with `size == len`).
 * 590 of `HD.PIC`'s pictures use the **same two-section run-length sub-format**
   as games 2 and 3 (`docs/PICTURES.md` §7.3), so that decoder covers all three
   games.
 * **Version 1 keeps its palettes in a bank at the end of the metadata
   region**, not prefixed to the payload, so the run-length decoder needed the
-  bank plumbed through to read the 7,748 `kind 0x17` pictures in `pack.PIC`
-  whose colour records are single palette indices. `mpApp.PIC` ships two
+  bank plumbed through to read the `kind 0x17` pictures in `pack.PIC` whose
+  colour records are single palette indices. `mpApp.PIC` ships two
   entries with no per-resource selector; entry 0 is a vision-confirmed
   judgement, not a measurement.
-* **The remaining picture failures are compressed payloads, not a new
-  layout.** The `4*N` u32 array I had documented as an all-zero size table is
-  the **uncompressed size**, and it separates failures perfectly: every
-  resource that decodes has size `0` (stored as-is; 9,733 of them across the
-  four containers), and 3,103 of the 3,121 failures have a size *greater* than
-  their payload length. Verified on all four v1 picture containers — see the
-  table in `docs/GAME1.md` §4.3.
-* **Measured about the compressed payloads** (`docs/GAME1.md` §4.3): the
-  expanded stream is an ordinary RLE payload (same `2*(2h+1)` count word and
-  `2h+1` big-endian offset table), and `pack.PIC` 9062's table ends at
-  **23300**, exactly its declared uncompressed size. The token stream opens
-  with `0xff`-prefixed 8-literal-byte blocks: 122 of them give the table plus
-  the first 86 run bytes, and the runs decoded that way sum to exactly the
-  width for rows 0–17. After the literal blocks the token tags vary (`fb`,
-  `1d`, `31`, `1a`, `ba`…) and the meaning is unknown; the game's own mask
-  encoder at `0x402eea` in `DMA1.exe` writes run lengths as *a sum of bytes
-  stopped at the first byte that is not `0xff`*, which is the shape a matching
-  decoder would need. That last step is what blocks the remaining 3,121.
-* Unresolved: the compressed payload's token semantics after the literal
-  blocks (3,121 pictures), the `goofy 2.6.3` blob payload format,
-  the v1 script object database, and one sound (`SifBtS10.aif`) whose format
-  byte disagrees with its length.
-* Tools: `src/bin/v1pic` reports per-resource dims/kind/layout/decoder, which
-  is what the `tests/game1.rs` floors are measured from.
+* **The compressed payloads are LZSS, and the decompressor is `FUN_42e0d4` in
+  `DMA1.exe`.** Not the games-2/3 LZ77 (`FUN_004c557a` in `DMA4.exe`):
+  byte-oriented LZ77 with a match table there, a 1024-slot ring with
+  fixed-width tokens here. Token layout: one control byte per eight tokens,
+  LSB first, bit 1 = literal and bit 0 = a match; a match is two big-endian
+  bytes holding `distance = word & 0x3FF` and `length = (byte0 >> 2) + 3`, i.e.
+  the length lives in the word's **upper** six bits
+  (`((length - 3) << 10) | distance`). The window's 1024 slots are zeroed on
+  entry (`0x42e0f7`, counting to `0x3be`) and the write cursor starts at 958
+  (`0x42e104`), so an encoded `distance` is a **window slot**, not a count of
+  bytes back — with the cursor at 958, `n` bytes back is
+  `(958 + p - n) mod 1024` in the word. The game's window is the fixed global
+  at `0x517540`, so the port zeroes the whole ring (equivalent, and it avoids
+  stale bytes between calls). Lives in `src/v1/lzss.rs`.
+* **`size == len` still means compressed.** 125 `pack.PIC` resources declare a
+  size equal to their own payload length; they look stored but the bytes
+  differ, and reading that column as "not compressed" is what left 18 of them
+  failing after the other 3,103 were fixed (the other 107 decoded anyway).
+  Measured with `v1pic`: `pack.PIC` 7,775 plain / 3,118 lzss.
+* Unresolved: the `goofy 2.6.3` blob payload format (305 resources, likely the
+  game's videos), the v1 script object database, and one sound
+  (`SifBtS10.aif`) whose format byte disagrees with its length.
+* Code layout: everything version-1 specific lives in **`src/v1/`**
+  (`lzss.rs`, `metadata.rs`, `picture.rs`). `container.rs` keeps only the
+  dispatch (count at `0x1E`, table at `0x20`, region handed to
+  `v1::metadata::parse`); `picture.rs`/`lz77.rs`/`sound.rs`/`film.rs`/
+  `script.rs` contain no version-1 branch. `cli.rs::picture_decoder` and
+  `cli.rs::picture_payload` are the only two places in the program that map a
+  version to code, which is what keeps one game's edits off the other's path.
+* Tests: `tests/game1.rs` pins the measured layout claims and the
+  `--original` byte-exactness (plain = the container slice, compressed = the
+  LZSS expansion to its declared size); `tests/game1_payloads.rs` carries an
+  **independent** LZSS encoder written from the token layout, so the
+  decompressor is checked against a second implementation rather than against
+  itself, plus a synthetic version-1 container so the `--original` path is
+  pinned without the CD mounted.
+* Tools: `src/bin/v1pic` reports per-resource dims/kind/storage/layouts, and
+  now prints both the stored length and the expanded one, because the gap
+  between them is what says a payload was compressed.
