@@ -418,51 +418,94 @@ entries), so all 305 resources are now addressed correctly.
 
 ### 6.1 What is measured about the payload
 
-These are facts, taken on all 305 payloads of the recovered `pack.BLB`, that
-the next reader should not have to re-derive. They narrow the open question
-without settling it:
+Facts taken on all 305 payloads of the recovered `pack.BLB` and traced through
+the game's own reader in `DISNEYMA.EXE`. They narrow the open question below
+without settling it, and `tests/game1_blobs.rs` pins every one of them.
 
-* **The stamp is a constant, not a magic the loader checks.** Every one of the
-  305 payloads opens with the same 14 bytes: `u16` `0x000c` then the 12-byte
-  string `"goofy 2.6.3\0"`. But `DISNEYMA.EXE` contains **no** `cmp`/`mov`
-  using those bytes as an immediate (the only occurrence of `66 6f 6f 66` in
-  the file is the string itself), and the string's address `0x512aac` has
-  exactly one reference in the image and it is a data table, not code. So the
-  loader does not validate the stamp; it is a writer's watermark.
-* **The body repeats on an 8-byte period.** Autocorrelation peaks sharply at
-  8 (0.79 on `session 1`, 0.81 on `smallsession`), and the repeating unit reads
-  as `u32, u16, u16`: `00 00 00 13 | 0c f0 | 0c e0`, then `00 00 00 13 | 0d 30 |
-  0c e0`, and so on. The `u32` takes only a handful of small values (`0x13`,
-  `0x01`, `0x00`); the two `u16`s usually sit close together, and in some
-  payloads one is constant while the other climbs. One of the smallest
-  (`session 1`, 430 bytes) starts `00 00 00 00 | 01 | 00 00 00 0c | 00 00 00 28
-  | 17 00 00 ff | …`, so the header before the records is not fixed-length
-  either.
-* **The payloads are not a container.** No `RIFF`, `AVI`, `ftyp`, `moov`,
-  `mdat`, `MACE`, `OggS`, `PK` or PNG/GIF/BM magic occurs in any of them.
-  A stray `1f 8b` appears in 117 of 305, which is a coincidence of the byte
-  distribution below, not gzip.
-* **The body is low-entropy and small-valued.** `SbfSs_01`'s 324,396 body bytes
-  use the range `0x00`–`0x1f` almost exclusively (histogram: `0x00`,
-  `0x13`, `0x10`, `0x14`, `0x15`, `0x11`, `0x16`, `0x12`, `0x17`, `0x19`,
-  `0x1d`, `0x1c` …), giving 5.04 bits/byte, with runs of length 1 (197,769) and
-  3 (40,131) and almost nothing longer (only 1,203 of length 2). A stream that
-  packs symbols from a 32-entry alphabet this tightly is arithmetic- or
-  Huffman-coded, which is consistent with `goofy` being a codec rather than a
-  container.
-* **The first several bytes of a payload are a length-ish header.** Reading
-  the two `u32`s at payload offsets 14 and 18 as a pair (`SbfSs_01`: 755, 9060;
-  `SbfSs_04`: 1123, 13476; `smallsession`: 7, 84) suggests a count and a
-  stride, but no reading of them reproduces the payload's own length across
-  the 305 resources, so they are not a payload size in any obvious unit.
+**The stamp.** Every payload opens with the same 14 bytes: `u16` `0x000c` then
+the 12-byte string `"goofy 2.6.3\0"`. Read as a length-prefixed string, which
+is what makes it skippable rather than magic.
 
-What would settle it: locating the function in `DISNEYMA.EXE` that consumes
-these 8-byte records. The string `"session done sound"` at `0x51041c` has one
-reference in the image: the immediate operand of `push 0x51041c` at `0x4a77a5`,
-inside the function that starts at `0x4a7763` — an object constructor that
-zeroes fields at `this+0x0e`, `+0x12`, `+0x16`, `+0x1a`, `+0x1e`, `+0x20023`,
-`+0x20027` and calls `0x4546bc` at `0x4a777c`. Following that constructor to the
-record parser is the next step, and nothing past it has been read yet.
+**The stamp is a watermark, not a magic.** No `cmp`/`mov` of those bytes exists
+in `DISNEYMA.EXE` — a search for the immediate `66 6f 6f 66` returns exactly
+one hit, the string itself — and the string's address `0x512aac` has exactly
+one reference in the image, from a data table rather than from code. The loader
+never validates it.
+
+**The record reader.** `FUN_004b5f34` walks the payload with a cursor held at
+`object + 0x20023` and consumes **8 bytes per record**. The chain to it, all in
+`DISNEYMA.EXE`, is:
+
+    session step       0x4a7ae0   (vtable slot 9 of the object built by the
+                                  "session done sound" constructor at 0x4a7763,
+                                  whose vtable is 0x51043c)
+      -> advance       0x4a7d4c   runs the frame loop, one call per record
+           -> dispatch 0x4a7e50   reads a record, returns the event code
+                -> read 0x4b5f34  the 8-byte record reader
+
+The event code comes back to `0x4a7d4c`, which turns it into one of three
+virtual calls on the object at `this + 0x60` (slots `+0x1c`, `+0x20`, `+0x24`).
+
+
+```text
+u16 a   @ +0     a coordinate; -800 when the object's version reads 0x107
+u16 b   @ +2     a coordinate; -800 likewise
+u32 d   @ +4     an opcode, small
+```
+
+All three are big-endian on the wire; the reader swaps them in place when a
+flag at `object + 0x22` says the file was not written in the host's order, so
+one code path serves both byte orders. After the record it advances the cursor
+by 8 and increments `object + 0x1a`, which is the record count.
+
+**The three smallest payloads decode completely.** Their header is 38 bytes:
+the 14-byte stamp, a fixed 20-byte prologue
+(`00 00 00 01 00 00 00 0c 00 00 00 28 17 00 00 ff`), then `u32` **count** and
+`u32` **count × 8**. Those two numbers are what proves the layout: they close
+the arithmetic exactly.
+
+| payload | bytes | count | body | last `d` |
+|---|---:|---:|---:|---:|
+| `session 1` | 430 | 49 | 392 | 0 |
+| `session 2` | 862 | 103 | 824 | 0 |
+| `session 3` | 662 | 78 | 624 | 0 |
+
+Every record of all three carries `d == 19` except the final one, which carries
+`d == 0` — a terminator that closes the stream, which is how a reader knows it
+has finished. The step function dispatches on the event code it gets back into
+three virtual calls on the object at `this + 0x60` (slots `+0x1c`, `+0x20`,
+`+0x24`), and `FUN_004a7284` is a 16.16 fixed-point multiply
+(`(x * y) >> 16`) — so the `u16` coordinates are scaled before use, not raw
+pixels.
+
+**The larger payloads are not yet decoded.** Their heads are a different
+family: a 12-byte unit repeating every 12 bytes,
+`u32 0x24 | u32 0x00999999 | u32 value`, over 400 occurrences in the largest
+alone. Their *tails* are the 8-byte records above (with `d` in the 10–11 range
+and a `d == 0` closer), so the record shape covers the whole payload — but no
+header reading makes the head close arithmetically. Only the 3 payloads in the
+table above (plus `smallsession`, whose records I can read but whose prologue
+has 12 extra bytes) are fully accounted for; 301 of 305 are not.
+
+**Not a container.** No `RIFF`, `AVI `, `ftyp`, `moov`, `mdat`, `MACE`, `OggS`
+or `PK` magic occurs in any of the 305 payloads, and the stamp does not recur
+inside any of them — so this is one stream per payload, not a concatenation.
+
+**Not a coded-video stream either.** The bodies draw from the range
+`0x00`–`0x1f` almost exclusively, giving ~5.0 bits/byte with runs of 1
+(197,769) and 3 (40,131) — a coded stream, but of *coordinates*, because the
+8-byte records that carry it are coordinate pairs and an opcode. `goofy` is
+compressing a path, not video frames. A stray `1f 8b` appears in 117 of 305,
+which is a coincidence of that byte distribution and is not gzip.
+
+**What settles it.** Reading the prologue of a large payload. The 12-byte head
+unit `u32 0x24 | u32 0x00999999 | u32 value` is the thing to identify: `0x24`
+is constant, `0x00999999` is constant, and only the third field moves. That is
+the shape of a fixed header plus one varying coordinate — most likely a list of
+the objects the animation drives, each with a start position, followed by the
+record stream. `0x4a7bc4`, which scales two `u16`s and reads `word [eax + 1]`
+and `word [eax + 3]` from the object at `this + 0x3b`, is where that list is
+consumed and is the natural next function to read.
 
 ## 7. Scripts — the container opens, the object database does not
 
@@ -586,14 +629,22 @@ them is what says a payload was compressed:
 | v1 script container layout (no names table, no metadata region) | **measured** — first payload at `0x20+4*(N+1)+2` and the marker `4`, both asserted in `tests/game1.rs` (§7) |
 | v1 script object names come from the payload tail | **measured** — `char606`, `char1a`, `sky333`; an inference as a *rule*, in 126/295 and 664/988 payloads (§7) |
 | v1 script per-class record size | **unknown** — no single width fits; this is the open question (§7) |
-| the `Blobs` payload is a `goofy` codec stream | **inferred** from the
-  string, the 8-byte record period, and a body drawn from a 32-symbol alphabet
-  (§6.1) — **not** decoded |
+| a blob record is 8 bytes, `{u16 a; u16 b; u32 d}`, big-endian | **measured**
+  from `FUN_004b5f34`'s cursor arithmetic, and it closes exactly on the three
+  smallest payloads (§6.1) |
+| the blob prologue is 38 bytes for every payload | **measured** on
+  `session 1/2/3`; **disproved** as a general rule — the larger payloads' heads
+  are a different 12-byte family (§6.1) |
+| blob records are terminated by `d == 0` | **measured** — the final record of
+  each decoded payload, and every other record is `d == 19` (§6.1) |
 | the `goofy` stamp is validated by the loader | **disproved** — no `cmp`/`mov`
   of the bytes exists in `DISNEYMA.EXE` and the string's only reference is a
   data table, so it is a writer's watermark (§6.1) |
 | `pack.BLB` holds an RSS/AVI/QuickTime container | **disproved** — no such
-  magic occurs in any of the 305 payloads (§6.1) |
-| where the blob record parser lives | **partially traced** — `push
-  "session done sound"` at `0x4a77a5`, inside a constructor starting at
-  `0x4a7763`; nothing beyond it has been read (§6.1) |
+  magic occurs in any of the 305 payloads, and the stamp never recurs inside
+  one (§6.1) |
+| the blob body is coded video | **disproved** — it is coded *coordinates*:
+  the records that carry it are coordinate pairs and an opcode (§6.1) |
+| the large payloads' 12-byte head unit | **unidentified** — `u32 0x24 |
+  u32 0x00999999 | u32 value`, over 400 occurrences in the largest payload;
+  `0x4a7bc4` consumes it and is the next function to read (§6.1) |
