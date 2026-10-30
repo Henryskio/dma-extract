@@ -302,18 +302,22 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   the payloads. Verified on both containers: the first payload starts at
   `0x20 + 4*(N+1) + 2` and the last offset equals the file length. See
   `GAME1.md` §7 and `src/v1/scripts.rs`.
-* **`pack.BLB`'s `goofy 2.6.3` payloads: the record format is measured, the
-  prologue for 301 of 305 payloads is not.** `tests/game1_blobs.rs` pins it.
+* **`pack.BLB`'s `goofy 2.6.3` payloads: the record format is measured, and two
+  header invariants hold across all 305, but the prologue is decoded for only 4
+  of them.** `tests/game1_blobs.rs` pins it.
   The game's own reader (`FUN_004b5f34` in `DISNEYMA.EXE`, reached from the
   session step at `0x4a7ae0` via `0x4a7d4c` and `0x4a7e50`) consumes **8-byte
   records** — `u16 a`, `u16 b`, `u32 d`, big-endian, `-800` on both u16s when
   the object's version reads `0x107`. The three smallest payloads
   (`session 1/2/3`: 49/103/78 records) close exactly through that layout and
   end in a `d == 0` terminator; every other record is `d == 19`. The larger
-  payloads' *tails* are the same records, but their heads are a 12-byte family
-  (`u32 0x24 | u32 0x00999999 | u32 value`, over 400 occurrences in the
-  largest) that no header reading closes arithmetically — that is the open
-  question, and `docs/GAME1.md` §6.1 names `0x4a7bc4` as where it is consumed.
+  payloads' heads are that 12-byte family (407 in the largest), so the stream
+  boundary is not derivable — that is the open question. `docs/GAME1.md` §6.1
+  records two approaches already tried and rejected (reading the stream back
+  from the terminator and scoring candidate starts; assuming the section closes
+  at `14 + 8 + count x 12` or `22 + count x 12`) so they are not retried. The
+  byte-exact `--original` extraction of all 305 payloads — 73,061,910 bytes,
+  zero mismatches — is the archival output and needs no record size.
 * Unresolved: the **per-class record size** in a v1 script payload (the
   count's distribution is strongly peaked — 210 `pack.mms` payloads with a
   lead of 14 are all exactly 152 bytes — but no single record width fits the

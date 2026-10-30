@@ -478,14 +478,49 @@ three virtual calls on the object at `this + 0x60` (slots `+0x1c`, `+0x20`,
 (`(x * y) >> 16`) — so the `u16` coordinates are scaled before use, not raw
 pixels.
 
-**The larger payloads are not yet decoded.** Their heads are a different
-family: a 12-byte unit repeating every 12 bytes,
-`u32 0x24 | u32 0x00999999 | u32 value`, over 400 occurrences in the largest
-alone. Their *tails* are the 8-byte records above (with `d` in the 10–11 range
-and a `d == 0` closer), so the record shape covers the whole payload — but no
-header reading makes the head close arithmetically. Only the 3 payloads in the
-table above (plus `smallsession`, whose records I can read but whose prologue
-has 12 extra bytes) are fully accounted for; 301 of 305 are not.
+**Two invariants hold across all 305 payloads**, and both are asserted in
+`tests/game1_blobs.rs`:
+
+* every payload's last four bytes are zero — the `d == 0` terminator of a
+  record stream that runs to the end of the payload;
+* the two `u32`s just past the stamp satisfy `second == first * 12`, in every
+  payload, with `first` never zero. So each header carries a count and the byte
+  size of a 12-byte section.
+
+Together they say every payload is `… header … + records + d == 0`, and that
+the header contains a section of `count` 12-byte units — they do not say where
+that section ends.
+
+**The larger payloads are not yet decoded.** Their heads are that 12-byte
+section: `u32 tag | u32 constant | u32 value`, 407 of them in the largest
+payload alone, with the tag almost always `0x24` and the constant unchanging
+within a run (`db 99 99 99` for `SbfSs_01`, `28 90 90 91` for `SbfSs_03`,
+`b6 ae ad ab` for `SbfSs_04`, and so on) while only the third field moves. Only
+the 3 payloads in the table above plus `smallsession` are fully accounted for;
+the other 301 are not.
+
+**Approaches already tried and rejected** — recorded so they are not retried:
+
+* *Reading the stream back from the terminator and scoring candidate starts by
+  the share of small opcodes.* It finds a start for all 305 payloads and
+  covers 99.5 % of the container's bytes, but it is **wrong**: on `SbfSs_01` it
+  starts the stream at 1230, which is in the middle of the 12-byte section, and
+  the run of small opcodes there is an artefact of the section's regular
+  spacing. Nothing about the chosen offset is checkable, so it is not a
+  decoder.
+* *Assuming the section closes at `14 + 8 + count × 12` or `22 + count × 12`.*
+  Neither lands on a whole number of 8-byte records for any payload — for
+  `SbfSs_01`, `22 + 9060 = 9082` leaves a half record.
+
+The opcodes that do appear, over the records of the three decoded payloads, are
+1–19 with a `0` closer; over the (unreliable) full-container read the same
+spread appears with small tails at 31 and 32. Those tails are probably the
+12-byte section leaking into the misaligned read, which is another reason not
+to trust it.
+
+**The archival output.** `--original` writes all 305 payloads byte-exactly —
+73,061,910 bytes, 305 files, zero mismatches — which needs no record size at
+all and is the safety net while the section is undecoded.
 
 **Not a container.** No `RIFF`, `AVI `, `ftyp`, `moov`, `mdat`, `MACE`, `OggS`
 or `PK` magic occurs in any of the 305 payloads, and the stamp does not recur

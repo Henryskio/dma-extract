@@ -241,3 +241,64 @@ fn the_record_run_is_closed_by_a_zero_terminator() {
         assert_eq!(d, 0, "{want_name}: the last 8 bytes close the record run");
     }
 }
+
+/// Every one of the 305 payloads closes its stream the same way.
+///
+/// This is a property of the container, not of the three payloads that are
+/// fully decoded, so it is asserted over all of them: the last four bytes of
+/// every payload are a zero, which is the terminator record's `d`.
+#[test]
+fn every_payload_ends_with_a_zero_terminator() {
+    let Some(dir) = game1_dir() else {
+        eprintln!("skipping: first game assets not present");
+        return;
+    };
+    let path = dir.join("pack.BLB");
+    if !path.is_file() {
+        return;
+    }
+    let container = Container::open(&path).expect("open pack.BLB");
+    let n = container.resource_count as usize;
+    for i in 0..n {
+        let p = container.payload(i);
+        assert!(p.len() >= 8, "payload {i} is shorter than one record");
+        assert_eq!(
+            u32::from_be_bytes([p[p.len() - 4], p[p.len() - 3], p[p.len() - 2], p[p.len() - 1]]),
+            0,
+            "payload {i} does not end with the d == 0 terminator"
+        );
+    }
+}
+
+/// Every payload's header carries a count and a byte size in a fixed ratio.
+///
+/// The `u32` just past the stamp and the `u32` after it satisfy
+/// `second == first * 12` in all 305 payloads. That is a real, universal
+/// property of the header, and it is what makes the section boundary
+/// derivable — but the 12-byte section has **not** been decoded, so this test
+/// pins only the arithmetic, not an interpretation of the section's contents.
+#[test]
+fn every_header_carries_a_count_and_its_byte_size() {
+    let Some(dir) = game1_dir() else {
+        eprintln!("skipping: first game assets not present");
+        return;
+    };
+    let path = dir.join("pack.BLB");
+    if !path.is_file() {
+        return;
+    }
+    let container = Container::open(&path).expect("open pack.BLB");
+    let n = container.resource_count as usize;
+    for i in 0..n {
+        let p = container.payload(i);
+        assert!(p.len() >= 22, "payload {i} is too short for a header");
+        let count = u32::from_be_bytes([p[14], p[15], p[16], p[17]]);
+        let size = u32::from_be_bytes([p[18], p[19], p[20], p[21]]);
+        assert!(count > 0, "payload {i}: the header's count is zero");
+        assert_eq!(
+            size,
+            count * 12,
+            "payload {i}: the header's size field is not count * 12"
+        );
+    }
+}
