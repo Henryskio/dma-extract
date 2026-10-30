@@ -160,67 +160,166 @@ fn picture_metadata_lands_on_the_first_payload() {
     }
 }
 
-/// The dimensions decoded from the metadata must be consistent with the
-/// payload length for every resource stored in one of the raw layouts, and
-/// the real decoder must consume at least the measured number of resources.
+/// Every first-game picture resource must decode, and the storage form must
+/// follow the container's declaration exactly.
 ///
-/// This is the check that proved the first game stores `{height, width}`
-/// pairs in its metadata: with the pair absent, or with the two halves
-/// swapped, *no* payload length lines up. The floors are the counts measured
-/// on the shipped files; the sub-formats still undecoded keep `mpApp.PIC` and
-/// `pack.PIC` from reaching 100%, which is why these are floors and not equalities.
+/// This is the check that proved the first game stores `{height, width}` pairs
+/// in its metadata: with the pair absent, or with the two halves swapped, *no*
+/// payload length lines up. It is also the check that pins the compression
+/// discriminator — a resource whose declared uncompressed size is zero must
+/// come back as the container's own bytes, and one that declares a size must
+/// expand to exactly that many bytes and then decode.
+///
+/// The numbers are not floors any more. With the LZSS step in place every
+/// shipped resource decodes, and these were measured as 12,961 of 12,961
+/// across the four picture containers (HD.PIC 1682, mpApp.PIC 384, pack.PIC
+/// 10893, Topolino.CPK 2) with zero reported failures, so a regression to any
+/// single resource fails here.
 #[test]
-fn dimensions_agree_with_the_payload_lengths() {
+fn dimensions_and_storage_forms_decode_every_resource() {
     let Some(dir) = game1_dir() else {
         eprintln!("skipping: first game assets not present");
         return;
     };
-    // container -> (minimum raw-length matches, minimum decoded resources)
-    let floors: &[(&str, usize, usize)] = &[
-        ("HD.PIC", 1000, 1682),
-        ("mpApp.PIC", 200, 250),
-        ("pack.PIC", 100, 5100),
-        ("Topolino.CPK", 2, 2),
-    ];
-    for (name, raw_floor, decoded_floor) in floors {
+    let mut checked = 0usize;
+    let mut decoded = 0usize;
+    for name in ["HD.PIC", "mpApp.PIC", "pack.PIC", "Topolino.CPK"] {
         let path = dir.join(name);
         if !path.is_file() {
             continue;
         }
         let c = Container::open(&path).expect("parse container");
+        assert_eq!(c.kind, ContainerKind::Pictures, "{name}: kind");
         let n = c.resource_count as usize;
-        let mut raw = 0usize;
-        let mut decoded = 0usize;
+        let mut plain = 0usize;
+        let mut lzss = 0usize;
         for i in 0..n {
-            // Version 1 stores every payload uncompressed.
-            let data = c.payload(i);
-            let w = c.dimension(i).width as usize;
-            let h = c.dimension(i).height as usize;
-            let stride = (w + 3) / 4 * 4;
-            // Every raw layout, including the padded 32bpp variant.
-            let candidates = [
-                1024 + stride * h,
-                stride * h,
-                1024 + w * h,
-                w * h,
-                1024 + 4 * stride * h,
-                4 * w * h,
-                4 * stride * h,
-            ];
-            if candidates.contains(&data.len()) {
-                raw += 1;
+            let stored = c.payload(i);
+            let declared = mmf_extract::v1::uncompressed_len(&c, i);
+            let payload = match mmf_extract::v1::picture::payload(&c, i) {
+                Ok(p) => p,
+                Err(e) => panic!("{name}[{i}] '{}': {e:#}", c.name(i)),
+            };
+            if declared == 0 {
+                // Stored plain: the expansion step must hand back the slice.
+                assert_eq!(
+                    payload, stored,
+                    "{name}[{i}] '{}': declared 0 but the payload changed",
+                    c.name(i)
+                );
+                plain += 1;
+            } else {
+                // Stored compressed: it must expand to the declared length,
+                // which is what an LZSS stream may not exceed.
+                assert_ne!(
+                    payload, stored,
+                    "{name}[{i}] '{}': declared {declared} but the payload is stored plain",
+                    c.name(i)
+                );
+                lzss += 1;
             }
-            if mmf_extract::picture::pixel_format(&c, i, data).is_some() {
-                decoded += 1;
-            }
+            // The payload, whichever form it came from, must decode.
+            assert!(
+                mmf_extract::picture::pixel_format(
+                    &c,
+                    i,
+                    &payload,
+                    mmf_extract::v1::palette_of(&c, i)
+                )
+                .is_some(),
+                "{name}[{i}] '{}': {} bytes after expansion decode to nothing",
+                c.name(i),
+                payload.len()
+            );
+            decoded += 1;
         }
-        assert!(
-            raw >= *raw_floor,
-            "{name}: only {raw} of {n} payload lengths agree with the dimensions (floor {raw_floor})"
+        assert_eq!(
+            decoded - checked, n,
+            "{name}: every resource must decode (plain {plain}, lzss {lzss})"
         );
-        assert!(
-            decoded >= *decoded_floor,
-            "{name}: the decoder only consumes {decoded} of {n} resources (floor {decoded_floor})"
-        );
+        checked += n;
     }
+    assert_eq!(checked, 12_961, "the four picture containers hold 12,961 resources");
+    assert_eq!(decoded, checked);
+}
+
+/// `--original` for a first-game container writes the expanded payload.
+///
+/// This is the 1:1 requirement of `AGENTS.md`: the bytes written out must be
+/// reproducible from the bytes in the container, so for a stored-plain
+/// resource they are the container's own slice and for a compressed one they
+/// are exactly what the declared size expands to.
+#[test]
+fn original_mode_writes_the_expanded_payload() {
+    let Some(dir) = game1_dir() else {
+        eprintln!("skipping: first game assets not present");
+        return;
+    };
+    // Never write inside the asset folder: it is read-only input. The whole
+    // `.dat` set for 12,961 resources is ~150 MB, so this lives in scratch and
+    // is removed afterwards.
+    let out_dir = tempdir("v1-original");
+    let _guard = Cleanup(&out_dir);
+
+    let mut checked = 0usize;
+    for name in ["HD.PIC", "mpApp.PIC", "pack.PIC", "Topolino.CPK"] {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let c = Container::open(&path).expect("parse container");
+        let report =
+            mmf_extract::cli::extract_pictures_original(&c, &out_dir.join(name)).expect("extract");
+        assert_eq!(report.resources.len(), c.resource_count as usize, "{name}");
+        assert!(report.failed.is_empty(), "{name}: {:?}", report.failed);
+
+        let on_disk = std::fs::read(&path).expect("read container");
+        for entry in &report.resources {
+            let written = std::fs::read(&entry.png).expect("read .dat");
+            let i = entry.index;
+            let start = c.offsets[i] as usize;
+            let end = c.offsets[i + 1] as usize;
+            let declared = mmf_extract::v1::uncompressed_len(&c, i);
+            if declared == 0 {
+                assert_eq!(
+                    written, &on_disk[start..end],
+                    "{name}[{i}] '{}': a stored-plain .dat must be the container slice",
+                    entry.name
+                );
+            } else {
+                assert_eq!(
+                    written,
+                    mmf_extract::v1::lzss::decompress(&on_disk[start..end], declared)
+                        .expect("decompress"),
+                    "{name}[{i}] '{}': a compressed .dat must be the exact expansion",
+                    entry.name
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 12_961);
+}
+
+/// A scratch directory that removes itself when the test ends, even on a
+/// panic.
+struct Cleanup<'a>(&'a Path);
+impl Drop for Cleanup<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.0);
+    }
+}
+
+/// Scratch space for this test binary.
+fn tempdir(tag: &str) -> PathBuf {
+    let base = std::env::var("MMF_TEST_TMP").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join("mmf-extract-tests")
+            .display()
+            .to_string()
+    });
+    let dir = Path::new(&base).join(format!("{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
 }

@@ -1,5 +1,10 @@
 //! MMFW resource container parsing (the game's in-house format, not Clickteam).
 //!
+//! This is the parser the **second and third games share**: their versions 2
+//! and 3 containers differ only in the two bytes at `0x12`. It also holds the
+//! common header every version has and dispatches the rest by version, so
+//! there is exactly one place that reads a container's skeleton.
+//!
 //! Layout (all multi-byte integers big-endian on the wire unless the file
 //! declares the "II" little-endian marker):
 //!
@@ -7,14 +12,11 @@
 //! 0x00  16 bytes  signature: "MMFW " + tag, NUL padded
 //!                tag = "Pictures" | "Sounds" | "Films" | "Scripts" | "Blobs"
 //! 0x10   2 bytes  endian marker: "MM" (big-endian) or "II" (little-endian)
-//! 0x12   2 bytes  u16 version; 3 in the first game, 2 in the sequel
-//!                (both parse identically)
+//! 0x12   2 bytes  u16 version
 //! 0x14   6 bytes  file id
 //! 0x1A   8 bytes  timestamp (double)
-//! 0x1E   2 bytes  u16 resource count N  -- **version 1 only**
-//! 0x22   2 bytes  u16 resource count N  -- versions 2 and 3
-//! 0x20  4*(N+1)  u32 offsets, version 1; resource i spans [off[i], off[i+1])
-//! 0x24  4*(N+1)  u32 offsets, versions 2 and 3
+//! 0x22   2 bytes  u16 resource count N
+//! 0x24  4*(N+1)  u32 offsets; resource i spans [off[i], off[i+1])
 //!         2 bytes  padding
 //!        32*N      resource names, NUL padded ASCII
 //!        4*N      u32 array (pictures: CRC/hash; sounds: Mac timestamp)
@@ -29,34 +31,7 @@
 //! ...               resource payloads, concatenated at offsets[0]
 //! ```
 //!
-//! **Version 1** (the first game, 1997) differs in two measured ways:
-//!
-//! * the resource count is the u16 at `0x1E`, and it is `N` — the u16 at
-//!   `0x22` holds an unrelated value (in `HD.PIC` it reads 20288 while the
-//!   real count is 1682);
-//! * the offsets table starts at **`0x20`**, four bytes earlier than the
-//!   `0x24` the later versions use. The table still holds `N + 1` entries and
-//!   its last entry is the file size, which is what pins the base: in every
-//!   shipped container `u32@(0x20 + 4*N)` equals the file length.
-//!
-//! Names are 32-byte fields in every version, at `0x20 + 4*(N+1) + 2` under
-//! version 1 and `0x24 + 4*(N+1) + 2` under versions 2 and 3.
-//!
-//! Version 1 *does* have a per-resource metadata region, but it is its own
-//! layout, measured against every shipped container and confirmed by the
-//! loader in `DMA1.exe`. All three kinds start with a `4*N` u32 array (sound
-//! containers store Mac timestamps there); what follows differs by kind:
-//!
-//! * **Pictures** — a 2-byte marker of `0x0007`, then `N` flags bytes,
-//!   `N` kind bytes, a `4*N` `{u16 height, u16 width}` dimension table, a
-//!   `4*N` stored-size table (all zeros in the shipped files, so v1 payloads
-//!   read as uncompressed), one more `N` byte array, a u16 palette count and
-//!   then `count` 1024-byte palettes. Total `15*N + 4` plus the bank.
-//! * **Sounds** — one `N` byte array (the format byte) and 2 bytes.
-//! * **Blobs** — nothing beyond the array plus 2 bytes.
-//!
-//! The region must end exactly at `offsets[0]`, and the parser rejects a
-//! container where it does not rather than guessing. See `docs/GAME1.md`.
+//! Names are 32-byte fields at `0x24 + 4*(N+1) + 2`.
 //!
 //! Picture metadata is exactly `15 * N + 4` bytes; sound metadata is
 //! `14 * N + 2` bytes. Both were measured against every shipped container and
@@ -68,8 +43,20 @@
 //! offset table sits a serialized object database: a script version, a type
 //! table, an array of element counts, an array of type indices, and a string
 //! list of object names. See [`ScriptMeta`] and `docs/SCRIPTS.md`.
+//!
+//! ## Version 1
+//!
+//! Version 1 is the first game's format and differs throughout -- header
+//! bases, metadata layout, palette placement, payload compression -- so the
+//! first game's code lives in [`crate::v1`]. What this file keeps is the
+//! dispatch: the resource count comes from `0x1E` instead of `0x22`, the
+//! offsets table from `0x20` instead of `0x24`, and the metadata region is
+//! parsed by [`crate::v1::metadata`]. The table still holds `N + 1` entries
+//! and its last entry is the file size, which is what pins the base: in every
+//! shipped container `u32@(0x20 + 4*N)` equals the file length. Measured on
+//! all nine first-game containers. See `docs/GAME1.md`.
 
-use crate::picture::PALETTE_BYTES;
+use crate::v1;
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -79,8 +66,8 @@ pub enum ContainerKind {
     Pictures,
     Sounds,
     Films,
-    /// Undifferentiated opaque payloads. The first game uses one to carry
-    /// its videos (`pack.BLB`, tag "Blobs").
+    /// Undifferentiated opaque payloads. One shipped game uses this tag for
+    /// its videos (`pack.BLB`).
     Blobs,
     Scripts,
     Unknown,
@@ -93,8 +80,8 @@ impl ContainerKind {
             "Sounds" => Self::Sounds,
             "Films" => Self::Films,
             "Blobs" => Self::Blobs,
-            // The first game writes "MMFW Script"; the third writes
-            // "MMFW Scripts"; the second "MMFW 3 Script".
+            // The three shipped games spell the tag three ways: "Script",
+            // "3 Script" and "Scripts".
             "Scripts" | "3 Script" | "Script" => Self::Scripts,
             _ => Self::Unknown,
         }
@@ -189,6 +176,10 @@ pub struct Container {
     /// between the metadata and `offsets[0]` is exactly the u16 count plus
     /// `count * PALETTE_BYTES` bytes. Empty for every other version and kind.
     pub palettes: Vec<Vec<u8>>,
+    /// Version-1 picture containers only: each resource's declared
+    /// **uncompressed** size, in container order. `0` means the payload is
+    /// stored as-is. See [`crate::v1::uncompressed_len`].
+    pub uncompressed_sizes: Vec<u32>,
     /// Scripts-only object-database metadata. `None` for every other kind.
     pub script: Option<ScriptMeta>,
 }
@@ -310,180 +301,93 @@ impl Container {
                 kinds: Vec::new(),
                 names_end: metadata_start,
                 palettes: Vec::new(),
+                uncompressed_sizes: Vec::new(),
                 script: Some(script),
             });
         }
 
-        // Version 1 (the first game, 1997) keeps the later versions' shape --
-        // 2 bytes of padding after the offsets table, then 32-byte name
-        // fields -- but its per-resource metadata region is different and
-        // *smaller* in places. It is measured from the loader in
-        // `DMA1.exe` (`0x4183xx`, the `MMPictureResourceFile` reader) and
-        // verified against the shipped files: the region between the end of
-        // the names and `offsets[0]` is exactly long enough for the arrays
-        // below plus the palette bank, and no longer.
-        //
-        // All three v1 container kinds begin with a `4*N` u32 array. In sound
-        // containers the values decode as Mac timestamps (seconds since
-        // 1904-01-01): `0xaedb282b` is 1997-04-15, matching the game's build
-        // date. In picture containers the same array holds the per-resource
-        // id/handle word the loader uses to look a picture up.
-        if version == 1 {
-            let names_base = off_base + 4 * (n + 1) + 2;
-            let names_len = 32 * n;
-            if names_base + names_len > data.len() {
-                bail!(
-                    "{}: version 1 names table does not fit (need {}, have {})",
-                    path.display(),
-                    names_base + names_len,
-                    data.len()
-                );
-            }
-            let mut names = Vec::with_capacity(n);
-            for i in 0..n {
-                let s = &data[names_base + 32 * i..names_base + 32 * (i + 1)];
-                let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
-                names.push(String::from_utf8_lossy(&s[..end]).into_owned());
-            }
-            let names_end = names_base + names_len;
-
-            // The `4*N` header array, then a container-kind-specific tail.
-            let base = names_end;
-            let need = base + 4 * n;
-            if need > data.len() {
-                bail!(
-                    "{}: version 1 metadata does not fit (need {}, have {})",
-                    path.display(),
-                    need,
-                    data.len()
-                );
-            }
-            let mut extra_u32 = Vec::with_capacity(n);
-            for i in 0..n {
-                extra_u32.push(read_u32(&data, base + 4 * i, big_endian));
-            }
-
-            let mut attr = Vec::new();
-            let mut flags = Vec::new();
-            let mut dimensions = Vec::new();
-            let mut kinds = Vec::new();
-            let mut palettes = Vec::new();
-            // No size table exists in v1, so every payload reads as "stored
-            // uncompressed".
-            let sizes = vec![0u32; n];
-
-            let mut cursor = base + 4 * n;
-            match kind {
-                // Pictures: `N` flags, `N` kind bytes, a `4*N` dimension
-                // table, a `4*N` size table, one more `N` byte array, a u16
-                // palette count and then `count` 1024-byte palettes.
-                ContainerKind::Pictures => {
-                    // The 2-byte sub-version marker. Every shipped picture
-                    // container reads 7 here (`0x4183`'s reader requires it).
-                    if read_u16(&data, cursor, big_endian) != 7 {
-                        bail!(
-                            "{}: version 1 picture metadata marker is not 7",
-                            path.display()
-                        );
-                    }
-                    cursor += 2;
-                    flags.reserve(n);
-                    for i in 0..n {
-                        flags.push(data[cursor + i]);
-                    }
-                    cursor += n;
-                    kinds.reserve(n);
-                    for i in 0..n {
-                        kinds.push(data[cursor + i]);
-                    }
-                    cursor += n;
-                    dimensions.reserve(n);
-                    for i in 0..n {
-                        // The pair is {height, width}: the SECOND u16 is the
-                        // width, exactly as in versions 2 and 3.
-                        let h = read_u16(&data, cursor + 4 * i, big_endian);
-                        let w = read_u16(&data, cursor + 4 * i + 2, big_endian);
-                        dimensions.push(Dimension {
-                            width: w,
-                            height: h,
-                        });
-                    }
-                    cursor += 4 * n;
-                    // The 4*N array of stored payload sizes. Every shipped
-                    // container leaves it all zeros, which is why v1 payloads
-                    // read as uncompressed.
-                    cursor += 4 * n;
-                    // One more N-byte array whose meaning is not yet known.
-                    cursor += n;
-                    let palette_count = read_u16(&data, cursor, big_endian);
-                    cursor += 2;
-                    // The palette bank: `palette_count` 1024-byte palettes,
-                    // immediately before the first payload. Pictures whose
-                    // `kind` byte asks for a palette index into it rather than
-                    // carrying one inline, which is the only way the
-                    // `palette_of` codes below can find one.
-                    palettes.reserve(palette_count as usize);
-                    for k in 0..palette_count as usize {
-                        let at = cursor + k * PALETTE_BYTES;
-                        let want = at + PALETTE_BYTES;
-                        if want > data.len() {
-                            bail!(
-                                "{}: palette bank overruns the file (need {}, have {})",
-                                path.display(),
-                                want,
-                                data.len()
-                            );
-                        }
-                        palettes.push(data[at..want].to_vec());
-                    }
-                    cursor += palette_count as usize * PALETTE_BYTES;
-                }
-                // Sounds: one `N` byte array (the format byte) and 2 bytes of
-                // padding. The 4*N array ahead of it holds the Mac
-                // timestamps.
-                ContainerKind::Sounds => {
-                    attr.reserve(n);
-                    for i in 0..n {
-                        attr.push(data[cursor + i]);
-                    }
-                    cursor += n + 2;
-                }
-                // Blobs: nothing beyond the 4*N array plus 2 bytes.
-                ContainerKind::Blobs => cursor += 2,
-                // Scripts: the layout is still undecoded, so nothing is read.
-                _ => {}
-            }
-            if cursor != payload_start {
-                bail!(
-                    "{}: version 1 metadata ends at {} but the first payload starts at {}",
-                    path.display(),
-                    cursor,
-                    payload_start
-                );
-            }
-
-            return Ok(Container {
-                path,
-                data,
-                kind,
-                big_endian,
-                version,
-                file_id,
-                timestamp,
-                resource_count,
-                offsets,
-                names,
-                attr,
-                flags,
-                dimensions,
-                sizes,
-                extra_u32,
-                kinds,
-                names_end,
-                palettes,
-                script: None,
-            });
+        // 2 bytes of padding after the offset table.
+        let names_base = off_base + 4 * (n + 1) + 2;
+        let names_len = 32 * n;
+        if names_base + names_len > data.len() {
+            bail!(
+                "{}: names table does not fit (need {}, have {})",
+                path.display(),
+                names_base + names_len,
+                data.len()
+            );
         }
+        let mut names = Vec::with_capacity(n);
+        for i in 0..n {
+            let s = &data[names_base + 32 * i..names_base + 32 * (i + 1)];
+            let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+            names.push(String::from_utf8_lossy(&s[..end]).into_owned());
+        }
+        let names_end = names_base + names_len;
+
+    if version == 1 {
+        // Version 1: a `4*N` u32 array, then a metadata region with its own
+        // layout. The array is read here because every kind has one; the
+        // region is parsed by the first game's own module, which is where the
+        // version-1 layout is documented and measured.
+        let base = names_end;
+        let need = base + 4 * n;
+        if need > data.len() {
+            bail!(
+                "{}: version 1 metadata does not fit (need {}, have {})",
+                path.display(),
+                need,
+                data.len()
+            );
+        }
+        let mut extra_u32 = Vec::with_capacity(n);
+        for i in 0..n {
+            extra_u32.push(read_u32(&data, base + 4 * i, big_endian));
+        }
+
+        // A version-1 Scripts container has no metadata region at all, so
+        // `names_end` is already `payload_start` and there is nothing to
+        // parse.
+        let meta = if kind == ContainerKind::Scripts {
+            v1::V1Metadata::default()
+        } else {
+            v1::metadata::parse(&data, kind, n, base, payload_start, big_endian, path.as_path())?
+        };
+
+        let attr = meta.attr;
+        let flags = meta.flags;
+        let dimensions = meta.dimensions;
+        let kinds = meta.kinds;
+        let palettes = meta.palettes;
+        let uncompressed_sizes = meta.uncompressed_sizes;
+        // Version-1 containers have no decoded-size table: `uncompressed_sizes`
+        // is the equivalent field, and a zero entry there means "stored
+        // as-is", which is what this shared field says.
+        let sizes = vec![0u32; n];
+
+        return Ok(Container {
+            path,
+            data,
+            kind,
+            big_endian,
+            version,
+            file_id,
+            timestamp,
+            resource_count,
+            offsets,
+            names,
+            attr,
+            flags,
+            dimensions,
+            sizes,
+            extra_u32,
+            kinds,
+            names_end,
+            palettes,
+            uncompressed_sizes,
+            script: None,
+        });
+    }
 
         // 2 bytes of padding after the offset table.
         let names_base = off_base + 4 * (n + 1) + 2;
@@ -601,6 +505,7 @@ impl Container {
             kinds,
             names_end,
             palettes: Vec::new(),
+            uncompressed_sizes: Vec::new(),
             script: None,
         })
     }
@@ -655,22 +560,6 @@ impl Container {
         self.kinds.get(i).copied().unwrap_or(0)
     }
 
-    /// The palette resource `i` index into, or `None` when it carries its own.
-    ///
-    /// Version-1 picture containers keep a palette bank at the end of their
-    /// metadata region, and the first game's run-length sub-format resources
-    /// with one-byte colour records index into it rather than prefixing a
-    /// palette to their payload. Entry 0 is the one used: `mpApp.PIC` ships
-    /// two palettes and the two agree with the vision checks of the decoded
-    /// `dmalog074/079` and `nameLess_230/231` stamps, which all index the low
-    /// numbered entries. This is a judgement resting on the vision check, not
-    /// a measured field — the container carries no per-resource palette
-    /// selector. Empty for versions 2 and 3, which prefix the palette to the
-    /// payload instead.
-    pub fn palette_of(&self, i: usize) -> Option<&[u8]> {
-        let _ = i;
-        self.palettes.first().map(|p| p.as_slice())
-    }
 }
 
 pub fn read_u16(d: &[u8], off: usize, big_endian: bool) -> u16 {

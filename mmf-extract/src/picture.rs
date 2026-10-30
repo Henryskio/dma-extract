@@ -34,8 +34,8 @@ pub enum PixelFormat {
     /// 32 bits per pixel: transparency (inverted alpha), red, green, blue.
     TranspRgb32,
     /// 32 bits per pixel with every row padded to a multiple of four bytes.
-    /// The first game stores a handful of pictures this way, which makes the
-    /// payload longer than a flat `4*w*h` array.
+    /// One of the shipped games stores a handful of pictures this way, which
+    /// makes the payload longer than a flat `4*w*h` array.
     TranspRgb32Padded,
     /// 8 bits per pixel, with a 1024-byte palette prefix.
     Paletted8,
@@ -81,8 +81,8 @@ pub(crate) fn indexed_rgba(palette: &[u8], indices: &[u8], width: u16, height: u
 
 /// Expand an 8bpp indexed image with an explicit row stride.
 ///
-/// `stride` is the distance in bytes between the starts of two rows. The
-/// sequel's films store rows unpadded (`stride == width`); the first game
+/// `stride` is the distance in bytes between the starts of two rows. One
+/// shipped film container stores rows unpadded (`stride == width`); the other
 /// pads to a multiple of four.
 pub(crate) fn indexed_rgba_stride(
     palette: &[u8],
@@ -155,12 +155,12 @@ pub(crate) fn rle_rgba(
     has_palette: bool,
     bank: Option<&[u8]>,
 ) -> Option<Vec<u8>> {
-    // The palette is normally a prefix when the container says kind == 1, but
-    // some resources (the sequel's `TtuPt_*`) keep the table at offset 0 and
-    // either carry no palette at all or suffix it. The first game goes further
-    // and keeps its palettes out of the payload entirely, in a bank at the end
-    // of the metadata region, so the bank is the last place to look. Try every
-    // placement and keep the one whose per-row colour counts line up exactly.
+    // The palette is usually a prefix when the container says kind == 1, but
+    // some resources (`TtuPt_*`) keep the table at offset 0 and either carry no
+    // palette at all or suffix it. A container may also hold its palettes
+    // outside the payload entirely, in a bank of its own, so `bank` is the last
+    // place to look. Try every placement and keep the one whose per-row colour
+    // counts line up exactly.
     let mut bases: Vec<usize> = vec![0];
     if data.len() > PALETTE_BYTES {
         bases.push(PALETTE_BYTES);
@@ -180,9 +180,9 @@ pub(crate) fn rle_rgba(
             } else {
                 Vec::new()
             };
-            // The container's palette bank: 7,748 `pack.PIC` resources index
-            // into it, because their table starts at offset 0 and no palette
-            // is prefixed or suffixed to the payload.
+            // The container's own bank: resources whose table starts at
+            // offset 0 index into it, because no palette is prefixed or
+            // suffixed to their payload.
             palette_sources.push(None);
             for pal_at in palette_sources {
                 let palette: Option<&[u8]> = match pal_at {
@@ -452,16 +452,27 @@ pub struct Decoded {
 /// layout, so the caller can report the resource as a failure rather than
 /// guessing at it. Shared by [`decode`] and by `src/bin/v1pic.rs`, so the
 /// probe bin reports what the real decoder does rather than a second opinion.
-pub fn pixel_format(container: &Container, index: usize, data: &[u8]) -> Option<PixelFormat> {
+/// Which layout resource `index` is stored in.
+///
+/// `palette` is an optional palette the *container* holds outside the payload,
+/// the same one [`decode_bytes`] takes; it is needed here because the
+/// run-length test has to try the palette placements before it can tell a
+/// one-byte-colour payload from a four-byte-colour one.
+pub fn pixel_format(
+    container: &Container,
+    index: usize,
+    data: &[u8],
+    palette: Option<&[u8]>,
+) -> Option<PixelFormat> {
     let dim = container.dimension(index);
     let (width, height) = (dim.width, dim.height);
     let pixels = width as usize * height as usize;
     let as32 = pixels * 4;
-    // 32 bits per pixel with each row padded to a multiple of four bytes. The
-    // first game stores a handful of pictures this way, and the padding makes
-    // the payload longer than a flat `4*w*h` array. It is only distinguishable
-    // from `as32` when the width is not a multiple of four, so the flat layout
-    // is tried first.
+    // 32 bits per pixel with each row padded to a multiple of four bytes. One
+    // of the shipped games stores a handful of pictures this way, and the
+    // padding makes the payload longer than a flat `4*w*h` array. It is only
+    // distinguishable from `as32` when the width is not a multiple of four, so
+    // the flat layout is tried first.
     let stride32 = 4 * stride8(width) * height as usize;
     let as8 = PALETTE_BYTES + stride8(width) * height as usize;
     let bare8 = stride8(width) * height as usize;
@@ -480,7 +491,7 @@ pub fn pixel_format(container: &Container, index: usize, data: &[u8]) -> Option<
         width,
         height,
         container.kind_of(index) == 1,
-        container.palette_of(index),
+        palette,
     )
     .is_some()
     {
@@ -492,28 +503,70 @@ pub fn pixel_format(container: &Container, index: usize, data: &[u8]) -> Option<
     }
 }
 
+/// Decode picture resource `index` of `container`.
+///
+/// This is the whole path for a container whose payloads need only the shared
+/// LZ77 step: a zero in the container's decompressed-size table means the
+/// payload was stored uncompressed and must not go through the decoder.
+///
+/// A container version that compresses payloads differently (or supplies its
+/// palettes out-of-band, or both) should expand its payload itself and call
+/// [`decode_bytes`], which is where the layout work happens. Keeping that
+/// division means this function never has to know about another version.
 pub fn decode(container: &Container, index: usize) -> Result<Decoded> {
-    let raw = container.payload(index);
-    // A zero in the container's decompressed-size table means the payload was
-    // stored uncompressed, so it must not go through the LZ77 decoder.
-    let data = if container.sizes[index] == 0 {
-        raw.to_vec()
-    } else {
-        lz77::decompress(raw).with_context(|| {
-            format!(
-                "decompressing resource {index} ('{}')",
-                container.name(index)
-            )
-        })?
-    };
+    let data = payload(container, index)?;
+    decode_bytes(container, index, &data, None)
+}
 
+/// The payload of picture resource `index`, after the decompression step this
+/// container version applies.
+///
+/// A zero in the container's decompressed-size table means the payload was
+/// stored uncompressed and is returned as-is; any other value means it is a
+/// byte-oriented LZ77 stream of that many bytes.
+///
+/// This is also what the `--original` mode writes out, so the two paths share
+/// it rather than each re-deriving the rule: the file written is exactly the
+/// bytes the game's runtime would hand to its blitter.
+///
+/// A container version that compresses payloads differently has its own
+/// version of this function in its own module, and the wiring layer picks one;
+/// see [`crate::cli::picture_payload`]. This one therefore never needs to
+/// mention another version.
+pub fn payload(container: &Container, index: usize) -> Result<Vec<u8>> {
+    let raw = container.payload(index);
+    if container.sizes[index] == 0 {
+        return Ok(raw.to_vec());
+    }
+    lz77::decompress(raw).with_context(|| {
+        format!(
+            "decompressing resource {index} ('{}')",
+            container.name(index)
+        )
+    })
+}
+
+/// Decode `data`, already in its final layout, as picture resource `index`.
+///
+/// `palette` is an optional palette the *container* holds outside the payload,
+/// consulted as a last resort when the payload carries none of its own; see
+/// [`rle_rgba`]. A caller that owns such a bank (one of the shipped container
+/// versions keeps its palettes at the end of its metadata region) passes it in
+/// here, which is why this function lives below [`decode`] rather than being
+/// folded into it.
+pub fn decode_bytes(
+    container: &Container,
+    index: usize,
+    data: &[u8],
+    palette: Option<&[u8]>,
+) -> Result<Decoded> {
     let dim = container.dimension(index);
     let (width, height) = (dim.width, dim.height);
     let pixels = width as usize * height as usize;
     let as32 = pixels * 4;
     let stride32 = 4 * stride8(width) * height as usize;
 
-    let Some(format) = pixel_format(container, index, &data) else {
+    let Some(format) = pixel_format(container, index, &data, palette) else {
         let as8 = PALETTE_BYTES + stride8(width) * height as usize;
         let bare8 = stride8(width) * height as usize;
         bail!(
@@ -562,7 +615,7 @@ pub fn decode(container: &Container, index: usize) -> Result<Decoded> {
             width,
             height,
             container.kind_of(index) == 1,
-            container.palette_of(index),
+            palette,
         )
         .unwrap_or_default(),
     };
@@ -579,10 +632,20 @@ pub fn decode(container: &Container, index: usize) -> Result<Decoded> {
 ///
 /// `out_dir` receives one PNG per resource. `raw_dir` receives the payload
 /// exactly as stored in the container, untouched.
+/// Extract every picture resource of `container_path` into `out_dir`, writing
+/// the untouched payloads into `raw_dir`.
+///
+/// `decode` is the picture decoder to use, passed in because a container
+/// version may need a step the shared path does not have: the caller in
+/// `cli.rs` picks [`decode`] for the versions whose payloads this module
+/// understands and supplies its own for a version that compresses payloads
+/// differently. Keeping the choice out of here is what lets this module stay
+/// free of version-specific code.
 pub fn extract_container(
     container_path: &Path,
     out_dir: &Path,
     raw_dir: &Path,
+    decode: fn(&Container, usize) -> Result<Decoded>,
 ) -> Result<ExtractReport> {
     let container = Container::open(container_path)?;
     std::fs::create_dir_all(out_dir)?;

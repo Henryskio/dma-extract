@@ -11,9 +11,46 @@
 
 use anyhow::{Context, Result};
 use crate::container::{Container, ContainerKind};
-use crate::lz77;
 use crate::picture;
+use crate::picture::Decoded;
+use crate::v1;
 use std::path::{Path, PathBuf};
+
+/// The picture decoder to use for `container`.
+///
+/// This is the one place in the program that knows which container version
+/// needs which decoder. Version 1 is the first game's format, whose payloads
+/// are compressed with a different routine and whose palettes live outside the
+/// payload, so it gets its own path in [`crate::v1`]; every other version uses
+/// the shared one here.
+///
+/// Keeping the choice in the wiring layer is deliberate: neither decoder has
+/// to mention the other's container, so editing one cannot change the other's
+/// output.
+pub fn picture_decoder(container: &Container) -> fn(&Container, usize) -> Result<Decoded> {
+    if container.version == 1 {
+        v1::picture::decode
+    } else {
+        picture::decode
+    }
+}
+
+/// The payload function to use for `container`.
+///
+/// The companion to [`picture_decoder`], for the `--original` mode, which has
+/// to write the payload *after* whatever decompression step the container's
+/// version applies — the bytes the game's runtime would hand to its blitter.
+///
+/// Both dispatchers exist for the same reason and are read the same way:
+/// neither the shared modules nor the first game's module has to know that the
+/// other's version exists.
+pub fn picture_payload(container: &Container) -> fn(&Container, usize) -> Result<Vec<u8>> {
+    if container.version == 1 {
+        v1::picture::payload
+    } else {
+        picture::payload
+    }
+}
 
 /// Which asset types to extract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +178,7 @@ pub fn run(
                 let report = if original {
                     extract_pictures_original(&container, &out_dir)?
                 } else {
-                    picture::extract_container(&path, &out_dir, &raw_dir)?
+                    picture::extract_container(&path, &out_dir, &raw_dir, picture_decoder(&container))?
                 };
                 summary.pictures += report.png_written;
                 for (i, name, why) in report.failed {
@@ -206,10 +243,18 @@ pub fn run(
 
 /// Write each picture out in the game's original format.
 ///
-/// The file written is the decompressed payload byte for byte — exactly what
-/// the game's runtime would hand to its blitter, before any of the optional
-/// byte-swap transforms. A resource whose size-table entry is zero was stored
-/// uncompressed and is copied through untouched.
+/// The file written is the payload byte for byte — exactly what the game's
+/// runtime would hand to its blitter, before any of the optional byte-swap
+/// transforms. A resource whose container declares no uncompressed size was
+/// stored uncompressed and is copied through untouched; one that declares one
+/// is stored compressed and comes out expanded.
+///
+/// Which decompression step that is depends only on the container's version,
+/// and is chosen by [`picture_payload`] — the same dispatcher the modern path's
+/// decoder choice sits beside. Writing the rule out twice (once here, once in
+/// `picture::decode`) is what let this function drift out of step with the
+/// decoder and start writing stored bytes for a container version whose
+/// payloads are not stored.
 pub fn extract_pictures_original(
     container: &Container,
     out_dir: &Path,
@@ -218,21 +263,18 @@ pub fn extract_pictures_original(
     let mut report = picture::ExtractReport::default();
     report.container = container.path.display().to_string();
 
+    let payload = picture_payload(container);
+
     for index in 0..container.resource_count as usize {
         let name = container.name(index);
         let safe = sanitize(name, index);
         let file = out_dir.join(format!("{index:05}_{safe}.dat"));
 
-        // A zero in the size table means the payload is stored uncompressed.
-        let data = if container.sizes[index] == 0 {
-            container.payload(index).to_vec()
-        } else {
-            match lz77::decompress(container.payload(index)) {
-                Ok(d) => d,
-                Err(e) => {
-                    report.failed.push((index, name.to_string(), e.to_string()));
-                    continue;
-                }
+        let data = match payload(container, index) {
+            Ok(d) => d,
+            Err(e) => {
+                report.failed.push((index, name.to_string(), e.to_string()));
+                continue;
             }
         };
         std::fs::write(&file, &data)

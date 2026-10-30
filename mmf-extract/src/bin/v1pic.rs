@@ -12,8 +12,21 @@
 //! resource is only reported as decoded when a decoder actually accepts it.
 
 use mmf_extract::container::Container;
-use mmf_extract::lz77;
 use mmf_extract::picture::{pixel_format, PALETTE_BYTES};
+use mmf_extract::v1;
+
+/// The layout detector, with the first game's palette bank supplied.
+///
+/// A run-length payload with one-byte colour records indexes into the bank
+/// rather than carrying a palette of its own, so the detector cannot decide
+/// the record width without it.
+fn picture_pixel_format(
+    c: &Container,
+    i: usize,
+    data: &[u8],
+) -> Option<mmf_extract::picture::PixelFormat> {
+    pixel_format(c, i, data, v1::palette_of(c, i))
+}
 
 fn stride_of(width: u16) -> usize {
     (width as usize + 3) / 4 * 4
@@ -47,19 +60,22 @@ fn main() {
             continue;
         }
         let raw = c.payload(i);
-        // Version 1 stores every payload uncompressed; there is no size table
-        // to say otherwise.
-        let data = if c.sizes[i] == 0 {
-            raw.to_vec()
-        } else {
-            match lz77::decompress(raw) {
-                Ok(d) => d,
-                Err(e) => {
-                    println!("{i}\t{name}\tdecompress failed: {e:#}");
-                    failed += 1;
-                    continue;
-                }
+        // The first game's own payload path: it expands the LZSS stream the
+        // container declares, and copies through what is already stored plain.
+        // Both counts are reported, because the gap between them is what says
+        // a payload was compressed.
+        let data = match mmf_extract::v1::picture::payload(&c, i) {
+            Ok(d) => d,
+            Err(e) => {
+                println!("{i}\t{name}\texpand failed: {e:#}");
+                failed += 1;
+                continue;
             }
+        };
+        let stored = if mmf_extract::v1::uncompressed_len(&c, i) == 0 {
+            "plain"
+        } else {
+            "lzss"
         };
         let dim = c.dimension(i);
         let (w, h) = (dim.width as usize, dim.height as usize);
@@ -79,7 +95,7 @@ fn main() {
             .find(|(_, n)| *n == data.len())
             .map(|(l, _)| l.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let fmt = pixel_format(&c, i, &data);
+        let fmt = picture_pixel_format(&c, i, &data);
         let tag = match fmt {
             Some(f) => {
                 decoded += 1;
@@ -92,9 +108,10 @@ fn main() {
         };
         *by_layout.entry(tag.clone()).or_insert(0) += 1;
         println!(
-            "{i}\t{name}\t{h}x{w}\tkind=0x{:02x}\tflags=0x{:02x}\tlen={}\t{layout}\t{tag}",
+            "{i}\t{name}\t{h}x{w}\tkind=0x{:02x}\tflags=0x{:02x}\tstored={stored}\tstored_len={}\tlen={}\t{layout}\t{tag}",
             c.kind_of(i),
             c.flags_of(i),
+            raw.len(),
             data.len()
         );
     }
