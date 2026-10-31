@@ -52,6 +52,44 @@ pub fn picture_payload(container: &Container) -> fn(&Container, usize) -> Result
     }
 }
 
+/// The extractor to use for a `Blobs` container.
+///
+/// Only the first game's payloads are measured — its `goofy 2.6.3` record
+/// format is documented in `docs/GAME1.md` §6 and implemented by
+/// [`v1::blobs`]. A `Blobs` container from any other version has no measured
+/// layout, so it is written back verbatim rather than guessed at.
+pub fn blobs_extractor(
+    container: &Container,
+) -> fn(&Container, &Path, bool) -> Result<usize> {
+    if container.version == 1 {
+        v1::blobs::extract_container
+    } else {
+        extract_blobs_verbatim
+    }
+}
+
+/// Write every payload of an undecoded `Blobs` container unchanged.
+///
+/// The extension records which container a payload came from; nothing about
+/// the format is claimed.
+fn extract_blobs_verbatim(container: &Container, out_dir: &Path, _original: bool) -> Result<usize> {
+    std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+    let mut written = 0usize;
+    for index in 0..container.resource_count as usize {
+        let name = sanitize(container.name(index), index);
+        let file = out_dir.join(format!("{index:05}_{name}.blb"));
+        if let Err(e) = std::fs::write(&file, container.payload(index)) {
+            eprintln!(
+                "warning: could not write {} (resource {index}): {e}",
+                file.display()
+            );
+            continue;
+        }
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Which asset types to extract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssetSelection {
@@ -59,7 +97,7 @@ pub struct AssetSelection {
     pub sounds: bool,
     pub films: bool,
     pub scripts: bool,
-    /// Opaque payload containers (`Blobs`) — written verbatim in both modes.
+    /// `Blobs` containers — the first game's `goofy 2.6.3` animation records.
     pub blobs: bool,
 }
 
@@ -226,20 +264,18 @@ pub fn run(
                 summary.scripts += n;
             }
             ContainerKind::Blobs => {
-                // Opaque payloads. The first game's Blobs container is
-                // undecoded, so both modes write the stored bytes verbatim;
-                // the extension records which container a payload came from.
+                // The first game's payloads are decoded; anything else stays
+                // opaque. The choice lives here, beside the two picture
+                // dispatchers, for the same reason: neither blobs module has
+                // to know the other's version exists.
                 let out_dir = output.join("Blobs").join(&stem);
                 std::fs::create_dir_all(&out_dir)?;
-                for index in 0..container.resource_count as usize {
-                    let name = sanitize(container.name(index), index);
-                    let file = out_dir.join(format!("{index:05}_{name}.blb"));
-                    if let Err(e) = std::fs::write(&file, container.payload(index)) {
+                match blobs_extractor(&container)(&container, &out_dir, original) {
+                    Ok(n) => summary.blobs += n,
+                    Err(e) => {
                         summary
                             .failed
-                            .push(format!("{}: resource {index} '{name}': {e}", path.display()));
-                    } else {
-                        summary.blobs += 1;
+                            .push(format!("{}: {e}", path.display()));
                     }
                 }
             }

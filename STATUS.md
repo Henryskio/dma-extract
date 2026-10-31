@@ -263,7 +263,8 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   and the palette bank. Sounds are `5*N + 2` (the handle array holds Mac
   timestamps, then the format byte); blobs are `4*N + 2`.
 * Extracted: **12,961 of 12,961 pictures (zero failures), 451 of 452 sounds,
-  305 blobs**; `--original` is byte-exact for 13,717 of 13,718 resources.
+  305 of 305 blobs (decoded, with a 1:1 round trip)**; `--original` is
+  byte-exact for 13,717 of 13,718 resources.
   Per container: `HD.PIC` 1682, `mpApp.PIC` 384, `pack.PIC` 10893,
   `Topolino.CPK` 2. Split by storage form: 9,733 stored plain (`size == 0`),
   3,228 LZSS streams (3,103 with `size > len`, 125 with `size == len`).
@@ -302,34 +303,38 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   the payloads. Verified on both containers: the first payload starts at
   `0x20 + 4*(N+1) + 2` and the last offset equals the file length. See
   `GAME1.md` §7 and `src/v1/scripts.rs`.
-* **`pack.BLB`'s `goofy 2.6.3` payloads: the record format is measured, and two
-  header invariants hold across all 305, but the prologue is decoded for only 4
-  of them.** `tests/game1_blobs.rs` pins it.
-  The game's own reader (`FUN_004b5f34` in `DISNEYMA.EXE`, reached from the
-  session step at `0x4a7ae0` via `0x4a7d4c` and `0x4a7e50`) consumes **8-byte
-  records** — `u16 a`, `u16 b`, `u32 d`, big-endian, `-800` on both u16s when
-  the object's version reads `0x107`. The three smallest payloads
-  (`session 1/2/3`: 49/103/78 records) close exactly through that layout and
-  end in a `d == 0` terminator; every other record is `d == 19`. The larger
-  payloads' heads are that 12-byte family (407 in the largest), so the stream
-  boundary is not derivable — that is the open question. `docs/GAME1.md` §6.1
-  records two approaches already tried and rejected (reading the stream back
-  from the terminator and scoring candidate starts; assuming the section closes
-  at `14 + 8 + count x 12` or `22 + count x 12`) so they are not retried. The
-  byte-exact `--original` extraction of all 305 payloads — 73,061,910 bytes,
-  zero mismatches — is the archival output and needs no record size.
+* **`pack.BLB`'s `goofy 2.6.3` payloads are DECODED: 305 of 305, with a 1:1
+  round trip.** `tests/game1_blobs.rs` pins it (11 tests). The layout is
+  stamp(14) + `u32 object_count` + `u32 object_bytes == count*12` +
+  `count` x 12-byte `{u32 kind; u32 parameter; u32 records}` + a skipped
+  `u32 record_bytes` + the 8-byte records, in object order. Totals over the
+  container: **209,751 objects, 8,817,121 records**.
+  Traced through the game's own reader in `DISNEYMA.EXE`: the header parser
+  `FUN_004b5c6b` reads the stamp, **compares it** against the string at
+  `0x512aac` (`0x4b5d16` -- it *is* validated, contrary to an earlier note
+  here), and only then sets the stream's version to `0x107`; it reads the two
+  header u32s, reads `object_bytes` objects, then advances its cursor by
+  `14+4+4+object_bytes+4`, which is why records begin at `22+object_bytes+4`.
+  The iterator `FUN_004b5ec0` (from the frame loop at `0x4a7e98`) stores the
+  object's third u32 as the stream's record count; `FUN_004a7ee0` switches on
+  the object's first u32 (cases 6..=0x32, each constructing a game-object
+  class) and the second is passed by address to the ctor `FUN_0047b140` and
+  kept at `this+0xc8`. `FUN_004b5f34` returns 0/1/2 for an object's
+  first/middle/last record, and adds `0xfce0` (`-800`) to both u16s. Two
+  independent checks confirm the object/record partition: the counts sum to the
+  stream's records in 305/305, and **all 209,751 objects end their run on an
+  `event == 0` terminator**.
+  Still open (`GAME1.md` 6.3): what the object's second u32 means, and what the
+  20 event codes do (dispatch at `0x4a7d4c`, per-event inline constructors from
+  `0x4a805a`). 6.4 records the two approaches already tried and rejected.
+  `--original` writes all 305 payloads byte-exactly (73,061,910 bytes, zero
+  mismatches); the modern mode writes one JSON payload per resource plus a
+  manifest, sufficient to rebuild each payload byte for byte.
 * Unresolved: the **per-class record size** in a v1 script payload (the
   count's distribution is strongly peaked — 210 `pack.mms` payloads with a
   lead of 14 are all exactly 152 bytes — but no single record width fits the
   payloads, which is the `type_aux` signature), and one sound
-  (`SifBtS10.aif`) whose format byte disagrees with its length. `GAME1.md` §6.1
-  now records what *is* measured about the blobs so the next attempt starts from
-  there: the stamp is a watermark the loader never validates (no `cmp`/`mov` of
-  those bytes in `DISNEYMA.EXE`; the string's single reference is a data table),
-  the body repeats on an 8-byte `(u32, u16, u16)` period, no container magic
-  occurs in any payload, and the body draws from a 32-symbol alphabet at 5.04
-  bits/byte — a coded stream, not a container. The furthest traced entry point
-  is `push "session done sound"` at `0x4a77a5`, in a constructor at `0x4a7763`.
+  (`SifBtS10.aif`) whose format byte disagrees with its length.
 * *Corrected:* `src/film.rs` attributed the version-3 film layout (marker 7,
   26-byte records, chunk types `0x0A`/`0x0B`, padded 8bpp rows, LZ77-wrapped
   deltas) to "the first game". Those measurements are of `DMA.MMF`, which is

@@ -399,148 +399,176 @@ sound is byte-exact in `--original` mode and round-trips through WAV.
 the later games' `attr` (rate, 16-bit, channels), but bit 5 is set on most
 sounds and bit 4 on some, and neither is used by the later `attr`.
 
-## 6. Blobs — extracted verbatim, not decoded
+## 6. Blobs — the `goofy 2.6.3` animation records, decoded
 
-`pack.BLB` (73,074,150 bytes, 305 entries) is an **opaque payload
-container**, tag `Blobs`. The `Blobs` container kind writes each payload
-verbatim in both modes, since nothing about the inner format is known yet.
+`pack.BLB` (73,074,150 bytes, 305 entries) is an **animation script
+container**, tag `Blobs`. Each payload drives a set of game objects along a
+path: a header naming the objects, then one record stream per object. The
+format is decoded in `src/v1/blobs.rs` and pinned by `tests/game1_blobs.rs`,
+which asserts a 1:1 round trip over all 305 payloads.
 
-**Extracted: 305 `.blb` files.**
+**Extracted: 305 `.blb` files** byte-exactly under `--original`, and 305 JSON
+payloads plus a manifest in the modern mode.
 
-The first payload starts `00 0c 67 6f 6f 66 79 20 32 2e 36 2e 33` — i.e.
-`0x000c` then the ASCII string **`goofy 2.6.3`**, a codec/product version
-stamp. The container is very likely the carrier for the game's **videos**
-(the ones with sound), so decoding it is the highest-value next step.
+**Not video.** The container is very likely *misleadingly* large for what it
+is. There is no `RIFF`/`AVI`/`ftyp`/`moov`/`mdat` magic anywhere in it, the
+stamp never recurs inside a payload, and the bodies are coded **coordinates**
+— 8-byte records of a coordinate pair and an event code. `goofy 2.6.3` is the
+version stamp of whatever *wrote* those paths, not a video codec (§6.1).
+Whether any of these paths are drawn to the screen as the game's animated
+sequences is a question about the classes the object kinds select (§6.3), not
+about the bytes.
 
-**Open:** the blob payload format. `goofy 2.6.3` is a strong lead. The offset
-stride is resolved (§2: the table starts at `0x20` and holds `N + 1`
-entries), so all 305 resources are now addressed correctly.
+The offset stride is resolved (§2: the table starts at `0x20` and holds
+`N + 1` entries), so all 305 resources are addressed correctly.
 
-### 6.1 What is measured about the payload
+### 6.1 The payload format
 
-Facts taken on all 305 payloads of the recovered `pack.BLB` and traced through
-the game's own reader in `DISNEYMA.EXE`. They narrow the open question below
-without settling it, and `tests/game1_blobs.rs` pins every one of them.
-
-**The stamp.** Every payload opens with the same 14 bytes: `u16` `0x000c` then
-the 12-byte string `"goofy 2.6.3\0"`. Read as a length-prefixed string, which
-is what makes it skippable rather than magic.
-
-**The stamp is a watermark, not a magic.** No `cmp`/`mov` of those bytes exists
-in `DISNEYMA.EXE` — a search for the immediate `66 6f 6f 66` returns exactly
-one hit, the string itself — and the string's address `0x512aac` has exactly
-one reference in the image, from a data table rather than from code. The loader
-never validates it.
-
-**The record reader.** `FUN_004b5f34` walks the payload with a cursor held at
-`object + 0x20023` and consumes **8 bytes per record**. The chain to it, all in
-`DISNEYMA.EXE`, is:
-
-    session step       0x4a7ae0   (vtable slot 9 of the object built by the
-                                  "session done sound" constructor at 0x4a7763,
-                                  whose vtable is 0x51043c)
-      -> advance       0x4a7d4c   runs the frame loop, one call per record
-           -> dispatch 0x4a7e50   reads a record, returns the event code
-                -> read 0x4b5f34  the 8-byte record reader
-
-The event code comes back to `0x4a7d4c`, which turns it into one of three
-virtual calls on the object at `this + 0x60` (slots `+0x1c`, `+0x20`, `+0x24`).
-
+Every payload of the recovered `pack.BLB` (305 of them, 73,061,910 bytes) is
+one `goofy 2.6.3` animation script. The layout below is **decoded** and
+asserted in `tests/game1_blobs.rs`, including a 1:1 round trip: decoding a
+payload and re-encoding it reproduces the container's bytes, exactly.
 
 ```text
-u16 a   @ +0     a coordinate; -800 when the object's version reads 0x107
-u16 b   @ +2     a coordinate; -800 likewise
-u32 d   @ +4     an opcode, small
+  0        u16  0x000c                     the stamp's length prefix
+  2        "goofy 2.6.3\0"   (12 bytes)    the writer's version stamp
+ 14        u32  object_count
+ 18        u32  object_bytes  == object_count * 12
+ 22        object_count x 12-byte objects:
+              u32 kind        6..=0x32     selects the game-object class
+              u32 parameter                 handed to that class by address
+              u32 records                   how many records follow this object
+ 22+ob     u32  record_bytes   == the bytes that remain after this field
+ 26+ob     record_bytes of 8-byte records, in object order, each object's run
+           closed by a record whose event is 0
+
+record (8 bytes):  u16 a;  u16 b;  u32 event
 ```
 
-All three are big-endian on the wire; the reader swaps them in place when a
-flag at `object + 0x22` says the file was not written in the host's order, so
-one code path serves both byte orders. After the record it advances the cursor
-by 8 and increments `object + 0x1a`, which is the record count.
+Totals over the container: **209,751 objects** and **8,817,121 records**.
 
-**The three smallest payloads decode completely.** Their header is 38 bytes:
-the 14-byte stamp, a fixed 20-byte prologue
-(`00 00 00 01 00 00 00 0c 00 00 00 28 17 00 00 ff`), then `u32` **count** and
-`u32` **count × 8**. Those two numbers are what proves the layout: they close
-the arithmetic exactly.
+### 6.2 How each part was measured
 
-| payload | bytes | count | body | last `d` |
-|---|---:|---:|---:|---:|
-| `session 1` | 430 | 49 | 392 | 0 |
-| `session 2` | 862 | 103 | 824 | 0 |
-| `session 3` | 662 | 78 | 624 | 0 |
+Nothing here is inferred from the bytes alone; each relation is what the game's
+own parser does, read out of `DISNEYMA.EXE` (the first game's executable — §1
+has the carve table). The chain, with the vtable slot numbers for the session
+class the `"session done sound"` constructor at `0x4a7763` builds (vtable
+`0x51043c`):
 
-Every record of all three carries `d == 19` except the final one, which carries
-`d == 0` — a terminator that closes the stream, which is how a reader knows it
-has finished. The step function dispatches on the event code it gets back into
-three virtual calls on the object at `this + 0x60` (slots `+0x1c`, `+0x20`,
-`+0x24`), and `FUN_004a7284` is a 16.16 fixed-point multiply
-(`(x * y) >> 16`) — so the `u16` coordinates are scaled before use, not raw
-pixels.
+```text
+  header parser     0x4b5c6b   reads the stamp and the two header u32s, reads
+                                object_bytes into an allocated section, then
+                                advances its cursor by 14 + 4 + 4 + object_bytes
+                                + 4 -> the records begin at 26 + object_bytes
+  session step      0x4a7ae0   vtable slot 9; runs the frame loop
+    -> advance      0x4a7d4c   turns the returned code into one of three
+                               virtual calls on the object at this + 0x60
+         -> next    0x4a7e98   pulls the next 12-byte object
+              ->   0x4b5ec0    the object iterator: stores the object's THIRD
+                               u32 as the stream's record count (object + 0x16)
+                               and resets the record index (object + 0x1a) to 0
+              ->   0x4a7ee0    a switch on the object's FIRST u32, cases 6..0x32,
+                               each constructing one of the game's object classes
+              ->   0x42e600    a lookup on the object's index (out + 0xc)
+         -> read    0x4b5f34   the 8-byte record reader
+              ->   0x4a7bc4    scales the two u16s through a 16.16 multiply and
+                               adds a stage origin
+```
 
-**Two invariants hold across all 305 payloads**, and both are asserted in
-`tests/game1_blobs.rs`:
+**The stamp is checked, and it gates the version.** `0x4b5c6b` reads the
+`u16` length and the string, then compares them against the string at
+`0x512aac` (`goofy 2.6.3`); **only on a match** does it set the stream's
+version field (`object + 0xa`) to `0x107`. That is the only writer of that
+field, which is why the `-800` below applies to every first-game blob payload.
+(A note on what the stamp is *not*: an earlier version of this document claimed
+nothing validates it. That was wrong — the compare is at `0x4b5d16`, inside the
+parser. The string's single *other* reference, from a data table, is unrelated.)
 
-* every payload's last four bytes are zero — the `d == 0` terminator of a
-  record stream that runs to the end of the payload;
-* the two `u32`s just past the stamp satisfy `second == first * 12`, in every
-  payload, with `first` never zero. So each header carries a count and the byte
-  size of a 12-byte section.
+**The two header counts are the whole section boundary.** `object_count` lands
+at `object + 0xe` and `object_bytes` at `object + 0x1e`, and the parser reads
+exactly `object_bytes` bytes of objects before skipping a further `u32`. In all
+305 payloads `object_bytes == object_count * 12`, so the records start at
+`22 + object_bytes + 4`.
 
-Together they say every payload is `… header … + records + d == 0`, and that
-the header contains a section of `count` 12-byte units — they do not say where
-that section ends.
+**The per-object record count is the object's third `u32`.** The iterator
+`0x4b5ec0` reads one 12-byte object at a time from the section and does
+`stream->record_count = out[8]; stream->record_index = 0`. The record reader
+increments `record_index` and returns `0` for an object's **first** record,
+`1` for a middle one and `2` for its **last**, which is how the game knows an
+object's list is finished. Two independent checks confirm the partition on the
+shipped data: the objects' counts sum to the stream's record count in all 305
+payloads, and **all 209,751 objects end their run on an `event == 0`
+terminator**.
 
-**The larger payloads are not yet decoded.** Their heads are that 12-byte
-section: `u32 tag | u32 constant | u32 value`, 407 of them in the largest
-payload alone, with the tag almost always `0x24` and the constant unchanging
-within a run (`db 99 99 99` for `SbfSs_01`, `28 90 90 91` for `SbfSs_03`,
-`b6 ae ad ab` for `SbfSs_04`, and so on) while only the third field moves. Only
-the 3 payloads in the table above plus `smallsession` are fully accounted for;
-the other 301 are not.
+**The record is 8 bytes.** `0x4b5f34` advances its cursor by 2, 2 and 4, and
+swaps all three in place when the flag at `object + 0x22` says the file was not
+written in the host's order — so one code path serves both and the wire order
+is always big-endian. It then adds `0xfce0` to both `u16`s, which is `-800`, a
+stage offset in the game's own coordinate space and not a byte-order fix.
 
-**Approaches already tried and rejected** — recorded so they are not retried:
+**The object's first `u32` is a class selector.** The switch at `0x4a7ee0`
+handles `6` to `0x32` (6..=50), constructing a different object class per
+group: 6–15 and 26–30 take the session's resource field, 16–20 and 41–45 share
+one vtable, 21–25, 31–35 and 36–40 each get their own, and 46–50 carry a
+`0x2f0000` initial value. Every one of the 209,751 objects in the container
+falls in that range. The object's second `u32` is stored at `session + 0x54`
+and passed *by address* to the constructor `0x47b140`, which keeps the pointer
+at `this + 0xc8`; consecutive objects of the same kind are not reconstructed
+(`0x4a7ee0` returns early when the kind equals the one at `session + 0x5c`),
+which is what the data shows as runs of identical kinds.
 
-* *Reading the stream back from the terminator and scoring candidate starts by
-  the share of small opcodes.* It finds a start for all 305 payloads and
+**What the coordinates are not.** `0x4a7bc4` scales each `u16` through
+`FUN_004a7284`, a 16.16 fixed-point multiply (`(x * y) >> 16`), and adds a
+stage origin read from the object at `session + 0x3b` (fields at `+1` and `+3`)
+less the globals at `0x50cb78`/`0x50cb7a`. So the stored `u16`s are not raw
+pixels, and the JSON output carries both the stored value and the `-800`
+normalisation rather than choosing one.
+
+**Not a coded-video stream.** No `RIFF`, `AVI `, `ftyp`, `moov`, `mdat`,
+`MACE`, `OggS` or `PK` magic occurs in any of the 305 payloads, and the stamp
+never recurs inside one — so each payload is one stream, not a concatenation.
+The bodies draw from `0x00`–`0x1f` almost exclusively, ~5.0 bits/byte, but
+they are coded *coordinates*: the 8-byte records that carry them are coordinate
+pairs and an event code. A stray `1f 8b` in 117 of 305 payloads is a
+coincidence of that distribution and is not gzip.
+
+### 6.3 What is still open
+
+* **What the object's second `u32` means.** It is measured as a parameter the
+  constructed object holds by pointer (`this + 0xc8`), but the code that
+  dereferences it has not been read. On the shipped data it behaves like a
+  16.16 fixed-point value that is nearly constant within a payload and moves
+  with the object kind — `0xdb999999` (≈56249.6) for `SbfSs_01`,
+  `0x28909091` (≈10384.6) for `SbfSs_03` — but that is a description of the
+  data, not a reading of the code.
+* **What the 20 event codes do.** They are 0..19 with 0 closing each object's
+  run; the three-way dispatch at `0x4a7d4c` (slots `+0x1c`, `+0x20`, `+0x24` of
+  the object at `this + 0x60`) is where they are consumed, and the event-to-class
+  table at `0x4a805a` and below is where the inline constructors live. Reading
+  those blocks is what would turn a record stream into a render.
+
+### 6.4 Approaches already tried and rejected
+
+Recorded so they are not retried. Both were attempted before the parser at
+`0x4b5c6b` was found, and both fail for the same reason: nothing about their
+result is checkable against the game's own reader.
+
+* **Reading the stream back from the terminator and scoring candidate starts by
+  the share of small opcodes.** It locates a start for all 305 payloads and
   covers 99.5 % of the container's bytes, but it is **wrong**: on `SbfSs_01` it
-  starts the stream at 1230, which is in the middle of the 12-byte section, and
+  starts the stream at 1230, which is in the middle of the object section, and
   the run of small opcodes there is an artefact of the section's regular
-  spacing. Nothing about the chosen offset is checkable, so it is not a
-  decoder.
-* *Assuming the section closes at `14 + 8 + count × 12` or `22 + count × 12`.*
-  Neither lands on a whole number of 8-byte records for any payload — for
-  `SbfSs_01`, `22 + 9060 = 9082` leaves a half record.
-
-The opcodes that do appear, over the records of the three decoded payloads, are
-1–19 with a `0` closer; over the (unreliable) full-container read the same
-spread appears with small tails at 31 and 32. Those tails are probably the
-12-byte section leaking into the misaligned read, which is another reason not
-to trust it.
+  spacing. The true start is 9086 (`22 + 9060 + 4`).
+* **Assuming the section closes at `14 + 8 + count × 12` or `22 + count × 12`.**
+  Neither lands on a whole number of 8-byte records — for `SbfSs_01`,
+  `22 + 9060 = 9082` leaves a half record. The missing four bytes are the
+  `u32 record_bytes` tag the parser skips at `0x4b5df4`.
 
 **The archival output.** `--original` writes all 305 payloads byte-exactly —
-73,061,910 bytes, 305 files, zero mismatches — which needs no record size at
-all and is the safety net while the section is undecoded.
-
-**Not a container.** No `RIFF`, `AVI `, `ftyp`, `moov`, `mdat`, `MACE`, `OggS`
-or `PK` magic occurs in any of the 305 payloads, and the stamp does not recur
-inside any of them — so this is one stream per payload, not a concatenation.
-
-**Not a coded-video stream either.** The bodies draw from the range
-`0x00`–`0x1f` almost exclusively, giving ~5.0 bits/byte with runs of 1
-(197,769) and 3 (40,131) — a coded stream, but of *coordinates*, because the
-8-byte records that carry it are coordinate pairs and an opcode. `goofy` is
-compressing a path, not video frames. A stray `1f 8b` appears in 117 of 305,
-which is a coincidence of that byte distribution and is not gzip.
-
-**What settles it.** Reading the prologue of a large payload. The 12-byte head
-unit `u32 0x24 | u32 0x00999999 | u32 value` is the thing to identify: `0x24`
-is constant, `0x00999999` is constant, and only the third field moves. That is
-the shape of a fixed header plus one varying coordinate — most likely a list of
-the objects the animation drives, each with a start position, followed by the
-record stream. `0x4a7bc4`, which scales two `u16`s and reads `word [eax + 1]`
-and `word [eax + 3]` from the object at `this + 0x3b`, is where that list is
-consumed and is the natural next function to read.
+73,061,910 bytes across 305 files, zero mismatches — and needs no record size
+at all. The modern mode writes one JSON payload per resource (stored and
+stage values, object kinds and record counts) plus a container manifest,
+sufficient to rebuild each payload byte for byte.
 
 ## 7. Scripts — the container opens, the object database does not
 
@@ -600,7 +628,7 @@ length per object so the mapping can be built from them.
 | type | files | failures |
 |---|---:|---:|
 | sounds | 451 | 1 (`SifBtS10.aif`, see §5) |
-| blobs | 305 | 0 |
+| blobs | 305 | **0** (§6; decoded, and `--original` byte-exact) |
 | pictures | **12,961** | **0** |
 | scripts (objects) | **1,283** | **0** (§7; `--original` only) |
 
@@ -664,22 +692,16 @@ them is what says a payload was compressed:
 | v1 script container layout (no names table, no metadata region) | **measured** — first payload at `0x20+4*(N+1)+2` and the marker `4`, both asserted in `tests/game1.rs` (§7) |
 | v1 script object names come from the payload tail | **measured** — `char606`, `char1a`, `sky333`; an inference as a *rule*, in 126/295 and 664/988 payloads (§7) |
 | v1 script per-class record size | **unknown** — no single width fits; this is the open question (§7) |
-| a blob record is 8 bytes, `{u16 a; u16 b; u32 d}`, big-endian | **measured**
-  from `FUN_004b5f34`'s cursor arithmetic, and it closes exactly on the three
-  smallest payloads (§6.1) |
-| the blob prologue is 38 bytes for every payload | **measured** on
-  `session 1/2/3`; **disproved** as a general rule — the larger payloads' heads
-  are a different 12-byte family (§6.1) |
-| blob records are terminated by `d == 0` | **measured** — the final record of
-  each decoded payload, and every other record is `d == 19` (§6.1) |
-| the `goofy` stamp is validated by the loader | **disproved** — no `cmp`/`mov`
-  of the bytes exists in `DISNEYMA.EXE` and the string's only reference is a
-  data table, so it is a writer's watermark (§6.1) |
-| `pack.BLB` holds an RSS/AVI/QuickTime container | **disproved** — no such
-  magic occurs in any of the 305 payloads, and the stamp never recurs inside
-  one (§6.1) |
-| the blob body is coded video | **disproved** — it is coded *coordinates*:
-  the records that carry it are coordinate pairs and an opcode (§6.1) |
-| the large payloads' 12-byte head unit | **unidentified** — `u32 0x24 |
-  u32 0x00999999 | u32 value`, over 400 occurrences in the largest payload;
-  `0x4a7bc4` consumes it and is the next function to read (§6.1) |
+| a blob record is 8 bytes, `{u16 a; u16 b; u32 event}`, big-endian | **measured** — `FUN_004b5f34`'s cursor advances 2+2+4, and it closes exactly (§6.1) |
+| a blob payload is stamp + objects + records | **measured** — the header parser `FUN_004b5c6b` advances `14 + 4 + 4 + object_bytes + 4`, so records begin at `22 + object_bytes + 4` (§6.2) |
+| an object header is 12 bytes, `{u32 kind; u32 parameter; u32 records}` | **measured** — `object_bytes == count * 12` in 305/305, and the iterator `FUN_004b5ec0` stores the third field as the record count (§6.2) |
+| each object's records are closed by an `event == 0` terminator | **measured** — 209,751 of 209,751 objects, and the reader `FUN_004b5f34` returns 0/1/2 for first/middle/last (§6.2) |
+| the object's first `u32` is a class selector | **measured** — the switch at `FUN_004a7ee0` handles 6..=0x32 and every object in the container is inside it (§6.2) |
+| the record reader adds `-800` to both coordinates | **measured** — `add word [esi], 0xfce0` at `0x4b5fc7`, gated on the version `0x107` that the stamp sets (§6.2) |
+| the blob prologue is 38 bytes for every payload | **measured** on `session 1/2/3`; **disproved** as a general rule — the object section is 12-byte units, and its *length* is what varies (§6.2) |
+| the `goofy` stamp is validated by the loader | **measured** — `FUN_004b5c6b` compares it at `0x4b5d16` and only then sets the version (an earlier revision of this table said *disproved*; that was wrong) (§6.2) |
+| `pack.BLB` holds an RSS/AVI/QuickTime container | **disproved** — no such magic occurs in any of the 305 payloads, and the stamp never recurs inside one (§6.1) |
+| the blob body is coded video | **disproved** — it is coded *coordinates*: the records that carry it are coordinate pairs and an event code (§6.1) |
+| the object's second `u32` | **unidentified** — a parameter the constructed object holds by pointer (`this + 0xc8`); on the shipped data it behaves like a 16.16 value nearly constant within a payload, but that is a description, not a reading (§6.3) |
+| what the 20 event codes do | **unidentified** — 0..19, with 0 closing each run; the dispatch is at `0x4a7d4c` and the per-event constructors are at `0x4a805a` and below (§6.3) |
+| blob payloads re-encode byte-exactly from the decoded form | **measured** — `tests/game1_blobs.rs` asserts it over all 305 payloads (§6.1) |

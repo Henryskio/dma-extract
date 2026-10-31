@@ -30,9 +30,12 @@
 //! * [`scripts::parse`] opens a version-1 Scripts container, whose layout
 //!   shares nothing with the versions-2/3 object database;
 //!   [`scripts::extract_container`] writes its payloads byte-exactly.
+//! * [`blobs`] decodes the first game's `Blobs` payloads — the `goofy 2.6.3`
+//!   animation records — and can re-emit them byte for byte.
 //! * [`picture::decode`] is the whole first-game picture path, which begins
 //!   with the decompression step the shared decoders do not do.
 
+pub mod blobs;
 pub mod lzss;
 pub mod metadata;
 pub mod picture;
