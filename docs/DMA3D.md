@@ -99,6 +99,49 @@ The engine's own names come from `DMA3D.exe`'s RTTI: `MM3DModelMolecule`,
 resource readers report `Bad checksum / Bad version number / Bad header in
 model|texture resource file '%s'`, so both formats carry their own validation.
 
+### 3.1 What the reader in `DMA3D.exe` shows
+
+The `Models` container's class has its vtable at `0x539ba4`; the tag getter
+at slot 0 is `mov eax, <tag>; ret`, which is how the class was found. Its
+**load** method is slot 1 (`0x4b2b60`), and it does the following, in order:
+
+1. `call 0x4d4070` — a validity check (returns false → report failure 6);
+2. `call 0x4e87c0` — stream read into the object's stream at `this + 0x210`;
+3. `cmpw $0x2, <local>` — **the first u16 read must be 2** (else failure 4);
+4. a second `0x4e87c0` read into `this + 0x470`, whose u16 is tested for
+   zero and, if zero, jumps to the tail;
+5. a buffer-resize loop (`0x4a61a0`, `0x4d71a0`) walking a count at
+   `this + 0x474`.
+
+So the stream carries its own `u16` version field equal to **2** after
+whatever wrapper consumed the `mod II` magic, and the payload is then walked
+as counted records. The `Textures` class is at `0x539e28` and works the same
+way through the same stream helpers (`0x4e87c0` read, `0x4e8a50` read/write,
+`0x4e8a90` read).
+
+### 3.2 What the payload bytes show
+
+Each payload is one self-contained `mod II` stream: verified on all 460,
+the magic appears exactly once, at offset 0. After it comes `u32 16`, then
+a stream of little-endian words. Reading those as u32 gives a header table
+whose values are small and mostly distinct — `1, 24, 22, 18, 7, 16, 690, 6,
+127, 32, 26, 30, 9, 31, 4, 19, 28, 20, 23, 27, 33, …` on
+`createModMickeyAx.mod` — which reads like a record-type or record-size
+table rather than data.
+
+The largest payload, `createModMickeyAx.mod` (2,654,687 bytes), has one long
+run of little-endian floats, and it is **not** geometry: at offset 649,012
+there are 8,298 plausible floats whose first elements increase by exactly
+`1/30` (`0.0, 0.0333, 0.0667, 0.1, …`) while the second element oscillates
+around 5.70. Those are `(time, value)` pairs on a 30 fps base — an
+**animation track**. That matches the asset's own name (`MickeyAx`) and the
+class names (`MM3DIndexedMeshDeformer`, `DMAFindDeformersFromMeshVisitor`):
+the container holds deformable, animated models, not just static meshes.
+
+**So the vertex/index buffers exist but have not been located.** The
+animation run occupies 33,192 of 2,654,687 bytes; the remaining ~2.6 MB is
+mostly u16-sized words, which is where the geometry is expected to be.
+
 ## 4. Known failures
 
 `DMA3D.MMF` (Films, 3 resources) does **not** extract: the shared film
