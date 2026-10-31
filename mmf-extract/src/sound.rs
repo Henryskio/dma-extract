@@ -28,8 +28,25 @@
 //! The differential codec is lossless with respect to the game's own
 //! decoded samples: the output is exactly the signed 16-bit little-endian
 //! sample stream the runtime produces. The stored PCM resources are
-//! unsigned 8-bit bytes (silence is `0x80`). Both forms are written to a
-//! normal WAV file in the modern path, preserving every sample.
+//! unsigned 8-bit bytes (silence is `0x80`) or **signed 16-bit,
+//! big-endian**. Both forms are written to a normal WAV file in the modern
+//! path, preserving every sample.
+//!
+//! ## The 16-bit stored order is big-endian, and that is measured
+//!
+//! The 228 stored-PCM16 resources in the three sound containers carry their
+//! samples big-endian: Mac AIFF, the format the Windows/Mac hybrid disc's
+//! audio was authored in, is big-endian. The measurement is a property of the
+//! bytes, not of any decoder — a quiet 16-bit signal puts nearly all of its
+//! energy in the low byte, so whichever byte position is almost always
+//! `00`/`ff` is the high one. In 165 of the 228 resources with enough signal
+//! to decide, that is the **even** byte; 22 are ambiguous and 41 too short to
+//! call, and not one resource reads little-endian. Reading these streams the
+//! other way is not a loud failure, which is why it survived this long: it
+//! turns a quiet narration into a quiet hiss, so every resource still decodes
+//! to a whole number of samples and `--original` still writes them
+//! byte-exactly. It only shows up once the decoded audio is listened to.
+//! [`swap16`] puts the samples into the little-endian order a WAV needs.
 
 use crate::cli::sanitize;
 use crate::container::Container;
@@ -68,7 +85,7 @@ pub const DPCM_SILENCE: u8 = 0xF8;
 pub enum Encoding {
     /// Stored unsigned 8-bit PCM, one byte per sample.
     Pcm8,
-    /// Stored signed 16-bit PCM, little-endian.
+    /// Stored signed 16-bit PCM, **big-endian** on the wire.
     Pcm16,
     /// The game's differential codec: one byte per signed 16-bit sample.
     Dpcm16,
@@ -138,6 +155,23 @@ pub fn format_of(container: &Container, index: usize) -> SoundFormat {
 }
 
 /// Decode one sound resource into interleaved PCM bytes.
+/// Byte-swap a big-endian 16-bit PCM stream into little-endian.
+///
+/// The stored 16-bit sound payloads are big-endian (see the module note), so
+/// every sample has its two bytes exchanged on the way into a WAV. An odd
+/// trailing byte is preserved rather than dropped, which cannot happen for a
+/// resource that has already passed the whole-sample check above.
+fn swap16(stored: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(stored.len());
+    let mut chunks = stored.chunks_exact(2);
+    for pair in &mut chunks {
+        out.push(pair[1]);
+        out.push(pair[0]);
+    }
+    out.extend_from_slice(chunks.remainder());
+    out
+}
+
 pub fn decode(container: &Container, index: usize) -> Result<DecodedSound> {
     let stored = container.payload(index);
     let flags = container.flags_of(index);
@@ -182,8 +216,16 @@ pub fn decode(container: &Container, index: usize) -> Result<DecodedSound> {
                     format.bits_per_sample
                 );
             }
-            // Stored PCM is already little-endian in the game's files.
-            stored.to_vec()
+            // Stored 16-bit PCM is big-endian on the wire -- see the module
+            // note on how that was measured -- so it is byte-swapped here into
+            // the little-endian order a WAV file needs. `--original` writes
+            // `container.payload`, not this, so the byte-exact archival path
+            // is untouched by the swap.
+            if encoding == Encoding::Pcm16 {
+                swap16(stored)
+            } else {
+                stored.to_vec()
+            }
         }
         Encoding::Dpcm16 => {
             if expected != stored.len() * 2 {

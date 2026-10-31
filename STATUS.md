@@ -303,6 +303,33 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   the payloads. Verified on both containers: the first payload starts at
   `0x20 + 4*(N+1) + 2` and the last offset equals the file length. See
   `GAME1.md` §7 and `src/v1/scripts.rs`.
+* **BUG FOUND AND FIXED: the first game's stored 16-bit sounds were
+  byte-swapped in the WAV output.** 228 resources carry stored 16-bit PCM,
+  and all of them are **big-endian** on the wire (AIFF heritage from this
+  Win/Mac hybrid disc). `src/sound.rs` copied them through as if they were
+  little-endian -- true for the versions-2/3 containers, where every stored
+  PCM resource is 8-bit, which is why the shared decoder got away with it.
+  The measurement is a property of the bytes: a quiet 16-bit signal puts
+  nearly all its energy in the low byte, so whichever byte position is almost
+  always `00`/`ff` is the high one; 212 resources are decisive and all 212 put
+  it at the even offset. It survived because the wrong reading is *quiet* --
+  it multiplies every sample by 256, so every resource still decodes to a
+  whole number of samples and `--original` still writes them byte-exactly.
+  It surfaced as the lesson tracks measuring 0% silence at -45 dB (192/192
+  files) against a 19% tool-sound control; after the swap they measure 20%
+  silence, pitch strength 0.45 (was 0.12) and 42% speech-band energy.
+  `swap16` fixes the WAV path; `tests/sound_order.rs` pins it per resource and
+  across all 228; `--original` is unaffected.
+* **Where the lesson narration lives, and how it is tied to the animations.**
+  All 46 resource-name lookups in `DISNEYMA.EXE` are literal strings and all
+  are UI/tool sounds plus `session done sound`, which is the only sound the
+  blob session itself loads (from the constructor at `FUN_004a7764`, reached
+  from the factory at `0x452671`). **No sound name or blob name appears as a
+  literal anywhere in the image**, so there is no hardcoded lesson->audio
+  pairing to find. The narration is instead a name-shaped family:
+  `M?d/M?f/M?l/M?n` + `L`/`In`/`l` = 166 files, 30.5 minutes, six characters
+  (Donald, Daisy, Mickey, Pluto, Goofy, Minnie). `GAME1.md` 5.1 records the
+  shapes; `GAME1.md` 6 records that the Blobs payloads carry no audio at all.
 * **`pack.BLB`'s `goofy 2.6.3` payloads are DECODED: 305 of 305, with a 1:1
   round trip.** `tests/game1_blobs.rs` pins it (11 tests). The layout is
   stamp(14) + `u32 object_count` + `u32 object_bytes == count*12` +

@@ -399,6 +399,57 @@ sound is byte-exact in `--original` mode and round-trips through WAV.
 the later games' `attr` (rate, 16-bit, channels), but bit 5 is set on most
 sounds and bit 4 on some, and neither is used by the later `attr`.
 
+### 5.1 The 16-bit samples are big-endian, and the shared decoder was wrong
+
+This is a **first-game delta**: the versions-2/3 sound containers hold only
+stored 8-bit PCM and 16-bit DPCM output, neither of which has a byte order to
+get wrong, so `src/sound.rs` copied stored 16-bit PCM through on the stated
+assumption that it was "already little-endian". That assumption is false for
+the first game's 228 stored-16-bit resources.
+
+The measurement is a property of the bytes, not of a decoder: a quiet 16-bit
+signal puts almost all of its energy in its low byte, so whichever byte
+position is nearly always `00`/`ff` is the high one. Across the three
+containers, 212 resources carry a decisive signal and **212 of them put the
+high byte at the even offset**; one reads the other way and is too short to
+call, and 209 are too short to decide at all. So the stored 16-bit order is
+big-endian, which is what an AIFF-authored asset from this Win/Mac hybrid disc
+would be (`MddL3015.AIF` opens `ff e2 ff ce ff c2`: -30, -50, -62 big-endian,
+or -7454, -12530, -15614 the other way — only the first three are plausible
+audio).
+
+Why it survived: reading the wrong way is not a loud failure. It multiplies
+every sample by 256, which turns a quiet narration into a quiet hiss — so
+every resource still decodes to a whole number of samples, `--original` still
+writes the payload byte-exactly, and no test that only counts bytes can see it.
+It only shows up in the decoded audio, and it showed up as the first game's
+lesson tracks measuring **0 % silence** at -45 dB across all 192 of them,
+against 19 % for the tool sounds as a control. After the swap the same files
+measure 20 % silence with pitch strength 0.45 (against 0.12 before) and 42 %
+of their energy in the 300–3400 Hz speech band — which is what narration
+looks like.
+
+`swap16` in `src/sound.rs` does the swap on the way into the WAV. The
+archival path is untouched: `--original` writes `container.payload`, not the
+swapped stream. `tests/sound_order.rs` pins it per resource and across all
+228.
+
+**What the lesson audio is.** `docs/GAME1.md` §6 records that the `Blobs`
+payloads carry no audio — every object the animation script can name is a
+drawing shape. The narration is instead a family of sound resources named
+`M?d/M?f/M?l/M?n` plus a type token: `Mdd` `Mdy` `mmk` `Mpl` `Mgf` `Mmn` give
+six characters (Donald, Daisy, Mickey, Pluto, Goofy, Minnie) and the tokens
+`L` (lesson), `In` (intro) and `l` (a lowercase-typed duplicate family) give
+115 + 28 + 23 = 166 files, 30.5 minutes in total. The game associates them with
+its animations **by name at run time**, never by a hardcoded pairing: all 46
+name lookups in the executable are literal strings, and they are UI/tool
+sounds (`slider sound`, `tool looping sound`, `color picker drag channel`,
+`lesson abort`) plus `session done sound`, which is the one the blob session
+itself loads from the constructor at `FUN_004a7764` — a chime for the end of a
+session, not narration. No sound name or blob name appears as a literal
+anywhere in the image, so the pairing is not recoverable from the code and has
+to come from the assets.
+
 ## 6. Blobs — the `goofy 2.6.3` animation records, decoded
 
 `pack.BLB` (73,074,150 bytes, 305 entries) is an **animation script
