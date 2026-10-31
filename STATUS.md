@@ -320,16 +320,33 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   silence, pitch strength 0.45 (was 0.12) and 42% speech-band energy.
   `swap16` fixes the WAV path; `tests/sound_order.rs` pins it per resource and
   across all 228; `--original` is unaffected.
-* **Where the lesson narration lives, and how it is tied to the animations.**
-  All 46 resource-name lookups in `DISNEYMA.EXE` are literal strings and all
-  are UI/tool sounds plus `session done sound`, which is the only sound the
-  blob session itself loads (from the constructor at `FUN_004a7764`, reached
-  from the factory at `0x452671`). **No sound name or blob name appears as a
-  literal anywhere in the image**, so there is no hardcoded lesson->audio
-  pairing to find. The narration is instead a name-shaped family:
-  `M?d/M?f/M?l/M?n` + `L`/`In`/`l` = 166 files, 30.5 minutes, six characters
-  (Donald, Daisy, Mickey, Pluto, Goofy, Minnie). `GAME1.md` 5.1 records the
-  shapes; `GAME1.md` 6 records that the Blobs payloads carry no audio at all.
+* **FIXED: the sound format byte's bit depth is wrong for 24 of 451 resources,
+  and the payload now wins.** The version-1 sound metadata gives each resource
+  one format byte with the depth in bit 2, and there is nothing structural to
+  check it against, so `AGENTS.md`'s rule for metadata hints applies: the bytes
+  win. The measure is the fraction of samples sitting on the rails, because both
+  mis-readings put them there by construction -- 16-bit data read as 8-bit takes
+  every other byte (the HIGH byte, which is 0x00/0xff for a quiet signal), and
+  8-bit data read as 16-bit pairs adjacent bytes into samples clustered round
+  0x8080. The wrong readings rail 16-51% of samples; the correct ones rail
+  0.00-0.05%, a two-order-of-magnitude margin with no content model.
+  `implied_bits` in `src/sound.rs` applies it and reports every change;
+  `tests/sound_order.rs` pins the 24 flips, six correctly declared resources
+  that must keep their depth, and that every flipped stream comes off the rails.
+* **Verified with earshot** (CLAP text-audio embeddings, installed at
+  `/opt/earshot`, models cached at `/opt/earshot-cache`, MCP server registered
+  in `opencode.json`). A listener auditioned both readings of seven resources
+  and called the declared one "ear rape" in every case; earshot agrees on all
+  seven, and the other 17 found by the rule check out the same way. Every one of
+  the 24 corrected files is a coherent named sound; the declared readings are
+  all "no match" with noise descriptions (`MdyIn001` declared reads as *a power
+  drill*, `IahUh069` declared as *a phone vibration buzz*). What the corrected
+  files **are** varies and is not a claim of this rule: four are speech, three
+  are music (`CreditsMusic` Music 0.82 cinematic orchestral, `UVp__M01` ukulele
+  0.72, `UVp__M02` funk 0.92), the rest foley or UI. Corrected: an earlier note
+  here called the 166-file `M?d/M?f/M?l/M?n` + `L`/`In`/`l` family "the
+  narration" -- that is a name-shape inference only. `--original` is unaffected
+  throughout: it writes the payload, never a depth.
 * **`pack.BLB`'s `goofy 2.6.3` payloads are DECODED: 305 of 305, with a 1:1
   round trip.** `tests/game1_blobs.rs` pins it (11 tests). The layout is
   stamp(14) + `u32 object_count` + `u32 object_bytes == count*12` +

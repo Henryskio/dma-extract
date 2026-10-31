@@ -399,6 +399,74 @@ sound is byte-exact in `--original` mode and round-trips through WAV.
 the later games' `attr` (rate, 16-bit, channels), but bit 5 is set on most
 sounds and bit 4 on some, and neither is used by the later `attr`.
 
+### 5.2 The bit depth comes from the payload, because the format byte is wrong for 24 of them
+
+The version-1 sound metadata gives each resource one format byte, and its bit-2
+selects the depth. That bit is wrong for **24 of the 451 resources** -- 21 in one
+direction (the byte says 8-bit and the payload is 16-bit) and 3 the other way.
+
+There is nothing structural to check the byte against, so the payload decides,
+and `AGENTS.md`'s rule for metadata hints applies directly: when the hint
+disagrees with the bytes, the bytes win. The override lives in
+`implied_bits` in `src/sound.rs` and reports every resource it changes.
+
+**The measurement is the fraction of samples sitting on the rails**, and it works
+because both mis-readings put them there by construction:
+
+* 16-bit data read as 8-bit takes every other byte, which is the **high** byte of
+  each sample. A quiet signal's high bytes are `0x00`/`0xff`, so the result sits
+  on the rails -- 16-51 % of samples.
+* 8-bit data read as 16-bit pairs adjacent bytes into samples. 8-bit audio
+  clusters around its centre `0x80`, so the pairs cluster around `0x8080`, near
+  the negative rail -- 27-37 % of samples.
+
+The correct reading puts 0.00-0.05 % of samples on the rails: a margin of two
+orders of magnitude, and a threshold that needs no model of what the audio
+should be. That is what makes it usable in an extractor, where a content model
+would be a guess.
+
+**How the 24 were confirmed.** A listener auditioned both readings of seven
+resources and called the declared one "ear rape" in every case; the same seven
+were then re-checked with [earshot](https://github.com/Leonxlnx/earshot) (CLAP
+text-audio embeddings, run locally on CPU), which agrees on all seven. The other
+17 were found by the rule alone and checked the same way. What earshot hears --
+these are per-file descriptions, not a claim that any group is one thing:
+
+| resource | earshot's reading of the corrected file |
+|---|---|
+| `pack.SND` `MdyIn001.AIF` | Speech 0.87; a voice-over narration (z +4.6) |
+| `pack.SND` `MdyIn002.AIF` | Speech 0.83; a voice-over narration (z +4.1) |
+| `mpApp.SND` `IahUh066.AIF` | Speech 0.89; a voice-over narration (z +4.2) |
+| `mpApp.SND` `IahUh069.AIFF` | Speech 0.82; a voice-over narration (z +4.9) |
+| `mpApp.SND` `Smp__S03.aif` | Wind chime 0.89, Chime 0.83; a bar-chime glissando |
+| `pack.SND` `Mmk_S01.aif` | Speech 0.45, Plop 0.44; a squelch, digital silence between sounds |
+| `pack.SND` `Mpl__S01.aif` | Animal 0.68, Pant 0.56, Dog 0.52; a record scratch |
+| `pack.SND` `CreditsMusic.aif` | Music 0.82; cinematic orchestral music, 119.8 s |
+| `mpApp.SND` `UVp__M01.aif` | Music 0.72; cheerful ukulele music, 31.0 s |
+| `mpApp.SND` `UVp__M02.aif` | Music 0.92; funk music, 29.7 s |
+| `pack.SND` `CtaTlS01.aif` | a drawer closing (z +4.5) |
+| `pack.SND` `CtaTsS01.aif` | a drawer closing (z +3.8) |
+| `mpApp.SND` `CUdBtS01.aif` | a police siren (z +4.1) |
+| `mpApp.SND` `ZOOMRECT.AIF` | a record scratch (z +3.1) |
+| `HD.SND` `CQtBtS01.aif` | a zipper (z +2.8) |
+
+Every one of the 24 corrected files is a coherent named sound. Against those, the
+declared readings are all "no match" with noise descriptions: `MdyIn001`
+declared reads as *a power drill (z +3.7)*, `IahUh069` declared as *a phone
+vibration buzz*, `Mpl__S01` declared as *a record scratch (z +3.6)* at 27 % of
+samples on the rail.
+
+Note that the corrected files are **not all narration**, and were not assumed to
+be: three are music, three are foley or UI, and the four speech ones are the
+Daisy and hesitation tracks. The evidence is about which depth is right, not
+about what the sounds say.
+
+`tests/sound_order.rs` pins it: the 24 flipped resources must decode at the
+payload's depth (and must have read the other way in the format byte, so the case
+proves something), six correctly declared resources must keep theirs, and every
+flipped resource's decoded stream must come off the rails. `--original` is
+unaffected throughout: it writes `container.payload`, never a depth.
+
 ### 5.1 The 16-bit samples are big-endian, and the shared decoder was wrong
 
 This is a **first-game delta**: the versions-2/3 sound containers hold only
@@ -434,13 +502,16 @@ archival path is untouched: `--original` writes `container.payload`, not the
 swapped stream. `tests/sound_order.rs` pins it per resource and across all
 228.
 
-**What the lesson audio is.** `docs/GAME1.md` §6 records that the `Blobs`
+**Where the lesson audio lives.** `docs/GAME1.md` §6 records that the `Blobs`
 payloads carry no audio — every object the animation script can name is a
-drawing shape. The narration is instead a family of sound resources named
+drawing shape. The lesson audio is instead a family of sound resources named
 `M?d/M?f/M?l/M?n` plus a type token: `Mdd` `Mdy` `mmk` `Mpl` `Mgf` `Mmn` give
 six characters (Donald, Daisy, Mickey, Pluto, Goofy, Minnie) and the tokens
 `L` (lesson), `In` (intro) and `l` (a lowercase-typed duplicate family) give
-115 + 28 + 23 = 166 files, 30.5 minutes in total. The game associates them with
+115 + 28 + 23 = 166 files, 30.5 minutes in total. That is a claim about the
+**name shape and the container structure only**: what the files contain varies,
+and earshot hears speech in some and music or foley in others (§5.2 lists
+examples), so the family is not "the narration". The game associates them with
 its animations **by name at run time**, never by a hardcoded pairing: all 46
 name lookups in the executable are literal strings, and they are UI/tool
 sounds (`slider sound`, `tool looping sound`, `color picker drag channel`,

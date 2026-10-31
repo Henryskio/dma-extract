@@ -17,3 +17,6 @@
 
 # Python bytecode from the ISO tools.
 /__pycache__/
+
+#temporary media files
+.tmp/

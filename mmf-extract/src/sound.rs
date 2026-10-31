@@ -172,6 +172,110 @@ fn swap16(stored: &[u8]) -> Vec<u8> {
     out
 }
 
+// -- Measuring the payload instead of trusting the format byte ---------------
+//
+// The version-1 format byte carries the bit depth in bit 2, and it is wrong for
+// a number of resources -- seven confirmed by a listener and by earshot, the
+// rest found by the same rule and checked the same way. There is nothing
+// structural to check it against: the byte is the only per-resource field in the
+// version-1 sound metadata. So the payload decides, and `AGENTS.md`'s rule for
+// metadata hints applies: when the hint disagrees with the bytes, the bytes win.
+//
+// The measure is the fraction of samples sitting on the rails, because both
+// mis-readings put them there by construction:
+//
+//   * 16-bit data read as 8-bit takes every other byte, which is the **high**
+//     byte of each sample. A quiet signal's high bytes are 0x00/0xff, so the
+//     result sits on the rails -- 16-51% of samples in the confirmed cases.
+//   * 8-bit data read as 16-bit pairs adjacent bytes into samples. 8-bit audio
+//     clusters around its centre 0x80, so the pairs cluster around 0x8080,
+//     near the negative rail -- 27-37% of samples in the confirmed cases.
+//
+// The correct reading has a distribution comfortably inside the range: 0.00 to
+// 0.05% of samples on the rails. That is a margin of two orders of magnitude,
+// and it needs no model of what the audio should be, which is what makes it
+// usable in an extractor.
+
+/// How much payload to measure: 20 seconds' worth of samples.
+///
+/// The measure is a property of the whole stream, and 20 s is far past the point
+/// where it stops moving; the confirmed resources are decided on their first few
+/// seconds.
+const MEASURE_SAMPLES: usize = 20 * 22_050;
+
+/// A sample within this of full scale counts as sitting on the rail.
+const RAIL_LEVEL: f64 = 0.99;
+
+/// How much more of the payload must sit on the rails at the declared depth
+/// than at the other one before the depth is overridden.
+///
+/// The confirmed resources sit 100x above this gap, and a correctly declared
+/// resource sits below it, so the threshold can be anywhere in between.
+const RAIL_MARGIN: f64 = 0.005;
+
+/// The fraction of samples within [`RAIL_LEVEL`] of full scale.
+///
+/// `None` for a payload too short to measure. 16-bit payloads are byte-swapped
+/// on the way in, the same way the output path swaps them, so the reading is
+/// measured in the order the samples are actually meant to be read.
+fn rail_fraction(payload: &[u8], bits: u16) -> Option<f64> {
+    let bytes_per_sample = if bits >= 16 { 2 } else { 1 };
+    let cap = MEASURE_SAMPLES * bytes_per_sample;
+    let start = (payload.len().saturating_sub(cap)) / 2;
+    let window = &payload[start..start + payload.len().min(cap)];
+    if window.len() < bytes_per_sample * 2 {
+        return None;
+    }
+    let (rails, samples) = if bits >= 16 {
+        if window.len() % 2 != 0 {
+            return None;
+        }
+        let mut rails = 0usize;
+        let mut samples = 0usize;
+        for pair in window.chunks_exact(2) {
+            let v = i16::from_le_bytes([pair[1], pair[0]]) as f64 / 32768.0;
+            if v.abs() >= RAIL_LEVEL {
+                rails += 1;
+            }
+            samples += 1;
+        }
+        (rails, samples)
+    } else {
+        let mut rails = 0usize;
+        for &b in window {
+            let v = (f64::from(b) - 128.0) / 128.0;
+            if v.abs() >= RAIL_LEVEL {
+                rails += 1;
+            }
+        }
+        (rails, window.len())
+    };
+    if samples == 0 {
+        return None;
+    }
+    Some(rails as f64 / samples as f64)
+}
+
+/// The bit depth the payload itself implies, when the format byte is wrong.
+///
+/// Returns `Some(other)` only when the declared reading puts far more of the
+/// payload on the rails than the other one. Returns `None` when the payload
+/// agrees with the byte, when it is too short to say, or when the other depth
+/// would not even fit -- an odd payload cannot be 16-bit, so it stays 8-bit.
+fn implied_bits(payload: &[u8], declared: u16) -> Option<u16> {
+    let other = if declared >= 16 { 8 } else { 16 };
+    if other == 16 && payload.len() % 2 != 0 {
+        return None;
+    }
+    let declared_rail = rail_fraction(payload, declared)?;
+    let other_rail = rail_fraction(payload, other)?;
+    if declared_rail - other_rail > RAIL_MARGIN {
+        Some(other)
+    } else {
+        None
+    }
+}
+
 pub fn decode(container: &Container, index: usize) -> Result<DecodedSound> {
     let stored = container.payload(index);
     let flags = container.flags_of(index);
@@ -199,6 +303,27 @@ pub fn decode(container: &Container, index: usize) -> Result<DecodedSound> {
         format.bits_per_sample = 16;
     }
 
+    let mut bits = format.bits_per_sample;
+    let mut overridden = false;
+    if matches!(encoding, Encoding::Pcm8 | Encoding::Pcm16) {
+        if let Some(implied) = implied_bits(stored, bits) {
+            // `AGENTS.md`'s rule for metadata hints: the bytes win, but the
+            // disagreement is never silent, so it is reported here rather than
+            // applied quietly.
+            eprintln!(
+                "note: {}: resource {index} '{}': the format byte says {bits}-bit \
+                 but the payload reads as {implied}-bit; using the payload",
+                container.path.display(),
+                container.name(index)
+            );
+            bits = implied;
+            overridden = true;
+        }
+    }
+    if overridden {
+        format.bits_per_sample = bits;
+    }
+
     let expected = container.plain_len(index);
     let pcm = match encoding {
         Encoding::Pcm8 | Encoding::Pcm16 => {
@@ -221,7 +346,7 @@ pub fn decode(container: &Container, index: usize) -> Result<DecodedSound> {
             // the little-endian order a WAV file needs. `--original` writes
             // `container.payload`, not this, so the byte-exact archival path
             // is untouched by the swap.
-            if encoding == Encoding::Pcm16 {
+            if bits >= 16 {
                 swap16(stored)
             } else {
                 stored.to_vec()
@@ -362,15 +487,18 @@ fn write_wav(path: &Path, decoded: &DecodedSound) -> Result<()> {
     let mut writer = hound::WavWriter::create(path, spec)
         .with_context(|| format!("creating {}", path.display()))?;
 
-    match decoded.encoding {
-        Encoding::Pcm8 => {
+    match decoded.format.bits_per_sample {
+        8 => {
             for &sample in &decoded.pcm {
                 // hound's 8-bit interface is signed; adding 128 on write
                 // recovers the original unsigned byte exactly.
                 writer.write_sample((i16::from(sample) - 128) as i8)?;
             }
         }
-        Encoding::Pcm16 | Encoding::Dpcm16 => {
+        // The writer follows the sample width the decoder settled on, not the
+        // storage form: `encoding` records how the bytes were stored, and the
+        // depth may have been re-read from the payload (see `implied_bits`).
+        _ => {
             for bytes in decoded.pcm.chunks_exact(2) {
                 writer.write_sample(i16::from_le_bytes([bytes[0], bytes[1]]))?;
             }
