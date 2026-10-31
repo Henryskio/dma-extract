@@ -43,6 +43,8 @@
 
 use crate::cli::sanitize;
 use crate::container::Container;
+
+pub mod modfile;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
