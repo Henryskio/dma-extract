@@ -347,6 +347,22 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   here called the 166-file `M?d/M?f/M?l/M?n` + `L`/`In`/`l` family "the
   narration" -- that is a name-shape inference only. `--original` is unaffected
   throughout: it writes the payload, never a depth.
+* **Games 2 and 3's sound audio checked with earshot: no defect found.** Worth
+  doing, because the byte-order and bit-depth fixes in `src/sound.rs` live in the
+  *shared* decoder and therefore also change what games 2 and 3 output. Measured
+  over `/RawAssets`: 683 resources in `HD.MMA` + `app.MMA`, **0 extraction
+  failures and 0 depth overrides** -- the rail rule does not fire there, because
+  those containers hold only stored 8-bit PCM and DPCM (no stored 16-bit, so the
+  byte-order swap is inert too), and their 8-bit payloads do not sit on the
+  rails. The DPCM path, which no first-game resource exercises, was then
+  listened to with earshot: `Forest30sec` reads Music 0.91 chiptune, `Ball30sec`
+  Music 0.82 jazz (z +4.3), `Shredderactivate` "a printer printing (z +3.6)",
+  `ISgenrePackSUCK` "a zipper (z +3.2)", and the chalk tool's loop "a spray can
+  hissing (z +5.1)". A physical sweep of all 683 flagged 39, all benign: short
+  transients carry a small DC offset, loud short sounds clip a few percent at
+  the source, and most "silent" hits are a blip followed by silence. One data
+  point: **51 of the 683 files are byte-identical to an earlier one under a
+  different name** -- the game reuses a payload for several UI roles.
 * **`pack.BLB`'s `goofy 2.6.3` payloads are DECODED: 305 of 305, with a 1:1
   round trip.** `tests/game1_blobs.rs` pins it (11 tests). The layout is
   stamp(14) + `u32 object_count` + `u32 object_bytes == count*12` +
