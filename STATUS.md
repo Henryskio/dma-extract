@@ -29,11 +29,11 @@ blobs, `--original` byte-exact for 13,717 of 13,718 resources. `HD.PIC` and
 | What | Path |
 |---|---|
 | Final Rust extractor (the deliverable) | `/workspace/mmf-extract` |
-| Builds offline | `cargo build --release` → `target/release/mmf-extract` |
+| Builds offline | `cargo build` → `target/debug/mmf-extract` (debug is the convention) |
 | Extracted pictures (30,404 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
 | Extracted scripts (4,813 objects) | `/workspace/extracted/Scripts/HD/…` |
 | Extracted films (139 frames) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
-| Extracted sounds (683 WAVs) | `/workspace/extracted/Sounds/{HD,app}/…` |
+| Extracted sounds (683 FLACs) | `/workspace/extracted/Sounds/{HD,app}/…` |
 | Format findings | `/workspace/docs/PICTURES.md` (+ `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`) |
 | First game (1997) format | `/workspace/docs/GAME1.md` |
 | Workspace layout contract | `/workspace/docs/WORKSPACE.md` |
@@ -60,7 +60,7 @@ for **all** of them:
 | file | tag | type | status |
 |---|---|---|---|
 | `app.MMP`, `HD.MMP`, `stmp1.MMP`, `stmp2.MMP`, `stmp3.MMP` | Pictures | images | **DONE** — 30,404 PNGs, 0 failures (the 105 odd payloads now decode) |
-| `HD.MMA`, `app.MMA` | Sounds | audio | **DONE** — 683 WAVs (8-bit PCM + custom 16-bit DPCM) |
+| `HD.MMA`, `app.MMA` | Sounds | audio | **DONE** — 683 FLACs (8-bit PCM + custom 16-bit DPCM) |
 | `HD.MMS` | Scripts | object DB | **DONE** — 4,813 objects, 3,329,791 payload bytes fully accounted |
 | `DMA.MMF` | Films | video/frames | **DONE** — 1 film, 139 frames of 546×410 + manifest |
 
@@ -174,8 +174,14 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 * All 683 resources decode with zero failures; the decoded-size table is used
   as an integrity check and any mismatch is reported and skipped.
 * `--original` writes the decoded sample stream verbatim as `.pcm`; modern mode
-  writes `WAVE_FORMAT_PCM` WAVs with the rate/channel/bit depth from `C`
-  (lossless: the tests read each WAV back with `hound` and compare samples).
+  writes **FLAC** at the rate/channel count/bit depth the payload settles on,
+  keeping 8-bit at 8-bit. The encoder is the official `flac` CLI tool
+  (`apt install flac`), now a dependency — `docs/SOUNDS.md` §6.1 records why
+  ffmpeg and the Rust `flac` crate were both rejected. Every one of the 683
+  files round-trips byte-identical through `flac --decode` and its
+  `STREAMINFO` block is parsed and checked against the decoder.
+* Measured: 683 FLAC files, 60,542,810 bytes against 89,834,927 bytes of raw
+  PCM — 32.6 % smaller — extracted in 5 s, zero failures.
 * Known-file checks: `Ball30sec.AIF` → 28.799 s at 22,050 Hz stereo, and
   `silence.aif` → exactly one second of zeros — both confirm the format byte.
 * Open: the `0x0008` word and `C` bits 4-7 are not yet interpreted; the codec
@@ -199,7 +205,16 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
   Analysis bins present: `analyze`, `probe`, `owners`, `oddparse`, `cols`,
   `invariants`, `imgstat`, `imgcheck`, `chan`, `palscan`, `grid`, `dump`,
   `scriptprobe`, `filmprobe`.
-* crates.io reachable; `cargo build --release` works offline.
+* crates.io reachable; `cargo build` works offline.
+* **Build debug, always** (now `AGENTS.md`'s first convention). The reason is
+  measured, not stylistic: a debug run of `cargo test` found a latent
+  underflow in `src/picture.rs` (`data.len() - PALETTE_BYTES` on a payload
+  shorter than 1024 bytes, in the 8-bit RLE palette search) that release mode
+  silently wrapped and then rejected — so the two profiles disagreed about the
+  same bytes and only one of them said so. Fixed by guarding the candidate;
+  `docs/PICTURES.md` §7.4 records the equivalence check. The cost is real: a
+  full debug extraction of the third game's pictures + sounds took 822 s
+  against well under a minute in release.
 
 ## 8. The second game in the series (see `docs/SEQUEL.md`)
 
@@ -227,7 +242,9 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 * `docs/SOUNDS.md`, `docs/SCRIPTS.md` and `docs/FILMS.md` each end with an
   open-questions list (animation opcodes, film record fields and audio PCM,
   the `0x0008` metadata word, `C` bits 4-7).
-Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
+Deps available: `anyhow`, `clap`, `hound` (the intermediate WAV piped to the
+encoder), `png`, `sha2`. The sound encoder itself is the external `flac` CLI
+tool, not a crate — see `docs/SOUNDS.md` §6.1.
 
 ---
 
@@ -304,7 +321,7 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   `0x20 + 4*(N+1) + 2` and the last offset equals the file length. See
   `GAME1.md` §7 and `src/v1/scripts.rs`.
 * **BUG FOUND AND FIXED: the first game's stored 16-bit sounds were
-  byte-swapped in the WAV output.** 228 resources carry stored 16-bit PCM,
+  byte-swapped in the modern output.** 228 resources carry stored 16-bit PCM,
   and all of them are **big-endian** on the wire (AIFF heritage from this
   Win/Mac hybrid disc). `src/sound.rs` copied them through as if they were
   little-endian -- true for the versions-2/3 containers, where every stored
@@ -318,8 +335,8 @@ Deps available: `anyhow`, `clap`, `flac`, `hound` (WAV), `png`, `sha2`.
   It surfaced as the lesson tracks measuring 0% silence at -45 dB (192/192
   files) against a 19% tool-sound control; after the swap they measure 20%
   silence, pitch strength 0.45 (was 0.12) and 42% speech-band energy.
-  `swap16` fixes the WAV path; `tests/sound_order.rs` pins it per resource and
-  across all 228; `--original` is unaffected.
+  `swap16` fixes the output path; `tests/sound_order.rs` pins it per resource
+  and across all 228; `--original` is unaffected.
 * **FIXED: the sound format byte's bit depth is wrong for 24 of 451 resources,
   and the payload now wins.** The version-1 sound metadata gives each resource
   one format byte with the depth in bit 2, and there is nothing structural to

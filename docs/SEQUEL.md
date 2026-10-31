@@ -84,8 +84,9 @@ Extracted:
 
 Spot checks:
 
-* WAVs open with the expected headers (e.g. 22,050 Hz mono 8-bit for
-  `CPtBtS01`, 22,050 Hz 16-bit for `CreditsMusic`/`OpeningMusic`).
+* Sounds open with the expected headers (measured as WAV at the time; the
+  modern mode writes FLAC now, with the same widths — 22,050 Hz mono 8-bit
+  for `CPtBtS01`, 22,050 Hz 16-bit for `CreditsMusic`/`OpeningMusic`).
 * `Intro.flm` frames decode to the exact 800×600 key frame; dimensions come
   from the 22-byte record's `top/left/bottom/right` u16s
   (0, 0, 600, 800).

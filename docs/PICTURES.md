@@ -377,6 +377,25 @@ matching its name; `ISselectBoxFlipSelect.pct` produces white, red
 `(205,29,20)` and 47 distinct semi-transparent tones — a selection highlight.
 All 105 resources now decode; `HD.MMP` has **zero** failures.
 
+### 7.4 A subtraction that only a debug build catches
+
+The palette-placement search above tried three candidate offsets per record
+width, one of them `data.len() - PALETTE_BYTES`. For a payload shorter than
+1024 bytes that subtraction underflows. A release build wraps it to
+`usize::MAX - …`, which the next line's guard (`off + PALETTE_BYTES <=
+data.len()`) rejects, so the code happened to take the same path as the
+correct version — the bug was invisible. A debug build turns the same bytes
+into `attempt to subtract with overflow` and a panic, which is how it was
+found.
+
+The fix guards the candidate (`if data.len() > PALETTE_BYTES`) rather than
+catching the panic. Verified equivalent: at `len == 1024` the old expression
+evaluated to `0`, a duplicate of the `Some(0)` candidate already in the list,
+so no offset changes and no resource's decode moves.
+
+The lesson is now `AGENTS.md`'s first convention: build debug. The overflow
+checks are the reason.
+
 ---
 
 ## 8. Colour tests
@@ -400,7 +419,7 @@ channel-order bug tinted the whole corpus yellow:
   measurement: red 5.81%, green 5.45%, blue 8.71% (the old bug made blue
   exactly 100%). Pure black is only 4.30%.
 
-`cargo test --release` runs the whole suite (17 tests). The standalone
+`cargo test` runs the whole suite (17 tests). The standalone
 `src/bin/imgcheck` prints the same corpus statistics for manual checks.
 
 ---

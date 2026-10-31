@@ -61,7 +61,7 @@ where it is supposed to live.
 └── extracted/                   # extraction output, gitignored
     ├── Pictures/<container>/<index>_<name>.png
     ├── Raw/<container>/…        # untouched payloads (with --raw)
-    ├── Sounds/<container>/<index>_<name>.wav
+    ├── Sounds/<container>/<index>_<name>.flac
     ├── Scripts/HD/              # container.json, types.txt, strings.txt, objects/
     └── Films/DMA/00000_Intro/   # frame_NNN.png + manifest.json
 ```
@@ -174,7 +174,7 @@ Extract it into `/PathAssets2` and point the CLI at it:
 
 ```sh
 python3 extract_iso.py copy /path/TOPOLINO2.ISO /PathAssets2 '<regexes as in docs/SEQUEL.md>'
-./target/release/mmf-extract /PathAssets2 -o out2 --types all
+./target/debug/mmf-extract /PathAssets2 -o out2 --types all
 ```
 
 `docs/SEQUEL.md` has the same JPEG-friendly Joliet caveat as above: prefer the

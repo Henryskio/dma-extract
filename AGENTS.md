@@ -8,8 +8,15 @@ humans; this file is for you. Read it before editing anything.
 `mmf-extract` is a Rust reverse-engineering tool for the proprietary `MMFW`
 containers of \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista: pictures
 (`.MMP`), sounds (`.MMA`), scripts (`.MMS`) and films (`.MMF`). It turns each
-resource into a modern lossless format (PNG / WAV / JSON+text), and can also
+resource into a modern lossless format (PNG / FLAC / JSON+text), and can also
 re-emit the game's original bytes exactly.
+
+**External dependencies.** `cargo build` needs only the pinned crates. The
+*sound* output additionally needs the official `flac` tool
+(`apt install flac` / `brew install flac`) because no Rust crate here
+encodes FLAC and ffmpeg's encoder cannot do 8-bit — `docs/SOUNDS.md` §6.1
+records the measurements. `src/sound.rs` fails loudly and once, naming the
+install command, when it is missing, rather than silently writing WAV.
 
 The formats are **not documented publicly**. Everything known about them is in
 `docs/`, and the docs are layered the same way the code is — one chain of
@@ -44,7 +51,7 @@ version 1 (`docs/GAME1.md` §1 has the carve table).
 
 ```sh
 cd mmf-extract
-cargo build --release            # binary: target/release/mmf-extract
+cargo build                      # binary: target/debug/mmf-extract
 ```
 
 No network access is needed to build. Dependencies are pinned in
@@ -54,10 +61,10 @@ audio codecs, `sha2`, `anyhow`, `clap` are already there).
 ## Tests
 
 ```sh
-cargo test --release                                   # full suite
-DMA_ASSETS=/PathAssets cargo test --release       # point at the game's assets
-DMA_ASSETS=/PathAssets cargo test --release --test colors   # one suite
-GAME1_ASSETS=/PathAssets/Dati cargo test --release --test game1
+cargo test                                          # full suite
+DMA_ASSETS=/PathAssets cargo test                   # point at the game's assets
+DMA_ASSETS=/PathAssets cargo test --test colors     # one suite
+GAME1_ASSETS=/PathAssets/Dati cargo test --test game1
 ```
 
 * `DMA_ASSETS` — folder with the `.MMP/.MMA/.MMS/.MMF` files. Defaults to
@@ -79,6 +86,17 @@ colour/byte claim that the tests do not check.
 
 ## Conventions
 
+* **Always build debug.** `cargo build` / `cargo test`, never `--release`.
+  Debug builds are the default here: they compile in seconds instead of
+  minutes, keep `debug_assert!` and the integer-overflow checks on, and turn
+  panics into full backtraces instead of stripped frames — all of which matter
+  more than execution speed on a project whose tests move 15,000 resources
+  through decoders that were written by reading someone else's 1997 code.
+  If a single run genuinely needs the speed (a timed extraction, a
+  `--release`-only measurement), say so in the commit message and say why.
+  The cost is real and worth knowing: a full debug extraction of the third
+  game's pictures plus sounds took 822 s, where release does it in well under
+  a minute. Tests are a few minutes either way.
 * **Never edit `/RawAssets`** (read-only input) and never commit extracted
   assets or game data; `extracted/` is gitignored for exactly that reason.
 * **Do not send images or audio to an AI or paste them in review.** Verify
@@ -117,13 +135,13 @@ colour/byte claim that the tests do not check.
   decoder are a bug waiting to be filed.
 * Rust style: `rustfmt` defaults, no `unwrap()`/`expect()` outside tests
   (use `bail!`/`with_context`), keep warnings at zero for new code.
-* Keep the analysis scratch bins in `src/bin/` building (`cargo build
-  --release` covers them). They are allowed to be rough, not broken.
+* Keep the analysis scratch bins in `src/bin/` building (`cargo build` covers
+  them). They are allowed to be rough, not broken.
 
 ## Before you finish a task
 
-1. `cargo build --release` — no warnings for new code.
-2. `cargo test --release` — green.
+1. `cargo build` — no warnings for new code.
+2. `cargo test` — green.
 3. If you changed a format: update the relevant `docs/*.md` **and**
    `STATUS.md` (counts, open questions, what is measured vs inferred). Which
    file follows the layering above — a change that affects all three games goes

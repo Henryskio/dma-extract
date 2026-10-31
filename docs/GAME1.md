@@ -389,11 +389,13 @@ some containers.
   mono) with a minority at `0x21` (8-bit mono). Its payloads begin
   `81 81 7f 80 …` — ordinary PCM ramps.
 
-**Extracted: 451 WAVs out of 452 resources**, one warned:
+**Extracted: 451 FLACs out of 452 resources**, one warned:
 `mpApp.SND` resource 121 `SifBtS10.aif` has 7817 bytes, an odd number, while
 its format byte `0x25` sets the 16-bit flag. The extractor warns and counts
 the failure rather than guessing which of the two is wrong. Every other
-sound is byte-exact in `--original` mode and round-trips through WAV.
+sound is byte-exact in `--original` mode and round-trips through FLAC (the
+modern-mode writer, with the 8-bit depth preserved, is described in
+`docs/SOUNDS.md` §6).
 
 **Open:** the exact bit meaning of the version-1 format byte. Bits 0–2 match
 the later games' `attr` (rate, 16-bit, channels), but bit 5 is set on most
@@ -497,10 +499,10 @@ measure 20 % silence with pitch strength 0.45 (against 0.12 before) and 42 %
 of their energy in the 300–3400 Hz speech band — which is what narration
 looks like.
 
-`swap16` in `src/sound.rs` does the swap on the way into the WAV. The
-archival path is untouched: `--original` writes `container.payload`, not the
-swapped stream. `tests/sound_order.rs` pins it per resource and across all
-228.
+`swap16` in `src/sound.rs` does the swap on the way into the modern output.
+The archival path is untouched: `--original` writes `container.payload`, not
+the swapped stream. `tests/sound_order.rs` pins it per resource and across
+all 228.
 
 **Where the lesson audio lives.** `docs/GAME1.md` §6 records that the `Blobs`
 payloads carry no audio — every object the animation script can name is a

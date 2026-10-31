@@ -11,7 +11,7 @@ byte-for-byte when you need to prove nothing was lost.
 | Container | Input | Default output (`--original` writes the game's bytes) |
 |---|---|---|
 | `.MMP` | Pictures | `frame_NNN.png` — 32bpp `[transparency, R, G, B]`, 8bpp paletted, 8bpp coverage masks |
-| `.MMA` | Sounds | `NNNNN_name.wav` — unsigned 8-bit PCM plus the game's table-driven differential codec |
+| `.MMA` | Sounds | `NNNNN_name.flac` — unsigned 8-bit PCM plus the game's table-driven differential codec |
 | `.MMS` | Scripts | object database: `container.json`, `types.txt`, `strings.txt`, per-object dumps |
 | `.MMF` | Films | inner `.flm` chunk stream → per-frame PNG + `manifest.json` |
 
@@ -24,10 +24,10 @@ the same code: **38,447 pictures, 891 sounds, 1 film**. See
 ## Quick start
 
 ```sh
-cargo build --release
-./target/release/mmf-extract /PathAssets -o out                 # modern, lossless
-./target/release/mmf-extract /PathAssets -o out --original      # game's own bytes
-./target/release/mmf-extract /PathAssets -o out --types pictures,sounds
+cargo build
+./target/debug/mmf-extract /PathAssets -o out                   # modern, lossless
+./target/debug/mmf-extract /PathAssets -o out --original        # game's own bytes
+./target/debug/mmf-extract /PathAssets -o out --types pictures,sounds
 ```
 
 * `ASSET_DIR` — folder holding the `.MMP` / `.MMA` / `.MMS` / `.MMF` files
@@ -41,13 +41,30 @@ cargo build --release
 Tests need the assets; they skip themselves otherwise:
 
 ```sh
-DMA_ASSETS=/PathAssets cargo test --release      # or /RawAssets, the default
-MMF_PNG_DIR=/PathAssets/extracted/Pictures cargo test --release   # colour corpus scan
-MMF_TEST_TMP=/tmp/t cargo test --release          # scratch dir for round-trip tests
+DMA_ASSETS=/PathAssets cargo test                # or /RawAssets, the default
+MMF_PNG_DIR=/PathAssets/extracted/Pictures cargo test    # colour corpus scan
+MMF_TEST_TMP=/tmp/t cargo test                   # scratch dir for round-trip tests
 ```
+
+Build debug, always: this is the project's convention (`AGENTS.md`). Debug
+keeps `debug_assert!` and the overflow checks on, and the panics readable,
+which is worth far more here than the run time.
 
 See [`docs/WORKSPACE.md`](../docs/WORKSPACE.md) for what the workspace around
 this repository is expected to contain.
+
+## Requirements
+
+`cargo build` needs only the crates pinned in `Cargo.lock` — no network
+access, no system libraries.
+
+The **sound** output additionally needs the official `flac` command-line tool
+(`apt install flac` / `brew install flac`), which is what `src/sound.rs` uses
+to encode. There is no Rust encoder for FLAC here, and ffmpeg's cannot write
+8-bit FLAC — it would silently promote the game's 8-bit audio to 16-bit, so
+the output would misreport the depth the container stored. Without the tool
+the extraction stops and says so, rather than quietly switching to WAV.
+`docs/SOUNDS.md` §6.1 has the measurements.
 
 ## Documentation
 
