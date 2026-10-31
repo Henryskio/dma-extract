@@ -248,34 +248,84 @@ All 683 resources decode with zero failures.
 
 ## 6. Output
 
-Modern mode writes every sound as a `WAVE_FORMAT_PCM` WAV:
+Modern mode writes every sound as a **FLAC** file:
 
-* 8-bit stored PCM is written as unsigned 8-bit WAV;
-* DPCM and any stored 16-bit PCM are written as signed little-endian 16-bit
-  WAV;
+* 8-bit stored PCM keeps its unsigned 8-bit width (`bits_per_raw_sample=8`);
+* DPCM and any stored 16-bit PCM are signed little-endian 16-bit FLAC;
 * stereo samples are interleaved exactly as the decoder emits them.
 
-The WAV sample rate, channel count and bit depth come from `C`, and the files
-are lossless: the test suite reads each WAV back with `hound` and compares
-every sample with the decoded byte stream.
+The sample rate, channel count and bit depth come from `C`, except where the
+version-1 payload overrides the depth (§5.2) — and the depth that was settled
+on is what the finished FLAC file reports about itself.
+
+### 6.1 The encoder is the `flac` tool, and it is a dependency
+
+`src/sound.rs` shells out to the official `flac` command-line tool
+(<https://xiph.org/flac/documentation_tools.html>), installed as a package:
+`apt install flac` / `brew install flac`. It is used both to write the output
+and to read it back in `tests/sounds.rs`. If it is missing the extraction
+fails loudly, once, naming the install command — it never falls back to WAV,
+because silently changing the output format is the one thing this program
+must not do.
+
+Two alternatives were tried and rejected, both measured:
+
+* **ffmpeg.** Its FLAC encoder accepts `s16` and `s32` only. An 8-bit source
+  is silently promoted to 16-bit: feeding an 8-bit WAV to
+  `ffmpeg -c:a flac` yields a file whose `sample_fmt` is `s16` — the samples
+  survive, but the file then *reports* 16-bit audio where the container
+  stored 8-bit. That is the one thing this extractor's output is supposed to
+  state honestly, so ffmpeg was dropped as the encoder.
+* **the Rust `flac` crate (0.5).** It was a dependency until it was found to
+  be broken as a *decoder*: on `Ball30sec.AIF` it reads the first 633,600
+  frames correctly and then produces garbage to the end — 2,828 samples,
+  reading `-3017` where the file holds `10` — while ffmpeg and libsndfile
+  agree with each other on the same file. A verifier that is itself wrong is
+  worse than no verifier, so the crate was removed rather than kept as a
+  false witness. No Rust crate here encodes FLAC at all (`claxon` is a
+  decoder; `flac-bound` binds libFLAC and adds a C dependency).
+
+WAV is not gone: `wav_bytes` renders the intermediate `WAVE_FORMAT_PCM` file
+that is piped to the encoder's stdin, so the 8-bit unsigned convention is
+written once and `hound` remains a dependency.
+
+### 6.2 Measured
+
+| | |
+|---|---|
+| resources extracted | 683 (329 `HD.MMA` + 354 `app.MMA`), zero failures |
+| output size | 60,542,810 bytes FLAC |
+| same audio as raw PCM/WAV | 89,834,927 bytes — a 32.6 % saving |
+| wall time | 5 s for the two containers |
+| round trip | all 683 files decode back byte-identical to the decoder's PCM |
+
+The round trip is checked two ways. The samples come back through
+`flac --decode --force-raw-format --endian=little --sign=…` (`unsigned` for
+8-bit, `signed` otherwise) and are compared with the decoder's own buffer.
+Separately, the `STREAMINFO` block is parsed straight out of each file and its
+sample rate, channel count, bit depth and sample count are compared with the
+decoder's — that is the check that would have caught ffmpeg, whose promoted
+8-bit files round-trip perfectly and are only distinguishable by what they
+claim about themselves.
 
 `--original` writes the decoded payload verbatim to a `.pcm` file. For
 stored-PCM resources that file is byte-identical to the container payload; for
 DPCM it is the signed 16-bit little-endian sample stream produced by the
 algorithm above. `.pcm` carries no header, so the accompanying rate/channel
 information is the `C` byte in the container metadata (and is preserved in
-the modern WAV path).
+the modern FLAC path).
 
-Output names are `NNNNN_<name>.wav` / `.pcm`, with a trailing `.aif`,
+Output names are `NNNNN_<name>.flac` / `.pcm`, with a trailing `.aif`,
 `.aiff`, or `.wav` removed from the resource name. Failed resources are
 counted in the extraction report, warned about on stderr, and skipped.
 
 ## 7. Verification and open questions
 
 * `cargo test --release` covers the `14*N+2` layout, array positions, both
-  codecs, the silence stream, predictor resets, per-sample WAV round-trips,
-  and byte-exact `--original` output.
-* A full `--types sounds` run produces 329 + 354 = 683 WAV files, matching
+  codecs, the silence stream, predictor resets, byte-exact `--original`
+  output, and — for every one of the 683 resources — a FLAC round trip plus
+  the `STREAMINFO` rate/channel/depth/count check.
+* A full `--types sounds` run produces 329 + 354 = 683 FLAC files, matching
   the resource counts and with no failures.
 * `Ball30sec.AIF` decodes to 28.799 s at 22050 Hz stereo, confirming the
   rate-code and channel-bit interpretation; `silence.aif` decodes to exactly

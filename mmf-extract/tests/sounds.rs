@@ -2,7 +2,7 @@
 //!
 //! These exercise the real game files when they are present and are skipped
 //! otherwise. They cover the metadata layout, both sample encodings, the
-//! verbatim `--original` output, and that the modern WAV files decode back to
+//! verbatim `--original` output, and that the modern FLAC files decode back to
 //! exactly the same samples.
 
 use mmf_extract::container::{Container, ContainerKind};
@@ -117,13 +117,16 @@ fn sound_metadata_layout_matches_the_loader() {
 }
 
 #[test]
-fn every_sound_decodes_and_wav_round_trips() {
+fn every_sound_decodes_and_its_modern_output_round_trips() {
     let Some(dir) = raw_assets_dir() else {
         eprintln!("skipping: game assets not present");
         return;
     };
-    let tmp = tempdir("sounds-wav");
+    let tmp = tempdir("sounds-modern");
 
+    let mut flac_count = 0usize;
+    let mut pcm8_count = 0usize;
+    let mut stereo_count = 0usize;
     for name in SOUND_CONTAINERS {
         let path = dir.join(name);
         if !path.exists() {
@@ -144,40 +147,165 @@ fn every_sound_decodes_and_wav_round_trips() {
             assert_eq!(entry.encoding, decoded.encoding);
             assert_eq!(entry.bytes, decoded.pcm.len());
 
-            let mut reader = hound::WavReader::open(&entry.path).expect("open wav");
-            let spec = reader.spec();
-            assert_eq!(spec.sample_rate, decoded.format.sample_rate);
-            assert_eq!(spec.channels, decoded.format.channels);
-            assert_eq!(spec.bits_per_sample, decoded.format.bits_per_sample);
-
-            if decoded.encoding == sound::Encoding::Pcm8 {
-                let samples: Vec<i8> = reader.samples::<i8>().map(Result::unwrap).collect();
-                assert_eq!(samples.len(), decoded.pcm.len());
-                for (&sample, &stored) in samples.iter().zip(&decoded.pcm) {
-                    assert_eq!(
-                        (i16::from(sample) + 128) as u8,
-                        stored,
-                        "{name} resource {}: WAV sample changed",
-                        entry.index
-                    );
-                }
-            } else {
-                let samples: Vec<i16> = reader.samples::<i16>().map(Result::unwrap).collect();
-                assert_eq!(samples.len() * 2, decoded.pcm.len());
-                for (&sample, bytes) in samples.iter().zip(decoded.pcm.chunks_exact(2)) {
-                    assert_eq!(
-                        sample,
-                        i16::from_le_bytes([bytes[0], bytes[1]]),
-                        "{name} resource {}: WAV sample changed",
-                        entry.index
-                    );
-                }
+            // Every resource is FLAC, at the width the payload was measured to
+            // hold. The official `flac` tool preserves the source bit depth
+            // (unlike ffmpeg's FLAC encoder, which promotes 8-bit to 16-bit),
+            // so there is no resource that has to fall back to WAV any more;
+            // this assertion is what keeps it that way.
+            assert_eq!(
+                entry.path.extension().and_then(|e| e.to_str()),
+                Some("flac"),
+                "{name} resource {}: {}-bit audio should be written as .flac",
+                entry.index,
+                decoded.format.bits_per_sample
+            );
+            flac_count += 1;
+            if decoded.format.bits_per_sample == 8 {
+                pcm8_count += 1;
             }
+            if decoded.format.channels == 2 {
+                stereo_count += 1;
+            }
+
+            assert_flac_round_trips(name, entry.index, &entry.path, &decoded);
         }
     }
+    eprintln!(
+        "extracted {flac_count} FLAC files ({pcm8_count} 8-bit, {stereo_count} stereo, all round-tripped byte-identical)"
+    );
 }
 
-#[test]
+/// A FLAC file must decode back to exactly the samples the decoder produced,
+/// at the width the decoder settled on.
+///
+/// Two things are checked, and neither can be faked by the other.
+///
+/// **Samples.** The file is decoded with the same official `flac` tool that
+/// wrote it, as headerless little-endian PCM, and compared byte for byte with
+/// the decoder's output. If the encoding were lossy in any way, or the WAV fed
+/// to the encoder carried the wrong payload, the bytes would differ.
+///
+/// **What the file says about itself.** The `STREAMINFO` block is parsed
+/// straight out of the file (it is the first metadata block, so the layout is
+/// fixed) and its rate, channel count, bit depth and sample count are compared
+/// with the decoder's. This is the check that would have caught ffmpeg: its
+/// FLAC encoder promoted 8-bit to 16-bit and the samples still round-tripped
+/// perfectly, so only the declared depth gave it away. `bits_per_raw_sample=8`
+/// in the finished file is the contract this extractor has with its readers.
+fn assert_flac_round_trips(name: &str, index: usize, path: &Path, decoded: &sound::DecodedSound) {
+    assert_streaminfo_matches(name, index, path, decoded);
+
+    let raw_path = path.with_extension("raw.out");
+    let sign = if decoded.format.bits_per_sample == 8 {
+        "unsigned"
+    } else {
+        "signed"
+    };
+    let status = std::process::Command::new("flac")
+        .arg("--decode")
+        .arg("--silent")
+        .arg("--force-raw-format")
+        .arg("--endian=little")
+        .arg(format!("--sign={sign}"))
+        .arg("--force")
+        .arg("--output-name")
+        .arg(&raw_path)
+        .arg(path)
+        .status()
+        .expect("run flac to decode the FLAC back to raw PCM");
+    assert!(
+        status.success(),
+        "{name} resource {index}: flac could not decode {}",
+        path.display()
+    );
+
+    let recovered =
+        std::fs::read(&raw_path).unwrap_or_else(|e| panic!("read {}: {e}", raw_path.display()));
+    let _ = std::fs::remove_file(&raw_path);
+
+    assert_eq!(
+        recovered.len(),
+        decoded.pcm.len(),
+        "{name} resource {index}: FLAC round-tripped to {} bytes of PCM, expected {}",
+        recovered.len(),
+        decoded.pcm.len()
+    );
+    assert_eq!(
+        recovered, decoded.pcm,
+        "{name} resource {index}: FLAC did not round-trip to the same samples"
+    );
+}
+
+/// Parse the `STREAMINFO` block of a FLAC file and check it against the decoder.
+///
+/// The format is `"fLaC"`, then a metadata-block header (block type in the high
+/// 7 bits, "last" flag in bit 0, 3-byte length). `STREAMINFO` is type 0 and 34
+/// bytes long, of which the first 18 header bytes hold, packed big-endian:
+///
+/// ```text
+/// bits 63..44 (20)  sample rate in Hz
+/// bits 43..41 (3)   channel count - 1
+/// bits 40..36 (5)   bits per sample - 1
+/// bits 35..0  (36)  total samples (frames), 0 when unknown
+/// ```
+///
+/// Reading it here rather than with ffprobe keeps the check inside the crate:
+/// it needs no external tool and it is measured on the same bytes every writer
+/// produces.
+fn assert_streaminfo_matches(name: &str, index: usize, path: &Path, decoded: &sound::DecodedSound) {
+    let bytes = std::fs::read(path).expect("read flac");
+    assert_eq!(
+        &bytes[..4],
+        b"fLaC",
+        "{name} resource {index}: not a FLAC file"
+    );
+    // The first block header: block type 0 (STREAMINFO), 34-byte body.
+    assert_eq!(
+        bytes[4] >> 1,
+        0,
+        "{name} resource {index}: the first metadata block is not STREAMINFO"
+    );
+    let body_len = u32::from_be_bytes([0, bytes[5], bytes[6], bytes[7]]) as usize;
+    assert_eq!(
+        body_len, 34,
+        "{name} resource {index}: STREAMINFO is {body_len} bytes, expected 34"
+    );
+
+    let info = &bytes[8..42];
+    let packed = u64::from_be_bytes(info[10..18].try_into().expect("8 bytes of STREAMINFO"));
+    let sample_rate = (packed >> 44) & 0xf_ffff;
+    let channels = ((packed >> 41) & 0x7) + 1;
+    let bits_per_sample = ((packed >> 36) & 0x1f) + 1;
+    let total_frames = packed & 0xf_ffff_ffff;
+
+    assert_eq!(
+        sample_rate,
+        u64::from(decoded.format.sample_rate),
+        "{name} resource {index}: the FLAC declares {sample_rate} Hz"
+    );
+    assert_eq!(
+        channels,
+        u64::from(decoded.format.channels),
+        "{name} resource {index}: the FLAC declares {channels} channels"
+    );
+    // The one that matters: the file must claim the depth the payload was
+    // measured to hold, not a depth some encoder decided to promote it to.
+    assert_eq!(
+        bits_per_sample,
+        u64::from(decoded.format.bits_per_sample),
+        "{name} resource {index}: the FLAC declares {bits_per_sample}-bit audio where the payload is {}-bit",
+        decoded.format.bits_per_sample
+    );
+    assert_eq!(
+        total_frames * channels * bits_per_sample / 8,
+        decoded.pcm.len() as u64,
+        "{name} resource {index}: the FLAC declares {total_frames} frames, expected {}",
+        decoded.pcm.len() as u64
+            / u64::from(decoded.format.channels)
+            / u64::from(decoded.format.bits_per_sample / 8)
+    );
+}
+
 fn original_output_is_the_decoded_payload_verbatim() {
     let Some(dir) = raw_assets_dir() else {
         eprintln!("skipping: game assets not present");

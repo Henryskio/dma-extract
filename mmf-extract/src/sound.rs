@@ -411,10 +411,21 @@ pub fn decode_dpcm(input: &[u8], channels: u16) -> Result<Vec<u8>> {
 
 /// Extract every sound in a container, returning how many were written.
 ///
-/// In modern mode each resource becomes a WAV file with the game's original
-/// sample rate, channels and bit depth. In original mode the decoded PCM is
-/// written verbatim with a `.pcm` extension. Resources that cannot be
+/// In modern mode every resource becomes a **FLAC** file holding the game's
+/// own sample rate, channel count and bit depth; in original mode the decoded
+/// PCM is written verbatim with a `.pcm` extension. Resources that cannot be
 /// decoded are counted in the report, warned about on stderr, and skipped.
+///
+/// ## Why every width is FLAC
+///
+/// The encoder is the official `flac` tool, which keeps the source width: an
+/// 8-bit resource verifies as `bits_per_raw_sample=8` in the resulting file
+/// and round-trips byte for byte. Nothing has to stay WAV. ffmpeg was tried
+/// first and rejected, because its FLAC encoder accepts `s16`/`s32` only and
+/// silently promotes 8-bit audio to 16-bit -- the samples survive, but the
+/// file then *claims* a depth the game did not store, which is the one thing
+/// this extractor's output is supposed to tell the truth about.
+/// `--original` is untouched either way: it writes the game's own bytes.
 pub fn extract_container(
     container: &Container,
     out_dir: &Path,
@@ -422,6 +433,9 @@ pub fn extract_container(
 ) -> Result<ExtractReport> {
     std::fs::create_dir_all(out_dir)?;
     let mut report = ExtractReport::default();
+    // The encoder is only needed by the modern path, so the probe is deferred
+    // until the first modern resource rather than run on every container.
+    let mut flac: Option<bool> = None;
 
     for index in 0..container.resource_count as usize {
         let name = container.name(index);
@@ -437,14 +451,20 @@ pub fn extract_container(
         };
 
         let stem = output_stem(container, index);
-        let extension = if original { "pcm" } else { "wav" };
+        if !original && !*flac.get_or_insert_with(flac_available) {
+            bail!(
+                "the 'flac' tool is required to write the modern output and was not found on PATH; \
+                 install it (apt install flac / brew install flac), or use --original for the raw PCM"
+            );
+        }
+        let extension = if original { "pcm" } else { "flac" };
         let path = out_dir.join(format!("{index:05}_{stem}.{extension}"));
 
         let written = if original {
             std::fs::write(&path, &decoded.pcm)
                 .with_context(|| format!("writing {}", path.display()))
         } else {
-            write_wav(&path, &decoded)
+            write_flac(&path, &decoded)
         };
 
         if let Err(error) = written {
@@ -476,35 +496,150 @@ fn warn_failure(container: &Container, index: usize, name: &str, error: &anyhow:
     );
 }
 
-/// Write decoded PCM as a standard RIFF/WAVE file.
-fn write_wav(path: &Path, decoded: &DecodedSound) -> Result<()> {
+/// Render decoded PCM as RIFF/WAVE bytes.
+///
+/// Kept separate from the FLAC path ([`write_flac`]) because that path encodes
+/// by piping exactly these bytes to the `flac` tool: an intermediate WAV is
+/// the one format its encoder reads from stdin, and writing it once here keeps
+/// the 8-bit unsigned convention -- the only place WAV and FLAC differ -- in a
+/// single place.
+fn wav_bytes(decoded: &DecodedSound) -> Vec<u8> {
     let spec = hound::WavSpec {
         channels: decoded.format.channels,
         sample_rate: decoded.format.sample_rate,
         bits_per_sample: decoded.format.bits_per_sample,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer = hound::WavWriter::create(path, spec)
-        .with_context(|| format!("creating {}", path.display()))?;
-
-    match decoded.format.bits_per_sample {
-        8 => {
-            for &sample in &decoded.pcm {
-                // hound's 8-bit interface is signed; adding 128 on write
-                // recovers the original unsigned byte exactly.
-                writer.write_sample((i16::from(sample) - 128) as i8)?;
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)
+            .expect("a WAV writer over a Vec cannot fail to open");
+        match decoded.format.bits_per_sample {
+            8 => {
+                for &sample in &decoded.pcm {
+                    // hound's 8-bit interface is signed; adding 128 on write
+                    // recovers the original unsigned byte exactly.
+                    writer
+                        .write_sample((i16::from(sample) - 128) as i8)
+                        .expect("writing a sample to memory cannot fail");
+                }
+            }
+            // The writer follows the sample width the decoder settled on, not
+            // the storage form: `encoding` records how the bytes were stored,
+            // and the depth may have been re-read from the payload (see
+            // `implied_bits`).
+            _ => {
+                for bytes in decoded.pcm.chunks_exact(2) {
+                    writer
+                        .write_sample(i16::from_le_bytes([bytes[0], bytes[1]]))
+                        .expect("writing a sample to memory cannot fail");
+                }
             }
         }
-        // The writer follows the sample width the decoder settled on, not the
-        // storage form: `encoding` records how the bytes were stored, and the
-        // depth may have been re-read from the payload (see `implied_bits`).
-        _ => {
-            for bytes in decoded.pcm.chunks_exact(2) {
-                writer.write_sample(i16::from_le_bytes([bytes[0], bytes[1]]))?;
-            }
-        }
+        writer.finalize().expect("finalizing WAV bytes cannot fail");
     }
-    writer.finalize()?;
+    cursor.into_inner()
+}
+
+/// The `flac` compression level as the tool spells it: `-N`, 0-8.
+///
+/// 8, the highest. The corpus is 100 MB of 8- and 16-bit audio and every
+/// resource in it is a short one-shot or a 30-120 s loop, so the level costs
+/// little in wall time and buys the smallest lossless file, which is the point
+/// of storing audio as FLAC rather than WAV.
+///
+/// The level is only spelled `-N`. There is no long form: `flac` 1.4.3 exposes
+/// `--compression-level-0` .. `--compression-level-8` as *aliases* of the short
+/// options, so `--compression-level` is an ambiguous prefix and a bare `8` is
+/// read as a second input file ("--output-name cannot be used with multiple
+/// files"). Both failure modes were measured, which is why the whole flag
+/// string lives here.
+const FLAC_COMPRESSION: &str = "-8";
+
+/// The external encoder, documented as a dependency.
+///
+/// The program is the official `flac` tool (`apt install flac`,
+/// `brew install flac`), not a Rust crate. Two reasons, both measured:
+///
+/// * **No Rust crate here encodes FLAC.** `flac` 0.5 and `claxon` are decoders;
+/// `flac-bound` binds libFLAC and adds a C dependency.
+/// * **ffmpeg cannot encode 8-bit FLAC.** Its FLAC encoder accepts `s16`/`s32`
+///   only, so an 8-bit source is silently promoted to 16-bit and the resulting
+///   file *reports* 16-bit where the game stored 8-bit. The official `flac`
+///   keeps the source width: a `bps=8` FLAC verifies as `bits_per_raw_sample=8`
+///   and round-trips byte for byte.
+///
+/// The decoder used to verify the output is the same tool (`flac --decode`), so
+/// the encode and the check are the reference implementation rather than two
+/// Rust libraries agreeing with each other.
+const FLAC_TOOL: &str = "flac";
+
+/// Whether the `flac` tool is runnable, probed once per extraction.
+///
+/// A missing encoder fails loudly and once, instead of once per resource, and
+/// never falls back to WAV: silently changing the output format is exactly what
+/// this program is not allowed to do.
+fn flac_available() -> bool {
+    std::process::Command::new(FLAC_TOOL)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Write decoded PCM as a FLAC file, encoded by the `flac` tool.
+///
+/// The WAV bytes go in on stdin -- `flac -` auto-detects the format -- so
+/// nothing touches disk twice and the container stays as clean as the WAV path
+/// left it. FLAC is lossless and keeps the source width, so the file decodes
+/// back to exactly the samples the decoder produced at the depth it produced
+/// them; `tests/sounds.rs` asserts that with the same tool in reverse.
+fn write_flac(path: &Path, decoded: &DecodedSound) -> Result<()> {
+    let mut child = std::process::Command::new(FLAC_TOOL)
+        .args([
+            "--silent",
+            // Overwrite an existing file rather than failing on a re-run.
+            "--force",
+            // See [`FLAC_COMPRESSION`] for why the level is `-8`, not `--compression-level 8`.
+            FLAC_COMPRESSION,
+            "--output-name",
+        ])
+        .arg(path)
+        // A lone `-` reads the WAV from stdin.
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("running {FLAC_TOOL} to encode {}", path.display()))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("flac's stdin was already taken")?;
+    let bytes = wav_bytes(decoded);
+    let write = std::io::copy(&mut std::io::Cursor::new(bytes), &mut stdin);
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("waiting for {FLAC_TOOL} on {}", path.display()))?;
+
+    if let Err(error) = write {
+        bail!(
+            "feeding WAV bytes to {FLAC_TOOL} for {}: {error}",
+            path.display()
+        );
+    }
+    if !output.status.success() {
+        bail!(
+            "{FLAC_TOOL} failed on {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
     Ok(())
 }
 

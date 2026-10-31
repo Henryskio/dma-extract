@@ -2,8 +2,8 @@
 //!
 //! Two output modes are supported:
 //!
-//! * **modern** (the default) — pictures become PNG, sounds become FLAC or
-//!   WAV. Nothing is lost.
+//! * **modern** (the default) — pictures become PNG, sounds become FLAC.
+//!   Nothing is lost.
 //! * **original** (`--original`) — each resource is written out in the game's
 //!   own on-disk format: the decompressed picture payload exactly as the
 //!   runtime would hand it to the blitter, or the sound's sample data in

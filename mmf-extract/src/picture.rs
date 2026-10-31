@@ -176,7 +176,17 @@ pub(crate) fn rle_rgba(
         // bytes per foreground pixel and no palette.
         for rec in [1usize, 4] {
             let mut palette_sources: Vec<Option<usize>> = if rec == 1 {
-                vec![Some(0), Some(PALETTE_BYTES), Some(data.len() - PALETTE_BYTES)]
+                let mut sources = vec![Some(0), Some(PALETTE_BYTES)];
+                // A palette suffixed after the table only exists when the
+                // payload is long enough to hold one. `data.len() -
+                // PALETTE_BYTES` underflows for a short payload, which a debug
+                // build turns into a panic while a release build silently wraps
+                // to a bogus offset -- so guard it rather than letting the two
+                // profiles disagree about the same bytes.
+                if data.len() > PALETTE_BYTES {
+                    sources.push(Some(data.len() - PALETTE_BYTES));
+                }
+                sources
             } else {
                 Vec::new()
             };
