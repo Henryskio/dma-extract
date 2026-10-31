@@ -194,13 +194,45 @@ difference between them. So the block is keyframed texture coordinates, not a
 flat UV table: the second pair differs from the first slightly, which is what
 a track looks like rather than a per-vertex UV.
 
-**(4) The animation grammar is still open, but its shape is known.** The tracks
-step by `1/30` s and `0.1333` s — 30 fps and 7.5 fps bases — and the sampled
-value oscillates around a centre. What is *not* yet measured is the record
-size, whether each track is one value per keyframe, and which node a track
-drives. The mesh section is fully located; the tail is where the animation
-lives, and the `0, 1, V` prefix suggests the tail is itself a counted list of
-counted lists.
+**(4) The animation grammar — the shape is now measured.**
+
+The tail opens with a **universal header**: `u32 0`, `u32 1`, `u32 V`,
+present at the start of the tail in **all 42** static props (`V` here being
+the vertex count, 24–257). That triple is the anchor for everything after the
+mesh.
+
+What follows it is **not uniformly texture coordinates**. After the header
+there are `V` pairs of little-endian floats; on `createPropGuitar.mod` all 68
+of them land in `0..1` (`(0.3530, 0.0248)`, `(0.3532, 0.0250)`, …), which is
+what texture coordinates look like — but on `createPropBed.mod` **zero** of the
+256 pairs do, and the rest of the props scatter in between (119/151 on
+`createPropBucket.mod`, 7/256 on `createPropRooster.mod`). So the block after
+the header is the same *shape* everywhere but its *meaning* varies, and the
+texture-coordinate reading is confirmed for one file only.
+
+**The animation is named.** `createPropGuitar.mod` ends with a table of
+ASCII names, 13 bytes apart:
+
+```text
+0x6f6c  "key06"
+0x6f8b  "key01"
+0x6f98  "key02"
+0x6fa5  "key03"
+0x6fb2  "key04"
+0x6fbf  "key05"
+```
+
+so the tracks are called `key01`…`key06` and the table lives at the **end** of
+the payload. Immediately after the UV block, `createPropGuitar.mod` has
+`u32 3, u32 3` — a track count of 3 — and then the keyframe data, whose first
+keyframe is `(0.0, 4.6777)`. The keyframe streams step by `1/30` s and
+`0.1333` s (30 fps and 7.5 fps), with the sampled value oscillating around a
+centre, which is what `MM3DIndexedMeshDeformer` and
+`DMAFindDeformersFromMeshVisitor` would drive.
+
+So a decoded model is *not* static geometry: the tail holds the texture
+coordinates and a named set of deformation tracks, and the glTF output has to
+carry both.
 
 ### 3.4 `createPropUI*` — measured, and it is not a mesh
 
