@@ -15,11 +15,17 @@ byte-for-byte when you need to prove nothing was lost.
 | `.MMS` | Scripts | object database: `container.json`, `types.txt`, `strings.txt`, per-object dumps |
 | `.MMF` | Films | inner `.flm` chunk stream → per-frame PNG + `manifest.json` |
 
-Measured on the shipped assets of the third game in the series: **30,299
+Measured on the shipped assets of the third game in the series: **30,404
 pictures, 683 sounds, 4,813 script objects, 139 film frames**. A second game
 in the series (\*\*\*\*\*\* Magico Artista 2, container **version 2**) parses with
-the same code: **38,447 pictures, 891 sounds, 1 film**. See
+the same code: **39,628 pictures, 891 sounds, 1 film** (193 frames). See
 [`docs/SEQUEL.md`](../docs/SEQUEL.md).
+
+Both figures were re-measured against the **English** releases as well, and
+match resource for resource — DMA Studio (`magicartiststudio`) and DMA Deluxe
+(`DMADeluxe`) on archive.org. The older counts in earlier notes were taken
+before the odd-payload run-length format was solved (`docs/PICTURES.md`
+§7.3), which added 105 pictures to game 3 and 1,181 to game 2.
 
 ## Quick start
 
@@ -77,6 +83,8 @@ Everything that was reverse-engineered is written up per media type:
 | [`docs/SCRIPTS.md`](../docs/SCRIPTS.md) | the serialized object database (types, records, string tails) |
 | [`docs/FILMS.md`](../docs/FILMS.md) | the inner `.flm` chunk stream, key/delta frames, timing |
 | [`docs/SEQUEL.md`](../docs/SEQUEL.md) | the second game in the series: what differs, and how it was obtained |
+| [`docs/GAME1.md`](../docs/GAME1.md) | the first game (1997, container version 1) |
+| [`docs/DMA3D.md`](../docs/DMA3D.md) | the 3D game: its `Models` and `Textures` containers |
 | [`docs/WORKSPACE.md`](../docs/WORKSPACE.md) | the expected `/workspace` layout |
 
 Facts in those files were derived from the game's own executable

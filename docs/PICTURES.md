@@ -414,7 +414,7 @@ channel-order bug tinted the whole corpus yellow:
   * `MarkerStrokeBANANA04` and `ITeraserPHASE_A05_1` → bare 8bpp decodes as
     a white coverage mask with many alpha levels.
 * **Corpus scan** (`corpus_has_no_systematic_zero_blue_channel`): decodes all
-  30,299 extracted PNGs and asserts that the fraction of opaque pixels with
+  30,404 extracted PNGs and asserts that the fraction of opaque pixels with
   blue = 0 is below 15% and comparable to the red/green fractions. Current
   measurement: red 5.81%, green 5.45%, blue 8.71% (the old bug made blue
   exactly 100%). Pure black is only 4.30%.
