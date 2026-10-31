@@ -119,28 +119,109 @@ as counted records. The `Textures` class is at `0x539e28` and works the same
 way through the same stream helpers (`0x4e87c0` read, `0x4e8a50` read/write,
 `0x4e8a90` read).
 
-### 3.2 What the payload bytes show
+### 3.2 The mesh — located and measured
 
-Each payload is one self-contained `mod II` stream: verified on all 460,
-the magic appears exactly once, at offset 0. After it comes `u32 16`, then
-a stream of little-endian words. Reading those as u32 gives a header table
-whose values are small and mostly distinct — `1, 24, 22, 18, 7, 16, 690, 6,
-127, 32, 26, 30, 9, 31, 4, 19, 28, 20, 23, 27, 33, …` on
-`createModMickeyAx.mod` — which reads like a record-type or record-size
-table rather than data.
+Each payload is one self-contained `mod II` stream: verified on all 460, the
+magic appears exactly once, at offset 0. After it comes `u32 16`, then a header
+whose word values are small and mostly distinct, then the mesh.
 
-The largest payload, `createModMickeyAx.mod` (2,654,687 bytes), has one long
-run of little-endian floats, and it is **not** geometry: at offset 649,012
-there are 8,298 plausible floats whose first elements increase by exactly
-`1/30` (`0.0, 0.0333, 0.0667, 0.1, …`) while the second element oscillates
-around 5.70. Those are `(time, value)` pairs on a 30 fps base — an
-**animation track**. That matches the asset's own name (`MickeyAx`) and the
-class names (`MM3DIndexedMeshDeformer`, `DMAFindDeformersFromMeshVisitor`):
-the container holds deformable, animated models, not just static meshes.
+The payload is a sequence of **counted record arrays** — the shape the loader
+at `0x4b2b60` already told us to expect, since it walks counted lists after
+checking the leading `u16`:
 
-**So the vertex/index buffers exist but have not been located.** The
-animation run occupies 33,192 of 2,654,687 bytes; the remaining ~2.6 MB is
-mostly u16-sized words, which is where the geometry is expected to be.
+```text
+u32   C                 index count
+u16[C]                  index list, one-based, values < V
+u32   V                 vertex count
+vertex[V]               16 bytes: x, y, z (f32) + w (f32, 1.0)
+u32   V                 normal count (== V)
+normal[V]               16 bytes: nx, ny, nz (f32) + a fourth f32
+...                     texture coordinates, then animation tracks
+```
+
+The layout holds on **31 of the 42 non-UI static props** (`createProp*`); the
+`createPropUI*` variants are the ones it does not fit (§3.3).
+
+Measured, `createPropBucket.mod` (`/tmp/dma3d/pc/DMA3D.MMM`, 7,240 bytes):
+
+| section | offset | size |
+|---|---|---|
+| header | `0x00` | 163 B |
+| `C` (u32) | `0xa3` | 498 |
+| `u16[498]` indices | `0xa7` | 996 B |
+| `V` (u32) | `0x48b` | 151 |
+| `vertex[151]` | `0x48f` | 2,416 B |
+| normal count (u32) | `0xdff` | 151 |
+| `normal[151]` | `0x0e03` | 2,416 B |
+| remainder | `0x1773` | 1,237 B |
+
+The normal array is what identifies the vertex array as geometry rather than a
+float table: its `(nx, ny, nz)` triples are **unit vectors** (`|v| == 1.0`),
+whereas the vertex coordinates are positional (`|v|` up to ~2.41). Both arrays
+carry a fourth float, which is `1.0` in every vertex record and is *not*
+constant in the normal records.
+
+`createPropGuitar.mod` fits the same shape at `C = 174`, `V = 68` (68 vertex
+records, a 68-entry normal array), then 25,821 bytes that are mostly
+animation.
+
+### 3.3 The four remaining questions, answered
+
+**(1) The header does not carry the counts.** Searched every byte of the
+header of all 42 props for a field equal to `C`, to `V`, or to the offset at
+which the mesh starts — as `u32` and as `u16` — and nothing matches. The
+header's head is constant (`16, 65537, 24, 1, 1, 2, 0, 1, …` in every file),
+its tail is short and variable (the last words are `…, 1, 0, n` with `n`
+1–4), and its length varies from 163 to 263 bytes. So a decoder locates the
+section chain **by its structural signature** rather than by a table:
+find `C`, check `0xa7 + 2*C` starts a `u32` whose value starts `V` records of
+`w == 1.0`, then check the next `u32` equals `V` again and starts unit-length
+`w == 0.0` records. All 42 props satisfy that chain, which is what makes it a
+format and not a coincidence.
+
+**(2) The fourth float is a record-type marker.** In every vertex record it is
+exactly `1.0`; in every normal record it is exactly `0.0` (measured over all
+68 vertices and normals of `createPropGuitar.mod`, single distinct value in
+each). So `(x, y, z, 1.0)` is a position and `(nx, ny, nz, 0.0)` is a
+direction — the fourth float tags the kind rather than carrying data.
+
+**(3) What follows the normal array.** `u32 0`, `u32 1`, `u32 V`, then floats.
+Measured on `createPropGuitar.mod` (`V = 68`): after the 68 normals come
+`00 00 00 00 | 01 00 00 00 | 44 00 00 00` (0, 1, 68) and then a float stream
+that opens `ac bc b4 3e b4 10 cb 3c | 7e db b4 3e 40 6a cc 3c` — i.e.
+`(0.3530, 0.0248, 0.3530, 0.0250)`, two texture-coordinate pairs with a small
+difference between them. So the block is keyframed texture coordinates, not a
+flat UV table: the second pair differs from the first slightly, which is what
+a track looks like rather than a per-vertex UV.
+
+**(4) The animation grammar is still open, but its shape is known.** The tracks
+step by `1/30` s and `0.1333` s — 30 fps and 7.5 fps bases — and the sampled
+value oscillates around a centre. What is *not* yet measured is the record
+size, whether each track is one value per keyframe, and which node a track
+drives. The mesh section is fully located; the tail is where the animation
+lives, and the `0, 1, V` prefix suggests the tail is itself a counted list of
+counted lists.
+
+### 3.4 `createPropUI*` — measured, and it is not a mesh
+
+All 42 of them are **exactly 276 bytes** (minimum, maximum and every value in
+between equal), and the mesh layout does not fit any of them: a scan for the
+`w == 1.0` 16-byte record run finds none. What they do have:
+
+* the same `mod II` header, whose first three words are `16, 65537, <k>` —
+  and `<k>` is `121` in all 42, where the mesh files carry `24`, `44` or
+  another small value. So **word[2] is a kind code**, and `121` is the UI kind;
+* 40 distinct byte values and a longest non-zero `f32` run of **2** floats
+  (`0.0141, 0.9859`), where the mesh files have hundreds;
+* a paired name: `createPropUIBed.mod` is the UI record for
+  `createPropBed.mod`, which is 20,358 bytes of mesh.
+
+So these are not meshes at all. They look like **references**: a small record
+that tells the game "render the object named `<Name>` here", with a couple of
+texture coordinates for the quad it is drawn on. That fits the game — each
+tool's icon in the UI shows a 3D preview of the prop it places. It is a
+hypothesis, not a decode: what the fields mean has not been traced. A decoder
+for them should emit the reference (and the pair of UVs) rather than geometry.
 
 ## 4. Known failures
 
