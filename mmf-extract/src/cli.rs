@@ -99,6 +99,10 @@ pub struct AssetSelection {
     pub scripts: bool,
     /// `Blobs` containers — the first game's `goofy 2.6.3` animation records.
     pub blobs: bool,
+    /// The 3D game's `Models` and `Textures` containers. One flag drives both
+    /// because one name ("models") is what the game calls the pair; the
+    /// textures ride along since they are the models' material source.
+    pub models: bool,
 }
 
 impl AssetSelection {
@@ -113,6 +117,7 @@ impl AssetSelection {
             films: false,
             scripts: false,
             blobs: false,
+            models: false,
         };
         for raw in names {
             for part in raw.split(',') {
@@ -127,12 +132,14 @@ impl AssetSelection {
                         sel.films = true;
                         sel.scripts = true;
                         sel.blobs = true;
+                        sel.models = true;
                     }
                     "pictures" | "picture" | "images" | "image" => sel.pictures = true,
                     "sounds" | "sound" | "audio" => sel.sounds = true,
                     "films" | "film" | "videos" | "video" => sel.films = true,
                     "scripts" | "script" => sel.scripts = true,
                     "blobs" | "blob" => sel.blobs = true,
+                    "models" | "model" | "textures" | "texture" | "3d" => sel.models = true,
                     other => anyhow::bail!(
                         "unknown asset type '{other}' (expected all, pictures, sounds, films, scripts or blobs)"
                     ),
@@ -153,6 +160,8 @@ impl AssetSelection {
             ContainerKind::Films => self.films,
             ContainerKind::Scripts => self.scripts,
             ContainerKind::Blobs => self.blobs,
+            ContainerKind::Models => self.models,
+            ContainerKind::Textures => self.models,
             ContainerKind::Unknown => false,
         }
     }
@@ -166,12 +175,19 @@ pub struct Summary {
     pub films: usize,
     pub scripts: usize,
     pub blobs: usize,
+    /// The 3D game's models and textures, counted together.
+    pub models: usize,
     pub failed: Vec<String>,
 }
 
 impl Summary {
     pub fn total(&self) -> usize {
-        self.pictures + self.sounds + self.films + self.scripts + self.blobs
+        self.pictures
+            + self.sounds
+            + self.films
+            + self.scripts
+            + self.blobs
+            + self.models
     }
 }
 
@@ -279,6 +295,29 @@ pub fn run(
                     }
                 }
             }
+            ContainerKind::Models => {
+                // The 3D game's own kinds. Their payloads are written
+                // verbatim, so both paths are byte-exact; the geometry decode
+                // is the documented next step (`crate::dma3d`).
+                let out_dir = output.join("Models").join(&stem);
+                let report = crate::dma3d::extract_models(&container, &out_dir, original)?;
+                summary.models += report.written;
+                for (i, name, why) in report.failed {
+                    summary
+                        .failed
+                        .push(format!("{}: resource {i} '{name}': {why}", path.display()));
+                }
+            }
+            ContainerKind::Textures => {
+                let out_dir = output.join("Textures").join(&stem);
+                let report = crate::dma3d::extract_textures(&container, &out_dir, original)?;
+                summary.models += report.written;
+                for (i, name, why) in report.failed {
+                    summary
+                        .failed
+                        .push(format!("{}: resource {i} '{name}': {why}", path.display()));
+                }
+            }
             ContainerKind::Unknown => {}
         }
     }
@@ -378,6 +417,9 @@ pub fn print_summary(summary: &Summary) {
     }
     if summary.blobs > 0 {
         eprintln!("  blobs:    {}", summary.blobs);
+    }
+    if summary.models > 0 {
+        eprintln!("  models:   {}", summary.models);
     }
     eprintln!("  total:    {}", summary.total());
     if !summary.failed.is_empty() {

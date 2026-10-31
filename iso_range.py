@@ -20,6 +20,19 @@ USER_AGENT = "curl/8.5.0"
 
 
 def fetch(url: str, start: int, length: int) -> bytes:
+    # A local image (a converted BIN/CUE, or a downloaded ISO) works the same
+    # way as a remote one, so `list` and `save` accept both.
+    if url.startswith("file://"):
+        with open(url[len("file://"):], "rb") as fh:
+            fh.seek(start)
+            return fh.read(length)
+    if "/" in url and not "://" in url:
+        try:
+            with open(url, "rb") as fh:
+                fh.seek(start)
+                return fh.read(length)
+        except OSError:
+            pass
     req = urllib.request.Request(
         url,
         headers={
@@ -55,6 +68,32 @@ def read_volume_descriptors(url: str):
     raise SystemExit("no volume descriptor found")
 
 
+def decode_name(name_bytes: bytes, joliet: bool) -> str | None:
+    """One directory record's name, or `None` for a self/parent/empty entry.
+
+    The name has to be decoded in the tree's own encoding before it can be
+    tested for `.` and `..`, and the old test here -- `name_bytes[0] not in
+    (0x00, 0x01)` -- was ASCII-only. In a Joliet tree every ASCII filename is
+    UCS-2 big-endian, so it *starts* with `0x00` and the test rejected every
+    real name, which is why `list` printed `# 0 files` on Joliet discs.
+
+    Anything holding a control character is a self/parent marker or a
+    truncated record, not a filename, so those are dropped too.
+    """
+    if joliet:
+        # UCS-2: two bytes per character. An odd length cannot be a name.
+        if len(name_bytes) % 2 != 0:
+            return None
+        name = name_bytes.decode("utf-16-be", "replace")
+    else:
+        name = name_bytes.decode("ascii", "replace").split(";")[0]
+    if name in ("", ".", ".."):
+        return None
+    if any(ch < " " or ch == "\x7f" for ch in name):
+        return None
+    return name
+
+
 def walk(url: str, lba: int, size: int, joliet: bool, path: str = "", out=None):
     """Depth-first walk of one directory extent, recording files."""
     if out is None:
@@ -74,15 +113,11 @@ def walk(url: str, lba: int, size: int, joliet: bool, path: str = "", out=None):
         flags = rec[25]
         name_len = rec[32]
         name_bytes = rec[33 : 33 + name_len]
-        if joliet:
-            name = name_bytes.decode("utf-16-be", "replace")
-        else:
-            name = name_bytes.decode("ascii", "replace").split(";")[0]
-        if name not in ("\x00",) and name_bytes[0] not in (0x00, 0x01):
+        name = decode_name(name_bytes, joliet)
+        if name is not None:
             if flags & 0x02:
-                if name not in (".", ".."):
-                    walk(url, extent, struct.unpack_from("<I", rec, 10)[0],
-                         joliet, f"{path}/{name}".lstrip("/"), out)
+                walk(url, extent, struct.unpack_from("<I", rec, 10)[0],
+                     joliet, f"{path}/{name}".lstrip("/"), out)
             else:
                 out.append((f"{path}/{name}".lstrip("/"), extent,
                             struct.unpack_from("<I", rec, 10)[0]))

@@ -17,9 +17,14 @@
 //! shared parser: it reads the common header and dispatches to
 //! [`v1::metadata`] for a version-1 region, which is the pattern every
 //! container version follows here.
+//!
+//! The 3D game (Disney Creazioni in 3D) shares the version-3 skeleton but
+//! adds two container *kinds* -- `Models` and `Textures` -- whose metadata
+//! regions and payloads are its own, so it lives in [`dma3d`].
 
 pub mod cli;
 pub mod container;
+pub mod dma3d;
 pub mod film;
 pub mod lz77;
 pub mod picture;

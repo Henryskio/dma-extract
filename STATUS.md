@@ -246,6 +246,36 @@ Deps available: `anyhow`, `clap`, `hound` (the intermediate WAV piped to the
 encoder), `png`, `sha2`. The sound encoder itself is the external `flac` CLI
 tool, not a crate — see `docs/SOUNDS.md` §6.1.
 
+## 9b. The 3D game — *Disney Creazioni in 3D* / *Disney's Magic Artist 3D*
+
+A fourth build of the same `MMFW` family, shipped as a Burst installer on both
+the Italian and the English disc (assets under `Setup/DMA3D/PC/`). It is
+**not** the game the rest of these docs call "the third game" — that is DMA4,
+and that naming stays per `AGENTS.md`. Its own document is
+`docs/DMA3D.md`.
+
+* **Two new container kinds**, selected by the tag in the signature:
+  `MMFW Models` (N=460) and `MMFW Textures` (N=705). Both are **container
+  version 3**, so the shared skeleton applies and only the metadata region
+  differs: `4*N + 100` and `6*N + 2`, both measured on the shipped files
+  (`offsets[0]` lands exactly on `names_end + region`, `offsets[N]` equals
+  the file length, the tables are monotone).
+* **Extracted**: 460 `.mod` payloads (4,120,513 bytes) and 705 `.tex`
+  payloads (3,989,968 bytes) per disc, **byte-exact on both the Italian and
+  the English build**, in both the modern and `--original` modes — the
+  payloads are written verbatim, which is honest while the payload formats
+  are still being decoded. Plus the shared kinds: **3 pictures, 145 sounds,
+  647 script objects, zero failures** on each disc.
+* **Not decoded**: the `.mod` record grammar (it begins `mod II` then a
+  little-endian stream of `u32`s and floats, with the magic recurring inside
+  the stream), the texture dimensions, and the per-resource palette selector.
+  The engine's class names are in `DMA3D.exe`'s RTTI (`MM3D*`), and its
+  resource readers report `Bad checksum / version / header in
+  model|texture resource file '%s'`.
+* **Known failure**: `DMA3D.MMF` (Films, 3 resources) does not extract — the
+  shared film decoder reports `bad bounds top=258 left=772 bottom=0 right=0`
+  on film 0. Its 22-byte record must be laid out differently in this build.
+
 ---
 
 ## 10. The first game's version-1 containers (see `docs/GAME1.md`)

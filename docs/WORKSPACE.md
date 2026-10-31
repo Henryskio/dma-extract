@@ -28,7 +28,7 @@ where it is supposed to live.
 │   │                           # chan, cols, *probe, dump, v1pic — keep building
 │   └── tests/                   # roundtrip.rs, colors.rs, sounds.rs,
 │                               # scripts.rs, film_roundtrip.rs, game1.rs,
-│                               # game1_payloads.rs
+│                               # game1_payloads.rs, dma3d.rs
 │
 ├── docs/                        # the reverse-engineering write-ups
 │   ├── PICTURES.md              # .MMP (versions 2/3): header, metadata, pixels
@@ -37,6 +37,7 @@ where it is supposed to live.
 │   ├── FILMS.md                 # .MMF (versions 2/3): inner .flm chunk stream
 │   ├── SEQUEL.md                # the SECOND game (version 2): its deltas only
 │   ├── GAME1.md                 # the FIRST game (version 1): its deltas only
+│   ├── DMA3D.md                 # the 3D game: Models + Textures kinds
 │   └── WORKSPACE.md             # this file
 │
 ├── STATUS.md                    # resume notes: counts, tests, known gaps
@@ -79,6 +80,7 @@ point — see `AGENTS.md` for the rule in its most direct form.
 | second **and** third games | 2 and 3 | `PICTURES.md`, `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md` | `src/{container,picture,sound,script,film,lz77}.rs` |
 | second game | 2 | `SEQUEL.md` | the same shared chain |
 | first game | 1 | `GAME1.md` | `src/v1/` |
+| the 3D game | 3, plus two kinds of its own | `DMA3D.md` | `src/dma3d.rs` |
 
 Three rules keep the chains separate:
 

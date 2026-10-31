@@ -70,6 +70,10 @@ pub enum ContainerKind {
     /// its videos (`pack.BLB`).
     Blobs,
     Scripts,
+    /// The 3D game's model container (`MMFW Models`), version 3.
+    Models,
+    /// The 3D game's texture container (`MMFW Textures`), version 3.
+    Textures,
     Unknown,
 }
 
@@ -83,6 +87,11 @@ impl ContainerKind {
             // The three shipped games spell the tag three ways: "Script",
             // "3 Script" and "Scripts".
             "Scripts" | "3 Script" | "Script" => Self::Scripts,
+            // The 3D game's two kinds, selected by the same tag field. Both
+            // are version 3 containers, so the shared skeleton applies and
+            // only the metadata region differs (`crate::dma3d`).
+            "Models" => Self::Models,
+            "Textures" => Self::Textures,
             _ => Self::Unknown,
         }
     }
@@ -445,6 +454,8 @@ impl Container {
         // trailing kind array.
         let meta_len = match kind {
             ContainerKind::Sounds => 14 * n + 2,
+            ContainerKind::Models => crate::dma3d::models_meta_len(n),
+            ContainerKind::Textures => crate::dma3d::textures_meta_len(n),
             _ => 15 * n + 4,
         };
         let meta_end = names_end + meta_len;
