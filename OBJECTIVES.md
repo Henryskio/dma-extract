@@ -114,12 +114,22 @@ Two parts, in order:
    geometry. What has to come out of the reader in `DMA3D.exe`: the record
    grammar, the vertex/index/uv buffers, and how a model references its
    texture from `DMA3D.MMX`.
-2. **Convert to GLB in modern mode.** `mmf-extract` should write a
-   **`.glb`** file (binary glTF 2.0) per model, with the texture images
-   embedded, so the user can open the result directly in any viewer. This is
-   the *modern* format for the two 3D kinds — the verbatim `.mod`/`.tex`
-   passthrough becomes the `--original` output, which is what byte-exact
-   means for them anyway.
+2. **Convert to glTF in modern mode.** The user's instruction on 2026-11-01:
+   *"in the game, you actually color the 3d models and use included
+   animations. Maybe you should use glTF instead of glb?"* `mmf-extract`
+   should write a **`.gltf`** file (JSON glTF 2.0) per model, so the result is
+   human-readable and inspectable — which matters for a reverse-engineering
+   deliverable — with the buffer and the textures carried as separate files
+   (or as `data:` URIs if a single self-contained file is wanted).
+
+   **The animations must be carried over**, not discarded: the payload really
+   does contain them (measured — float runs whose first elements step by
+   1/30 s and 0.1333 s, on 30 fps and 7.5 fps bases, with the second element
+   oscillating around a centre). glTF has an animation system built for
+   exactly this, so the decoded tracks become animation channels/samplers
+   rather than being dropped on the floor. **The colouring has to come from
+   the textures**, which means the texture-side work (dimensions, palette
+   selector) is on the critical path for the GLB/glTF output, not optional.
 
 `AGENTS.md`'s rules apply unchanged: lossless, a 1:1 `--original` test for
 every new decoder, and the format's constants named with their evidence in a
@@ -127,35 +137,45 @@ doc comment. The decoded layout goes in `docs/DMA3D.md` (this game's own
 document — never one document describing two games), and the counts and open
 questions go in `STATUS.md`.
 
-### Where objective 4 stands (2026-11-01)
+### Where objective 4 stands (2026-11-01, after the mesh was located)
 
-The reader is located and partly traced, and the payload's shape is now known
-far better than "an opaque stream", but the mesh has **not** been located, so
-nothing decodes yet and no GLB is produced. `docs/DMA3D.md` §3.1-§3.2 holds
-the evidence. Concretely, this session established:
+**The mesh IS located.** The layout below is measured and holds on **31 of the
+42 non-UI static props** (`createProp*`); the `createPropUI*` variants are the
+ones it does not fit. It is a sequence of **counted record arrays**, which is
+what the loader at `0x4b2b60` already told us it does (it requires the first
+`u16` it reads to be `2`, then walks counted lists):
 
-* The `Models` class's vtable is at `0x539ba4` (tag getter `mov eax,
-  <tag>; ret`), and its **load** method is slot 1 at `0x4b2b60`. That method
-  validates, reads the stream into `this + 0x210`, requires the **first u16
-  it reads to equal 2**, then walks a counted record list.
-* Each payload is one self-contained `mod II` stream (magic exactly once, at
-  offset 0, on all 460).
-* The largest payload (`createModMickeyAx.mod`, 2,654,687 bytes) holds many
-  runs of little-endian floats, and they are **animation tracks**, not
-  geometry: their first elements step by 1/30 s (0.0, 0.0333, 0.0667, 0.1 …)
-  on a 30 fps base, and by 0.1333 on a 7.5 fps base, with the second element
-  oscillating around a centre. That fits the class names
-  (`MM3DIndexedMeshDeformer`, `DMAFindDeformersFromMeshVisitor`).
-* The ~2.5 MB that is not animation is high-entropy when read as u16 (the
-  most common word is 0 and the rest are near-uniform), which is what a
-  compressed body, or non-u16-aligned geometry, would look like.
+```text
+u32   C                 index count
+u16[C]                  index list, 1-based, values < V
+u32   V                 vertex count
+vertex[V]               16 bytes each: x, y, z (f32) + w (f32, 1.0)
+u32   V                 normal count (== V)
+normal[V]               16 bytes each: nx, ny, nz (f32) + a fourth f32
+...                     texture coordinates, then animation tracks
+```
 
-**What remains for the decode:** whether the body after the header table is
-compressed (if so, the LZSS-style decompressor in this family is the first
-thing to try, and the game's own loader at `0x4b2b60` will name it); and,
-once uncompressed, the vertex/index/uv buffer records. **GLB comes after
-that**, not before — a writer with no decoded mesh to feed it would be code
-the tests cannot check, which `AGENTS.md` forbids.
+Measured on `createPropBucket.mod`: `C = 498`, `V = 151`; the 498 u16 indices
+run to `+0x48f`, 151 vertex records follow, then a second array of 151 records
+of 16 bytes whose `(nx, ny, nz)` are **unit vectors** — normals. After those,
+1237 bytes of floats that read as texture coordinates and animation. On
+`createPropGuitar.mod` the same shapes appear as `C = 174`, `V = 68`, a
+68-entry normal array, then 25,821 bytes that are mostly animation.
+
+The animation finding from the previous session stands, and the user confirms
+it from playing the game: the model carries colour and animations, and the
+floats after the mesh step by `1/30` s and `0.1333` s (30 fps and 7.5 fps),
+so the models animate.
+
+**Still to decode:** the header fields, so `C`/`V` and the section starts can
+be read without scanning (the header is 163 bytes in `createPropBucket`, 263 in
+`createPropGuitar`); the fourth float in the vertex and normal records; the
+texture-coordinate block's own count; and the animation track grammar — record
+size, what is sampled, and which node each track drives. Then the decoder,
+then glTF.
+
+**glTF, not glb**, per the user's 2026-11-01 instruction above: JSON glTF 2.0,
+human-readable, with the animations carried across rather than dropped.
 
 ## Status
 
