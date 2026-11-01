@@ -275,6 +275,9 @@ fn every_3d_payload_round_trips_byte_exactly() {
                     continue;
                 }
                 Ok(mesh) => {
+                    // The records the extractor located, so the comparison can
+                    // say what the glTF is expected to carry.
+                    let records = mmf_extract::dma3d::anim::locate(payload, &mesh);
                     // The written document is read back off disk and compared
                     // with the decoder, which is the same contract every other
                     // asset type in this project tests.
@@ -320,6 +323,37 @@ fn every_3d_payload_round_trips_byte_exactly() {
                             "model {}: normal {k} differs from the decoder",
                             entry.index
                         );
+                    }
+                    // The texture coordinates, when the payload has them. The
+                    // extractor carries them only where every float pair is
+                    // inside 0..1, so the count either matches the vertex count
+                    // or there are none.
+                    if back.texcoords.is_empty() {
+                        // They are carried exactly when every pair is in range,
+                        // so a payload with some pairs out of range has none --
+                        // and asserting that is what stops a mixed payload from
+                        // being emitted with guessed coordinates.
+                        assert_ne!(
+                            records.pairs_in_unit_range,
+                            Some(records.pair_count),
+                            "model {}: every pair is in range but the glTF carries no \
+                             texture coordinates",
+                            entry.index
+                        );
+                    } else {
+                        assert_eq!(
+                            back.texcoords.len(),
+                            mesh.vertex_count(),
+                            "model {}: the glTF's texture coordinate count differs",
+                            entry.index
+                        );
+                        for value in back.texcoords.iter().flatten() {
+                            assert!(
+                                (-1.0e-6..=1.000_001).contains(value),
+                                "model {}: a texture coordinate {value} is outside 0..1",
+                                entry.index
+                            );
+                        }
                     }
                     meshes += 1;
                 }

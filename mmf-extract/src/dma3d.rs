@@ -283,8 +283,15 @@ fn extract_gltf(
             }
         }
 
+        // The texture coordinates, carried only where the payload's own float
+        // pairs are all inside 0..1. That is the condition under which they
+        // read as coordinates rather than as something else, and it holds for
+        // 58 of the 94 payloads that carry the `[0, 1, V]` header; the rest
+        // come out without them rather than with guesses.
+        let records = anim::locate(payload, &mesh);
+        let texcoords = texcoords_of(payload, &records);
         let path = out_dir.join(format!("{index:05}_{stem}.gltf"));
-        gltf::write_gltf(&path, name, &mesh, &materials)
+        gltf::write_gltf(&path, name, &mesh, &materials, texcoords.as_deref())
             .with_context(|| format!("writing {}", path.display()))?;
         // The undecoded part goes beside the glTF, in two forms: the bytes
         // verbatim, and a readable document that carries the measured anchors
@@ -297,7 +304,6 @@ fn extract_gltf(
             &payload[mesh.tail_offset()..],
         )
         .with_context(|| format!("writing the tail of {name}"))?;
-        let records = anim::locate(payload, &mesh);
         let document = anim::dump(name, payload, &mesh, &records);
         let records_path = out_dir.join(anim::records_name(&format!("{suffix}.gltf")));
         std::fs::write(&records_path, document)
@@ -339,6 +345,39 @@ fn extract_gltf(
     }
 
     Ok(report)
+}
+
+/// The `V` float pairs as texture coordinates, when they are all in 0..1.
+///
+/// Returns `None` when the payload does not carry the `[0, 1, V]` header or when
+/// any pair falls outside `0..1`, because then the pairs are something else and
+/// emitting them as coordinates would be a guess.
+fn texcoords_of(payload: &[u8], records: &anim::Records) -> Option<Vec<[f32; 2]>> {
+    if records.pairs_in_unit_range != Some(records.pair_count) {
+        return None;
+    }
+    let v = records.pair_count;
+    let mut out = Vec::with_capacity(v);
+    for k in 0..v {
+        let at = records.tail_offset + 12 + 8 * k;
+        if at + 8 > payload.len() {
+            return None;
+        }
+        let a = f32::from_le_bytes([
+            payload[at],
+            payload[at + 1],
+            payload[at + 2],
+            payload[at + 3],
+        ]);
+        let b = f32::from_le_bytes([
+            payload[at + 4],
+            payload[at + 5],
+            payload[at + 6],
+            payload[at + 7],
+        ]);
+        out.push([a, b]);
+    }
+    Some(out)
 }
 
 /// The texture names a model payload carries, in payload order.

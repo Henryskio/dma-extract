@@ -391,6 +391,8 @@ pub struct ReadBack {
     pub positions: Vec<[f32; 3]>,
     /// Normals.
     pub normals: Vec<[f32; 3]>,
+    /// Texture coordinates, when the document carries them.
+    pub texcoords: Vec<[f32; 2]>,
     /// How many materials the document declares.
     pub material_count: usize,
 }
@@ -513,6 +515,7 @@ pub fn read_gltf(path: &Path) -> Result<ReadBack> {
         // components, so a VEC3 accessor holds count*3 scalars.
         let parts = match accessor.get("type").and_then(|t| t.as_str()) {
             Some("SCALAR") => 1,
+            Some("VEC2") => 2,
             Some("VEC3") => 3,
             other => bail!("accessor type {other:?} is not supported"),
         };
@@ -553,12 +556,40 @@ pub fn read_gltf(path: &Path) -> Result<ReadBack> {
         .collect();
     let normals = normals_flat.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
 
+    // The texture coordinates are optional, and their absence is not an
+    // error: a payload whose float pairs are not all in 0..1 does not carry
+    // them and the writer emits none.
+    let mut texcoords = Vec::new();
+    if let Some(tex_index) = primitives
+        .get("attributes")
+        .and_then(|a| a.get("TEXCOORD_0"))
+        .and_then(|i| i.as_usize())
+    {
+        let tex = accessors
+            .get(tex_index)
+            .with_context(|| format!("{}: TEXCOORD_0 names accessor {tex_index} which does not exist", path.display()))?;
+        let count = tex
+            .get("count")
+            .and_then(|c| c.as_usize())
+            .with_context(|| format!("{}: TEXCOORD_0 has no count", path.display()))?;
+        let flat = scalars(tex_index)?;
+        if flat.len() != count * 2 {
+            bail!(
+                "{}: TEXCOORD_0 holds {} scalars for {count} elements",
+                path.display(),
+                flat.len()
+            );
+        }
+        texcoords = flat.chunks(2).map(|c| [c[0], c[1]]).collect();
+    }
+
     Ok(ReadBack {
         version,
         generator,
         indices,
         positions,
         normals,
+        texcoords,
         material_count,
     })
 }
@@ -639,7 +670,13 @@ impl Accessor {
 /// `materials` supplies the textures in payload order; the mesh references
 /// them all through its single primitive. When there are none the primitive is
 /// written with no material, which is a plain-viewable untextured model.
-pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Material]) -> Result<()> {
+pub fn write_gltf(
+    path: &Path,
+    name: &str,
+    mesh: &ModelMesh,
+    materials: &[Material],
+    texcoords: Option<&[[f32; 2]]>,
+) -> Result<()> {
     // ---- the binary buffer: indices, then positions, then normals ----
     let mut buffer = Vec::new();
     let pad4 = |buf: &mut Vec<u8>| {
@@ -691,10 +728,29 @@ pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Materi
         }
     }
     let normals_len = buffer.len() - normals_start;
+
+    // The texture coordinates, when the payload's float pairs are all in 0..1.
+    // That condition is what makes them readable as coordinates rather than as
+    // something else: 58 of the 94 payloads that carry the `[0, 1, V]` header
+    // satisfy it, 4 satisfy none of it and 32 are mixed, and the mixed ones are
+    // left untextured rather than guessed at.
+    pad4(&mut buffer);
+    let texcoords_start = buffer.len();
+    let mut texcoords_len = 0usize;
+    let mut write_texcoords = false;
+    if let Some(uv) = texcoords {
+        if uv.len() == mesh.positions.len() {
+            for value in uv.iter().flatten() {
+                buffer.extend_from_slice(&value.to_le_bytes());
+            }
+            texcoords_len = buffer.len() - texcoords_start;
+            write_texcoords = true;
+        }
+    }
     pad4(&mut buffer);
 
     // ---- accessors and their buffer views ----
-    let accessors = vec![
+    let mut accessors = vec![
         Accessor {
             offset: indices_start,
             length: indices_len,
@@ -720,6 +776,16 @@ pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Materi
             min_max: None,
         },
     ];
+    if write_texcoords {
+        accessors.push(Accessor {
+            offset: texcoords_start,
+            length: texcoords_len,
+            component_type: 5126,
+            kind: "VEC2",
+            count: mesh.positions.len(),
+            min_max: None,
+        });
+    }
 
     let buffer_views: Vec<String> = accessors
         .iter()
@@ -763,8 +829,16 @@ pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Materi
             json_string(name)
         ),
         format!(
-            "\"meshes\": [\n {{\n  \"name\": {},\n  \"primitives\": [\n   {{\n    \"attributes\": {{\n     \"POSITION\": 1,\n     \"NORMAL\": 2\n    }},\n    \"indices\": 0{}\n   }}\n  ]\n }}\n]",
+            "\"meshes\": [\n {{\n  \"name\": {},\n  \"primitives\": [\n   {{\n    \"attributes\": {{\n     \"POSITION\": 1,\n     \"NORMAL\": 2{}\n    }},\n    \"indices\": 0{}\n   }}\n  ]\n }}\n]",
             json_string(name),
+            // The texture coordinates take accessor 3, and are present only
+            // when the payload's pairs were all in 0..1 and so readable as
+            // coordinates.
+            if write_texcoords {
+                ",\n     \"TEXCOORD_0\": 3".to_string()
+            } else {
+                String::new()
+            },
             if materials.is_empty() {
                 String::new()
             } else {
@@ -844,11 +918,29 @@ mod gltf_tests {
             tail_header: Some((0, 1, 4)),
         };
         let path = std::env::temp_dir().join("mmf-gltf-selftest.gltf");
-        write_gltf(&path, "test", &mesh, &[]).expect("write");
+        // Written twice: once with texture coordinates and once without,
+        // because the absence of them is a real state of the output -- a
+        // payload whose float pairs are not all in 0..1 produces no
+        // TEXCOORD_0 at all, and a reader that cannot tell the two apart would
+        // hide that.
+        write_gltf(&path, "test", &mesh, &[], None).expect("write");
+        let plain = read_gltf(&path).expect("read back");
+        assert_eq!(plain.version, "2.0");
+        assert_eq!(plain.indices, mesh.indices);
+        assert_eq!(plain.positions, mesh.positions);
+        assert_eq!(plain.normals, mesh.normals);
+        assert!(
+            plain.texcoords.is_empty(),
+            "a document written without coordinates read back with some"
+        );
+
+        let uv = vec![[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        write_gltf(&path, "test", &mesh, &[], Some(&uv)).expect("write with coordinates");
         let back = read_gltf(&path).expect("read back");
         assert_eq!(back.version, "2.0");
         assert_eq!(back.indices, mesh.indices);
         assert_eq!(back.positions, mesh.positions);
         assert_eq!(back.normals, mesh.normals);
+        assert_eq!(back.texcoords, uv, "the coordinates did not round-trip");
     }
 }
