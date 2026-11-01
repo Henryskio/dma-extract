@@ -153,3 +153,46 @@ fn the_undecoded_tail_of_the_mesh_payloads_is_sized() {
     assert_eq!(tail, 590_532, "the undecoded tail size changed");
     eprintln!("540532-byte check: {tail} bytes of tail over {meshed} payloads");
 }
+
+/// The tail header, measured rather than assumed.
+///
+/// The doc once said the tail opens `u32 0, u32 1, u32 V` "in all 42 static
+/// props". That is wrong, and narrowing the parser to *require* the shape is
+/// what proved it: the requirement silently dropped 144 payloads to 94, so 50
+/// real meshes were being discarded. The parser now reads the words and records
+/// them (`ModelMesh::tail_header`) without demanding them, and this test pins
+/// the real distribution so the doc cannot drift back.
+///
+/// The 50 that lack it are the small tool shapes — the draw profiles, magnets,
+/// knobs and sliders — whose tails are almost entirely zeros.
+#[test]
+fn the_tail_header_is_a_measurement_not_a_rule() {
+    let Some(dir) = dma3d_dir() else {
+        eprintln!("skipping: the 3D game's assets are not present");
+        return;
+    };
+    let models = Container::open(dir.join("DMA3D.MMM")).expect("open Models");
+    let mut shape = std::collections::BTreeMap::new();
+    for i in 0..models.resource_count as usize {
+        let payload = models.payload(i);
+        let Ok(mesh) = modfile::parse_mesh(payload) else {
+            continue;
+        };
+        let key = match mesh.tail_header {
+            Some((0, 1, v)) if v as usize == mesh.vertex_count() => "[0, 1, V]",
+            Some((0, 0, 0)) => "[0, 0, 0]",
+            Some(_) => "other",
+            None => "too short",
+        };
+        *shape.entry(key).or_insert(0usize) += 1;
+    }
+    eprintln!("tail shapes over the mesh payloads: {shape:?}");
+    assert_eq!(shape["[0, 1, V]"], 94, "the [0, 1, V] count changed");
+    assert_eq!(shape["[0, 0, 0]"], 49, "the [0, 0, 0] count changed");
+    assert_eq!(shape["other"], 1, "the third shape count changed");
+    assert_eq!(
+        shape.values().sum::<usize>(),
+        144,
+        "the mesh-bearing payload count changed"
+    );
+}

@@ -144,11 +144,34 @@ signature**: `C` opens `2*C` bytes whose successor `u32` opens `V` records of
 `w == 0.0`. Requiring both halves is what stops a stray `w == 1.0` run from
 being read as a vertex array.
 
-### 3.2 The tail header is universal, and the tracks are named
+### 3.2 The tail — what is measured, and what was wrong
 
-The tail opens `u32 0`, `u32 1`, `u32 V` — `V` the vertex count — at the start
-of the tail of all 144 mesh payloads. That triple is the anchor for everything
-after the mesh.
+**The tail opens with `V` pairs of little-endian floats.** That is the claim to
+survive measurement, and it is the anchor for everything after the mesh.
+
+An earlier version of this document said the tail opens `u32 0`, `u32 1`,
+`u32 V` in "all 42" then "all 144" payloads. **That was wrong, and tightening
+the parser to require the triple is what caught it**: the requirement dropped
+the number of payloads the parser accepts from **144 to 94**, silently
+discarding 50 real meshes. The measured distribution is:
+
+| the tail's first three words | count | which payloads |
+|---|---|---|
+| `0, 1, V` (V their own vertex count) | **94** | the props and the bigger shapes |
+| `0, 0, 0` | **49** | the small tool shapes: draw profiles, magnets, knobs, sliders |
+| `0, 0, 3` | **1** | `createModMickeySkeleton.mod` |
+
+So the triple is a **measurement, not a rule**. `modfile::parse_mesh` reads the
+three words when they are present and records them in `ModelMesh::tail_header`
+without demanding them, and `tests/dma3d_numbers.rs` pins the 94 / 49 / 1
+split. `src/bin/tailhead` reports the same distribution from the container.
+
+The `V` float pairs that follow are **texture coordinates on some payloads and
+something else on others**: all 68 of `createPropGuitar.mod`'s pairs land in
+`0..1` (`(0.3530, 0.0248)`, `(0.3532, 0.0250)`, …) and **none** of
+`createPropBed.mod`'s 256 do, with the rest scattered between (119/151 on
+`createPropBucket.mod`, 7/256 on `createPropRooster.mod`). Which is which is
+not measured, so the pairs are not decoded.
 
 `createPropGuitar.mod` ends with a table of ASCII names, 13 bytes apart:
 
@@ -169,22 +192,62 @@ step by `1/30` s and `0.1333` s (30 fps and 7.5 fps), with the sampled value
 oscillating around a centre, which is what `MM3DIndexedMeshDeformer` and
 `DMAFindDeformersFromMeshVisitor` would drive.
 
-What is **not** measured is the record size, whether each track is one value
-per keyframe, and which node a track drives. The post-header block is `V`
-pairs of little-endian floats everywhere, but its meaning varies: all 68 of
-`createPropGuitar.mod`'s pairs land in `0..1`, and **none** of
-`createPropBed.mod`'s 256 do, with the rest scattered between (119/151 on
-`createPropBucket.mod`, 7/256 on `createPropRooster.mod`). So the
-texture-coordinate reading is confirmed for one file and must not be
-generalised.
-
 A second, separate table is **fully measured**: `[u32 count][count * 32-byte
 NUL-padded names]`, which is how six payloads name their textures
 (`createBtDraw.mod` holds 31 of them, `createBtDraw.00.TGA` …
 `createBtDraw.30.TGA`). No payload that carries a mesh also names a texture,
 so the two lists do not overlap and the material link is not measured.
 
-### 3.3 `createPropUI*` — measured, and it is not a mesh
+### 3.3 The animation class vocabulary — measured from `DMA3D.exe`
+
+`DMA3D.exe` carries 129 `MM3D*` class names in its RTTI, and they name the
+grammar the payload records belong to. The animation family is:
+
+```text
+MM3DAnimation                        MM3DAnimationPlayer
+MM3DFunctionCurveAnimationBase       MM3DFunctionCurve
+MM3DFunctionCurveWithInfinity       MM3DJointAnimation
+MM3DSRTAnimation                     MM3DShapeIndexAnimation
+MM3DTexturePlacementAnimation        MM3DBlendShapeWeightAnimation
+MM3DLinearFunctionCurve              MM3DFixedIntervalAngleFunctionCurve
+MM3DIntervalCountAngleFunctionCurve  MM3DBezierSpline
+MM3DLinearSpline                     MM3DNurbSpline
+MM3DAggregateFunctionCurve           MM3DIntegralAggregateFunctionCurve
+MM3DIntegral{Linear,FixedIntervalAngle}FunctionCurve
+MM3DMaterial{Animation,Color,Lambert,Phong,SpecularColor}AnimationBase
+MM3DMaterial{Ambient,Diffuse,Specular,Incandescence}{Blue,Green,Red}Animation
+MM3DMaterialDiffuseCoefficientAnimation
+MM3DMaterialSpecularPowerAnimation
+MM3DMaterialTextureAnimation         MM3DMaterialTransparencyAnimation
+MM3DLightAnimationBase               MM3DLight{Red,Green,Blue}Animation
+```
+
+This is the QD3D/Quesa object model: `SRTAnimation` is a scale-rotate-translate
+track, the `Material*Animation` classes are per-channel colour and coefficient
+tracks, and the `FunctionCurve` families are the keyframe interpolators. So
+each named track in a payload is an animation object with a curve type, and the
+30 fps and 7.5 fps bases are the curve's sample intervals.
+
+**Still not measured:** the record layout — record size, keyframes per record,
+and which node each track drives. What was tried and must not be retried,
+because the post-mesh block is one array whose meaning varies per file and
+`AGENTS.md` forbids guessing a split:
+
+* LZ77 over the texture payloads (fails on 704 of 705) and over the models;
+* a `[u16 w][u16 h]` dimension header anywhere in the payload, in either
+  endianness, at any offset 0..8, with 1 or 4 bytes per pixel;
+* an RLE `[r][g][b][count]` stream over the textures — the pixel totals are not
+  `w*h` in any reading;
+* a 256-entry RGBA palette at payload offset 0, or in the last 1024 bytes;
+* the metadata's `4*N` u32 array as a packed `(w << 16) | h` dimension table;
+* requiring the tail's `[0, 1, V]` header, which is present in 94 of 144
+  payloads (§3.2).
+
+`src/bin/tailhead` reports the measured tail-header distribution and
+`src/bin/modinfo` dumps each tail in hex, u32, f32 and u16 together with a
+`--tile` mode that tests whether a `[u32 count][count * r]` chain walks one.
+
+### 3.4 `createPropUI*` — measured, and it is not a mesh
 
 All 42 of them are **exactly 276 bytes** (minimum, maximum and every value in
 between equal), and the mesh chain does not fit any of them: a scan for the
@@ -340,9 +403,10 @@ as a `.tail` file rather than as glTF channels.
 460/705/145/3/3 resource counts; the byte-exact payload of every one of the
 1,165 3D resources on both discs; the `mod II` magic on all 460 payloads; the
 mesh chain in 144 of them with zero-based indices and unit-length normals; the
-`[0, 1, V]` tail header in all 144; the `[u32 count][32-byte names]` texture
-table; the texture palette/index split and `K = 1 + max(index)` over all 705;
-the `DMA3D.MMX` reference inside the models' trailer.
+tail's `V` float pairs and the header distribution of §3.2 (94 / 49 / 1); the
+`[u32 count][32-byte names]` texture table; the texture palette/index split and
+`K = 1 + max(index)` over all 705; the 129-class `MM3D*` RTTI vocabulary of
+§3.3; the `DMA3D.MMX` reference inside the models' trailer.
 
 **Measured with a known error rate** — the orientation of the 27 non-square
 textures (§4.2, 97.6% on a known-answer set).
