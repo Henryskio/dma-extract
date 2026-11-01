@@ -282,10 +282,20 @@ the end of the payload would close the question; no candidate did, so the frame
 size and the number of frames are **not measured** and no glTF channel is
 emitted from them.
 
-Src bins that produce the numbers here: `animwalk` (walk a candidate grammar
-and report whether it closes the payload), `animscan` (find the counted index
-array and check that `D` equals the distinct count), `modinfo --tile`, and
-`grammar` (test the loader's own `[u16 2][u16 N][u16 N][u32 N]` shape).
+**Also ruled out, so it need not be retried:**
+
+* the region as a chain of `[u32 n][n * s]` sections, for any assignment of the
+  record size `s` from {2, 4, 8, 12, 16, 24} per section, tried with
+  backtracking over all 144 payloads — **no assignment closes any payload**
+  (`animsec`). So a flat counted-section chain is not the layout, whatever the
+  record sizes are;
+* the loader's `[u16 2][u16 N][u16 N][u32 N]` shape, which fits only inside the
+  triangle index list where the value `2` is common (`grammar`).
+
+Src bins that produce the numbers here: `animwalk` (walk a candidate grammar and
+report whether it closes the payload), `animscan` (find the counted index array
+and check that `D` equals the distinct count), `animsec` (the backtracking
+section walk), `modinfo --tile`, and `grammar`.
 
 **What the loader itself says**, from `DMA3D.exe` at `0x4b2b60`: it reads a
 `u16` that must be `2`, a `u16` count, then two arrays of that same count —
