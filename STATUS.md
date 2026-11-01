@@ -290,9 +290,15 @@ and that naming stays per `AGENTS.md`. Its own document is
   normals against `modfile::parse_mesh` (`gltf::read_gltf`, a minimal JSON
   reader — `serde_json` is not reachable offline). Every count is pinned in
   `tests/dma3d_numbers.rs`.
-* **Not decoded**: the animation record grammar and which node each track
-  drives (the tail header `[0, 1, V]` is universal over all 144 and the tracks
-  are named `key01`…`key06` in some files); the material link, because no
+* **Animation, partly measured and not decoded** (`docs/DMA3D.md` §3.4): the
+  records region past the `V` float pairs carries `u32 K`, `u16[K]` vertex
+  indices, `u32 D` equal to that list's distinct-index count, then `f32[D]` and
+  `vec3[D]` — verified on 21 of the 30 payloads where the first word past the
+  pairs is a plausible count. It does not close: the frame size is inconsistent
+  between the first frames (`4 + 16*D`) and a later region that opens with a
+  twelve-byte `[0, 1, D]`, so no candidate walked to the end of a payload. The
+  tracks are named `key01`…`key06` in some files and 129 `MM3D*` class names in
+  the executable name the curve types. the material link, because no
   mesh-bearing payload names a texture; `createPropUI*`'s field meanings (42
   records of exactly 276 bytes that are references rather than meshes).
   The engine's class names are in `DMA3D.exe`'s RTTI (`MM3D*`), and its

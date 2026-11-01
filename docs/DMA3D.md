@@ -247,7 +247,56 @@ because the post-mesh block is one array whose meaning varies per file and
 `src/bin/modinfo` dumps each tail in hex, u32, f32 and u16 together with a
 `--tile` mode that tests whether a `[u32 count][count * r]` chain walks one.
 
-### 3.4 `createPropUI*` — measured, and it is not a mesh
+### 3.4 The animation region — what is measured, and exactly where it stops
+
+The animation is **not decoded**, and this section records how far the
+measurement goes so the next attempt starts from it rather than repeating it.
+
+**Measured.** Immediately past the `V` float pairs, 21 of the 30 payloads whose
+first-past-the-pairs word is a valid count carry this, in this order:
+
+```text
+u32 K            length of the index list that follows (177 on
+                 createBtCameraCenter.mod, 228 on createPropBed.mod, ...)
+u16[K]           vertex indices, every one < V, with repetition
+u32 D            the number of DISTINCT indices that list holds (131, 128, ...)
+f32[D]           one value per distinct vertex
+vec3[D]          a three-float row per distinct vertex
+```
+
+That `D` equal to the distinct-index count is not a coincidence: it holds on 21
+of the 21 payloads where the first word past the pairs is a plausible count,
+and on 9 others it does not. The counts are bounded by `V`, as they must be if
+they count vertices.
+
+**What follows repeats.** `createBtCameraCenter.mod` walks two frames of
+`4 + 16*D` bytes each (offsets `0x2ccf` and `0x3503`), and a third region starts
+at `0x3d37` with `[0, 1, 131]` — the same `[0, 1, N]` shape as the tail header,
+with `N` here equal to `D`.
+
+**Where it stops, precisely.** The frame size is not consistent: the first two
+frames are `4 + 16*D` apart, while the region at `0x3d37` begins with a
+twelve-byte `[0, 1, D]` header. One of those readings must be misaligned by
+eight bytes, and the measurement does not say which. A grammar that walked to
+the end of the payload would close the question; no candidate did, so the frame
+size and the number of frames are **not measured** and no glTF channel is
+emitted from them.
+
+Src bins that produce the numbers here: `animwalk` (walk a candidate grammar
+and report whether it closes the payload), `animscan` (find the counted index
+array and check that `D` equals the distinct count), `modinfo --tile`, and
+`grammar` (test the loader's own `[u16 2][u16 N][u16 N][u32 N]` shape).
+
+**What the loader itself says**, from `DMA3D.exe` at `0x4b2b60`: it reads a
+`u16` that must be `2`, a `u16` count, then two arrays of that same count —
+2-byte elements through `0x4e87c0` and 4-byte elements through `0x4e8810` — and
+then a third array whose element size is a `u16` field at `this + 0x448`,
+multiplied into a byte stride. The loader's shape does **not** appear at a
+meaningful offset in any mesh payload (`grammar` finds its only fits inside the
+triangle index list, where the value `2` is common), which is the evidence that
+the mesh records are read by a different routine.
+
+### 3.5 `createPropUI*` — measured, and it is not a mesh
 
 All 42 of them are **exactly 276 bytes** (minimum, maximum and every value in
 between equal), and the mesh chain does not fit any of them: a scan for the
@@ -411,8 +460,10 @@ tail's `V` float pairs and the header distribution of §3.2 (94 / 49 / 1); the
 **Measured with a known error rate** — the orientation of the 27 non-square
 textures (§4.2, 97.6% on a known-answer set).
 
-**Inferred / open** — the `2*N` two-byte field in a `Textures` container
+**Inferred / open** — the animation frame size and the number of frames, which is
+what stops the record grammar of §3.4 from closing (§3.4); the `2*N` two-byte
+field in a `Textures` container
 (not identified; §2.1); the animation record grammar and which node each track
 drives (§3.2); the material link — no mesh-bearing payload names a texture
-(§3.2); the meaning of `createPropUI*`'s fields (§3.3); the film record
+(§3.2); the meaning of `createPropUI*`'s fields (§3.5); the film record
 layout (§6).

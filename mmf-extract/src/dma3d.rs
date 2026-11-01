@@ -44,6 +44,7 @@
 use crate::cli::sanitize;
 use crate::container::Container;
 
+pub mod anim;
 pub mod gltf;
 pub mod modfile;
 pub mod render;
@@ -110,7 +111,8 @@ pub struct Extract3DReport {
 ///   (`docs/DMA3D.md` §3.2), and every one of those becomes a viewable model.
 ///   The 316 that do not -- animation records, lights, UI references -- are
 ///   written through unchanged. A glTF is accompanied by a `.tail` file with
-///   the bytes the mesh decoder does not read, which is what keeps the modern
+///   the bytes the mesh decoder does not read and a `.anim.txt` rendering the
+///   same bytes with the measured anchors, which is what keeps the modern
 ///   output from being a lossy subset.
 ///
 /// `texture_dir` is where the `Textures` container's PNGs live. A model whose
@@ -284,15 +286,22 @@ fn extract_gltf(
         let path = out_dir.join(format!("{index:05}_{stem}.gltf"));
         gltf::write_gltf(&path, name, &mesh, &materials)
             .with_context(|| format!("writing {}", path.display()))?;
-        // The undecoded tail goes beside the glTF, verbatim, so the modern
-        // output is the mesh *plus* the bytes still closed rather than a
-        // lossy subset. `--original` stays the mode that is byte-exact; this
-        // is what makes the modern mode not *destructive*.
+        // The undecoded part goes beside the glTF, in two forms: the bytes
+        // verbatim, and a readable document that carries the measured anchors
+        // and renders the records the way the game stores them. So a modern
+        // model is the mesh plus everything the decoder did not read, and
+        // nothing is quietly dropped.
+        let suffix = format!("{index:05}_{stem}");
         gltf::write_tail(
-            &out_dir.join(gltf::tail_name(&format!("{index:05}_{stem}.gltf"))),
+            &out_dir.join(gltf::tail_name(&format!("{suffix}.gltf"))),
             &payload[mesh.tail_offset()..],
         )
         .with_context(|| format!("writing the tail of {name}"))?;
+        let records = anim::locate(payload, &mesh);
+        let document = anim::dump(name, payload, &mesh, &records);
+        let records_path = out_dir.join(anim::records_name(&format!("{suffix}.gltf")));
+        std::fs::write(&records_path, document)
+            .with_context(|| format!("writing the records of {name}"))?;
         // A preview beside the glTF, so the index page can show what each
         // object is without the reader opening a 3D tool first.
         let preview = render::render(&mesh);
