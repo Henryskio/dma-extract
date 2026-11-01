@@ -841,6 +841,7 @@ mod gltf_tests {
                 [0.0, 0.0, 1.0],
                 [0.0, 0.0, 1.0],
             ],
+            tail_header: Some((0, 1, 4)),
         };
         let path = std::env::temp_dir().join("mmf-gltf-selftest.gltf");
         write_gltf(&path, "test", &mesh, &[]).expect("write");
