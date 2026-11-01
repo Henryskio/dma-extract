@@ -57,7 +57,12 @@ struct Walk {
 }
 
 /// Walk from `start`, or report where the walk failed.
-fn walk(payload: &[u8], start: usize, vertex_count: usize) -> Walk {
+///
+/// The vertex count is not needed any more -- the section grammar's counts are
+/// read from the stream, not derived from the mesh -- but it is kept in the
+/// signature because the walk is anchored to the decoded mesh's offsets and a
+/// caller that has them should pass them.
+fn walk(payload: &[u8], start: usize, _vertex_count: usize) -> Walk {
     let length = payload.len();
     let mut at = start;
     let mut frames = 0usize;

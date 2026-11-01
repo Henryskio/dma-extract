@@ -363,32 +363,69 @@ The palette order is straight RGBA in file order: `balloon.TGA` opens
 entry is `ff 00 ff 00` are the ones whose first palette colour is the
 transparent magenta key.
 
-### 4.2 The width and the height — the weakest measurement
+### 4.2 The width and the height — measured, with the error rate stated
 
-The container carries **no dimension table**; §2.1 shows its metadata is names
-and timestamps. So the dimensions come from the pixel data itself.
+The container carries **no dimension table**; its metadata region is names and
+timestamps. So the dimensions come from the pixel data.
 
-`A` is a power of two, so it pins the area and nothing else. **678 of the 705**
-areas are perfect squares (8×8 through 256×256) and are read at that root. The
-remaining **27** are the 1:2 rectangles (`16×32`, `32×64`, `64×128`,
-`128×256`), each with two readings, and they are split by a measured statistic:
+`A` is a power of two, so it pins the **area** and nothing else. **678 of the
+705 files are perfect squares** (8x8 through 256x256) and are read at that root,
+which is certain. The remaining **27 are 1:2 rectangles**, and the two readings
+of each are decided by `texfile::decide` from the index bytes alone.
 
-> **row continuity** — for a candidate width `W`, the share of vertically
-> adjacent pixel pairs carrying the same index. The right width is the one where
-> a column of the image is *read* as a column.
+**Two facts make that possible, and both are measured rather than assumed:**
 
-It was validated on the 678 squares, where the answer is known in advance: for
-real textures with three or more palette entries in use, it lands on the square
-root **643 of 659** times. The 16 exceptions are textures whose content repeats
-with a short period (buttons built from an 8-pixel motif, dot patterns). A
-second, independent check — the dominant horizontal period, which must divide
-the true width — agrees with the same width family in every case and never
-contradicts a square.
+1. **The two readings are not transposes of one another.** Reading the bytes at
+   width `W` puts true rows `r` and `r+1` at `r*W` and `(r+1)*W`; reading them at
+   `2W` puts them at `2r*2W` and `(2r+1)*2W`. The wrong width *concatenates* two
+   true rows into one, squashing and interleaving the picture. (An earlier
+   version of this document worried that the readings were transposes, which
+   would have made every internal statistic measure anisotropy only. They are
+   not: no shipped payload satisfies `data[r*H+c] == data[c*W+r]`.) So
+   statistics on the index bytes are decisive.
+2. **Every rectangle the engine allocates is 1:2.** All 21 rectangles whose
+   orientation could be established independently are 1:2 — 64x32, 32x16, 32x64,
+   64x128, 256x128, 128x256 — so the candidate width is that pair rather than
+   every power of two dividing the area.
 
-So this is a measurement with a success rate, not a proof: **27 of 705 textures
-may be transposed**, and `src/dma3d/texfile.rs` records which orientation each
-one was read at (`Axis::Square` / `Wide` / `Tall`) so the choice is reviewable
-rather than silent. A real fix needs the reader in `DMA3D.exe`.
+**The rule.** The mean absolute index difference across a vertical step is the
+primary — at the correct width that step is one true row, so a smooth image is
+smooth; at twice the width it is two true rows, so it is not. Validated on the
+678 squares, where it lands on the root **659/678** against **649/678** for the
+row-continuity statistic it replaced. Two vetoes sit on top of it, both about
+the *shape* of the picture: a reading that is **uniquely one 4-connected
+component** of non-background pixels wins (an icon is one object at the correct
+width and is sliced at the wrong one), and so does a reading with **zero pixels
+cut on the frame border**. `createModMickeyPartHeadS.TGA` is the case that
+proved the vetoes must come first rather than the statistic.
+
+**Where it stands.** All 21 independently-measured orientations are reproduced by
+this rule, and `tests/dma3d_numbers.rs` pins them by name. Five are open and
+none of them is asserted: `beestripes`, `conga`, `striped_ball`, `mouseEarse06A`
+and `shrBkRight1`, where the competing evidence is laid out with each. The
+strongest single piece of evidence anywhere in this question is
+`introAxSplash`, whose **256x128 rendering spells the game title legibly** while
+its 128x256 rendering is unreadable.
+
+`createBtFileIo.TGA` is **undecidable in principle**: `K == 1`, a single palette
+entry and 2048 identical index bytes, so every statistic is degenerate at every
+width and no reading differs from any other. It is flagged
+(`Texture::undecidable`) rather than guessed at, and it is the only texture that
+is.
+
+**What would decide the five**: the texture loader in `DMA3D.exe`. The path to
+it is now narrowed — the `MMFW Textures` class is at vtable `0x539e28` and its
+vtable is a growable byte buffer rather than a pixel decoder, the `MM3D*` RTTI
+names the pixel classes but no `RTTICompleteObjectLocator` references them, and
+the executable imports no OpenGL at all (GDI32 `SetDIBits`/`StretchDIBits` and
+MSVFW32 only). The next concrete step is to find the function that fills a
+`BITMAPINFOHEADER` — a `movl $0x28` for `biSize` followed by two width/height
+stores — before those imports, because that is where the width and the height
+must be produced.
+
+`src/bin/texorient.rs` prints every statistic for every rectangle and both
+readings of it, validates the two statistics against the 678 squares, and draws
+either reading as text.
 
 ## 5. What the output is, and how it is verified
 
@@ -467,8 +504,9 @@ tail's `V` float pairs and the header distribution of §3.2 (94 / 49 / 1); the
 `K = 1 + max(index)` over all 705; the 129-class `MM3D*` RTTI vocabulary of
 §3.3; the `DMA3D.MMX` reference inside the models' trailer.
 
-**Measured with a known error rate** — the orientation of the 27 non-square
-textures (§4.2, 97.6% on a known-answer set).
+**Measured with a known error rate** — the orientation of the 27 rectangles
+(§4.2): all 21 independently-established orientations are reproduced, five are
+open, one is undecidable in principle.
 
 **Inferred / open** — the animation frame size and the number of frames, which is
 what stops the record grammar of §3.4 from closing (§3.4); the `2*N` two-byte

@@ -268,15 +268,21 @@ and that naming stays per `AGENTS.md`. Its own document is
   both modes**: `tests/dma3d.rs` round-trips all 1,165 resources.
 * **Texture payloads are decoded** (`src/dma3d/texfile.rs`): all 705 are
   `RGBA[K]` palette entries followed by one-byte indices, where `K` is the
-  smallest size making every trailing byte a valid index — i.e.
+  smallest size that makes every trailing byte a valid index — i.e.
   `1 + max(index)`. The evidence is that every palette entry is then
   genuinely used and `payload_len - 4*K` lands on a power of two in all 705.
   The container holds **no dimension table**, so the width and height come
-  from the pixel data: 678 of the 705 areas are perfect squares, and the 27
-  rectangles (`16×32`, `32×64`, `64×128`, `128×256`) are split by a measured
-  row-continuity statistic validated at 643/659 on the known squares. **27
-  textures may be transposed** — that is the weakest measurement in the work
-  and it is flagged in `docs/DMA3D.md` §4.2.
+  from the pixel data: 678 of the 705 areas are perfect squares and read at
+  their root, which is certain. The remaining **27 are 1:2 rectangles**, and
+  their orientation is decided by the mean index difference across a vertical
+  step with two shape vetoes on top of it — an icon is one connected component
+  at the correct width and is sliced at the wrong one. All **21** rectangles
+  whose orientation could be established independently are reproduced by that
+  rule and are pinned by name in `tests/dma3d_numbers.rs`; **5 remain open**
+  (`beestripes`, `conga`, `striped_ball`, `mouseEarse06A`, `shrBkRight1`) and
+  `createBtFileIo` is **undecidable in principle** (`K == 1`, 2048 identical
+  bytes, so no reading differs from any other — flagged, not guessed).
+  `docs/DMA3D.md` §4.2.
 * **Model payloads carry the mesh** in 144 of 460 (`src/dma3d/modfile.rs`):
   a zero-based `u16[V]` index list, `vec3` positions with `w == 1.0`, and a
   unit-length normal array with `w == 0.0`. The counts are not in the header,

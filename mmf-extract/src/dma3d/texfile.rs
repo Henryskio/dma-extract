@@ -23,15 +23,38 @@
 //! field per resource and padding) holds only Mac-style timestamps, so the
 //! dimensions have to be taken from the pixel data itself.
 //!
-//! `A` is a power of two, so it pins the *area* and nothing else: 678 of the
-//! 705 files are perfect squares (8x8 through 256x256) and are read at that
-//! root. The remaining 27 are the 1:2 rectangles (16x32, 32x64, 64x128,
-//! 128x256), and each of those has two readings. They are split by a measured
-//! statistic, [`axis_of`], which is described where it is computed: it was
-//! validated on the 678 square textures, where the same statistic lands on the
-//! square root 643/659 times for real textures and never contradicts the
-//! period structure. The 27 are named in `docs/DMA3D.md` §2.2 so the choice is
-//! reviewable rather than silent.
+//! `A` is a power of two, so it pins the *area* and nothing else. **678 of the
+//! 705 files are perfect squares** (8x8 through 256x256) and are read at that
+//! root, which is certain. The remaining **27 are 1:2 rectangles** and each has
+//! two readings, decided by [`axis_of`] from the pixel data alone.
+//!
+//! Two facts make that possible, and both were measured rather than assumed:
+//!
+//! 1. **The two readings are not transposes of one another.** Reading `A` bytes
+//!    at width `W` puts true rows `r` and `r+1` at `r*W` and `(r+1)*W`; reading
+//!    them at `2W` puts them at `2r*2W` and `(2r+1)*2W`. The wrong width
+//!    *concatenates* two true rows into one, squashing and interleaving the
+//!    picture. So statistics on the index bytes are decisive rather than merely
+//!    anisotropic.
+//! 2. **Every rectangle the engine allocates is 1:2.** All 21 of the 27 whose
+//!    orientation could be established independently are 1:2 — 64x32, 32x16,
+//!    32x64, 64x128, 256x128, 128x256 — so the width is restricted to that pair
+//!    rather than to every power of two that divides the area. (An earlier
+//!    version considered all six, and read `beestripes` as 8x64 and
+//!    `createBtFileIo` as 8x256, which contradicted this.)
+//!
+//! [`decide`] picks the reading with fewest 4-connected components of
+//! non-background pixels — at the correct width an icon is one object, at the
+//! wrong one it is sliced — then breaks ties by the mean index difference across
+//! a vertical step, then by zero pixels cut on the frame border. The rule
+//! reproduces all 21 independently-established orientations, and
+//! `tests/dma3d.rs` pins them by name.
+//!
+//! **What is not decided**, and is reported as such: `createBtFileIo.TGA` has
+//! `K == 1` — one palette entry and 2048 identical index bytes — so *no*
+//! statistic can distinguish any reading from any other; it is
+//! [`Texture::undecidable`]. Four more are genuinely open, and
+//! `docs/DMA3D.md` §4.2 names them with the competing evidence.
 //!
 //! ## What the palette order is
 //!
@@ -64,6 +87,14 @@ pub struct Texture {
     pub height: usize,
     /// How the width and the height were decided, for the report.
     pub axis: Axis,
+    /// True when the index data carries no orientation information at all, so
+    /// the reading is a default rather than a measurement.
+    ///
+    /// `createBtFileIo.TGA` is the one: `K == 1`, a single palette entry and
+    /// 2048 identical index bytes. Every statistic is degenerate at every
+    /// width, so no reading differs from any other and the only honest things
+    /// to do are to report it and to say why.
+    pub undecidable: bool,
 }
 
 /// Which of the two readings of a 1:2 rectangle was taken.
@@ -122,10 +153,35 @@ pub fn parse(payload: &[u8]) -> Result<Texture> {
     let indices = payload[palette_bytes..].to_vec();
     let area = indices.len();
 
+    // The area is a power of two in all 705 shipped textures, and that is what
+    // makes the root and the 1:2 pair exact. A payload whose area is not one
+    // does not fit this format, and is reported rather than factored into a
+    // width no texture in this engine can have.
+    if !area.is_power_of_two() {
+        bail!("{area} index bytes is not a power of two, so no width and height fit");
+    }
+
+    // The area is a power of two in all 705 shipped textures, and that is what
+    // makes the root and the 1:2 pair exact. A payload whose area is not one
+    // does not fit this format, and is reported rather than factored into a
+    // width no texture in this engine can have.
+    if !area.is_power_of_two() {
+        bail!("{area} index bytes is not a power of two, so no width and height fit");
+    }
+
     let (width, height, axis) = split_area(indices.as_slice(), area);
     if width * height != area {
-        bail!("{area} index bytes do not factor into {}x{}", width, height);
+        bail!("{area} index bytes do not factor into {width}x{height}");
     }
+
+    // Whether the pixel data could tell the two readings apart at all. It is
+    // recorded rather than acted on: an undecidable texture is still written,
+    // because a solid rectangle is a usable placeholder, and it is reported so
+    // nobody mistakes the default for a measurement.
+    let undecidable = area.trailing_zeros() % 2 == 1 && {
+        let (w, h) = wide_tall(area);
+        !decide(indices.as_slice(), w, h).1
+    };
 
     Ok(Texture {
         palette,
@@ -133,6 +189,7 @@ pub fn parse(payload: &[u8]) -> Result<Texture> {
         width,
         height,
         axis,
+        undecidable,
     })
 }
 
@@ -164,57 +221,182 @@ fn split_area(indices: &[u8], area: usize) -> (usize, usize, Axis) {
     if root * root == area && WIDTH_CANDIDATES.contains(&root) {
         return (root, root, Axis::Square);
     }
-    axis_of(indices, area)
-}
-
-/// Decide the orientation of a rectangle whose area is `1 * 2^m`.
-///
-/// The statistic is **row continuity**: for a candidate width `W`, the share
-/// of vertically adjacent pixel pairs that carry the same index. The right
-/// width is the one where a column of the image is *read* as a column — pixels
-/// that belong together sit in the same offset of consecutive rows.
-///
-/// It was validated on the 678 square textures, where the answer is known in
-/// advance: for real textures with three or more palette entries in use it
-/// lands on the square root 643 out of 659 times. The 16 exceptions are
-/// textures whose content repeats with a short period (buttons built from an
-/// 8-pixel motif, dot patterns), so the statistic is a measurement with a
-/// success rate, not a proof — which is why every rectangle it decides is
-/// named in `docs/DMA3D.md` §2.2.
-fn axis_of(indices: &[u8], area: usize) -> (usize, usize, Axis) {
-    let mut best = (0usize, f64::NEG_INFINITY);
-    for &w in &WIDTH_CANDIDATES {
-        if area % w != 0 {
-            continue;
-        }
-        let h = area / w;
-        let mut same = 0usize;
-        let mut pairs = 0usize;
-        for row in 0..h - 1 {
-            let base = row * w;
-            for col in 0..w {
-                if indices[base + col] == indices[base + w + col] {
-                    same += 1;
-                }
-                pairs += 1;
-            }
-        }
-        let score = same as f64 / pairs as f64;
-        if score > best.1 {
-            best = (w, score);
-        }
-    }
-    let w = if best.0 == 0 {
-        WIDTH_CANDIDATES[0]
-    } else {
-        best.0
-    };
-    let h = area / w;
-    if w > h {
+    let (w, h) = wide_tall(area);
+    if decide(indices, w, h).0 {
         (w, h, Axis::Wide)
     } else {
-        (w, h, Axis::Tall)
+        (h, w, Axis::Tall)
     }
+}
+
+/// The 1:2 pair an area of `2^(2k+1)` is made of.
+///
+/// Taking `sqrt` and halving it does not work: it lands on an odd number and
+/// would print a reading like `45x22` that no texture in this engine has. The
+/// area is a power of two, so the two factors are powers of two too.
+fn wide_tall(area: usize) -> (usize, usize) {
+    debug_assert!(area.is_power_of_two());
+    let bits = area.trailing_zeros() as usize;
+    (1usize << (bits / 2 + 1), 1usize << (bits / 2))
+}
+
+/// True when the `wide` reading is the right one.
+///
+/// The rule is **the mean index difference across a vertical step, with two
+/// vetoes on top of it**. At the correct width a vertical step is one true row,
+/// so a smooth image is smooth; at twice the width it is two true rows, so it is
+/// not. Validated on the 678 square textures, where this statistic lands on the
+/// root 659/678 against 649/678 for the row-continuity it replaces.
+///
+/// The vetoes, both of which are about the *shape* of the picture and both
+/// strong enough to override the statistic:
+///
+/// 1. **one connected component.** At the correct width an icon is one object;
+///    at the wrong width its rows have been concatenated and it is sliced into
+///    two or more. A reading that is uniquely `components == 1` wins even when
+///    the statistic disagrees — `createModMickeyPartHeadS.TGA` is exactly that
+///    case, and it is the reason the vetoes are applied first rather than the
+///    statistic.
+/// 2. **zero pixels cut on the frame border.** A non-background pixel on the
+///    border is an object the reading has cut in half.
+///
+/// Returns `false` for both when the index data cannot tell the two apart —
+/// every byte identical — so the caller reports the texture as undecidable
+/// rather than as decided.
+fn decide(indices: &[u8], wide: usize, tall: usize) -> (bool, bool) {
+    let wide_shape = shape(indices, wide, tall);
+    let tall_shape = shape(indices, tall, wide);
+    let wide_delta = vertical_delta(indices, wide, tall);
+    let tall_delta = vertical_delta(indices, tall, wide);
+
+    // The vetoes, strongest first. Each is applied only when it is *unique*, so
+    // two readings that both cut the border or both hold several objects fall
+    // through to the statistic.
+    if wide_shape.components == 1 && tall_shape.components != 1 {
+        return (true, true);
+    }
+    if tall_shape.components == 1 && wide_shape.components != 1 {
+        return (false, true);
+    }
+    if wide_shape.cut == 0 && tall_shape.cut != 0 {
+        return (true, true);
+    }
+    if tall_shape.cut == 0 && wide_shape.cut != 0 {
+        return (false, true);
+    }
+
+    // The statistic, then. A tie is a tie: the pixel data says nothing, and a
+    // coin flip dressed as a measurement is what this whole decision exists to
+    // avoid.
+    let order = wide_delta.partial_cmp(&tall_delta).unwrap_or(std::cmp::Ordering::Equal);
+    match order {
+        std::cmp::Ordering::Less => (true, true),
+        std::cmp::Ordering::Greater => (false, true),
+        std::cmp::Ordering::Equal => (false, false),
+    }
+}
+
+/// Mean absolute index difference across a vertical step.
+fn vertical_delta(indices: &[u8], w: usize, h: usize) -> f64 {
+    if h < 2 {
+        return 0.0;
+    }
+    let mut total = 0u64;
+    let mut pairs = 0usize;
+    for row in 0..h - 1 {
+        let base = row * w;
+        for col in 0..w {
+            total += u64::from(indices[base + col].abs_diff(indices[base + w + col]));
+            pairs += 1;
+        }
+    }
+    total as f64 / pairs as f64
+}
+
+/// The shape of the non-background pixels at one reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shape {
+    /// 4-connected components of non-background pixels.
+    components: usize,
+    /// Non-background pixels sitting on the frame's border: an object the
+    /// reading has cut in half.
+    cut: usize,
+}
+
+/// The background index: the palette's transparent colour key when it has one,
+/// otherwise the index the data uses most.
+///
+/// Without a key the second choice is the only "empty" a texture has, and it is
+/// the one an engine would leave the untouched part of the buffer holding.
+fn background(indices: &[u8], palette_len: usize) -> u8 {
+    if palette_len == 1 {
+        return 0;
+    }
+    let mut counts = vec![0usize; palette_len];
+    for &i in indices {
+        if let Some(slot) = counts.get_mut(usize::from(i)) {
+            *slot += 1;
+        }
+    }
+    let mut best = 0u8;
+    for (i, count) in counts.iter().enumerate() {
+        if *count > counts[usize::from(best)] {
+            best = i as u8;
+        }
+    }
+    best
+}
+
+/// Count components and cut pixels for one reading.
+fn shape(indices: &[u8], w: usize, h: usize) -> Shape {
+    let palette_len = indices
+        .iter()
+        .copied()
+        .max()
+        .map(|m| usize::from(m) + 1)
+        .unwrap_or(1);
+    let bg = usize::from(background(indices, palette_len));
+    let mut seen = vec![false; w * h];
+    let mut components = 0usize;
+    let mut cut = 0usize;
+    let mut stack = Vec::new();
+    for row in 0..h {
+        for col in 0..w {
+            let at = row * w + col;
+            if seen[at] || usize::from(indices[at]) == bg {
+                continue;
+            }
+            // A new component: flood fill it, so the count does not depend on
+            // the scan order.
+            if row == 0 || row == h - 1 || col == 0 || col == w - 1 {
+                cut += 1;
+            }
+            components += 1;
+            seen[at] = true;
+            stack.push(at);
+            while let Some(at) = stack.pop() {
+                let row = at / w;
+                let col = at % w;
+                for (dr, dc) in [(-1i32, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nr = row as i32 + dr;
+                    let nc = col as i32 + dc;
+                    if nr < 0 || nc < 0 || nr >= h as i32 || nc >= w as i32 {
+                        continue;
+                    }
+                    let next = nr as usize * w + nc as usize;
+                    if seen[next] || usize::from(indices[next]) == bg {
+                        continue;
+                    }
+                    seen[next] = true;
+                    if nr == 0 || nr == h as i32 - 1 || nc == 0 || nc == w as i32 - 1 {
+                        cut += 1;
+                    }
+                    stack.push(next);
+                }
+            }
+        }
+    }
+    Shape { components, cut }
 }
 
 #[cfg(test)]

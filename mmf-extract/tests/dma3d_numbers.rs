@@ -196,3 +196,157 @@ fn the_tail_header_is_a_measurement_not_a_rule() {
         "the mesh-bearing payload count changed"
     );
 }
+
+/// The orientation of the 21 rectangles whose width and height could be
+/// established independently.
+///
+/// These come from `/workspace/.tmp/TEXTURE-ORIENTATION.md`, where each is
+/// decided by at least two agreeing measurements — the connected-component
+/// count (at the correct width an icon is one object; at the wrong one its rows
+/// have been concatenated and it is sliced), the zero-cut count, the mean
+/// vertical index difference, and the rendered picture. `introAxSplash` is
+/// decided beyond doubt because its 256×128 rendering spells the game title.
+///
+/// The rule in `texfile::decide` reproduces every one of them, and this test is
+/// what keeps it that way. Five are open and are *not* listed here, because
+/// listing a guess as a fact is exactly what the whole orientation question is
+/// about avoiding.
+#[test]
+fn the_measured_orientations_are_reproduced() {
+    let Some(dir) = dma3d_dir() else {
+        eprintln!("skipping: the 3D game's assets are not present");
+        return;
+    };
+    let textures = Container::open(dir.join("DMA3D.MMX")).expect("open Textures");
+
+    let measured: &[(&str, usize, usize)] = &[
+        ("CreationTex.TGA", 64, 32),
+        ("DuplicateTex.TGA", 64, 32),
+        ("NewTex.TGA", 64, 32),
+        ("beewings.1.TGA", 32, 16),
+        ("beewings.2.TGA", 32, 16),
+        ("beewings.3.TGA", 32, 16),
+        ("createBtUndo.1.TGA", 32, 64),
+        ("createBtUndo.2.TGA", 32, 64),
+        ("createBtUndo.3.TGA", 32, 64),
+        ("createModMickeyPartArm.TGA", 64, 128),
+        ("createModMickeyPartArmL.TGA", 64, 128),
+        ("createModMickeyPartArmR.TGA", 64, 128),
+        ("createModMickeyPartHead.TGA", 64, 128),
+        ("createModMickeyPartHeadS.TGA", 64, 128),
+        ("createModMickeyPartLegL.TGA", 64, 128),
+        ("createModMickeyPartLegR.TGA", 64, 128),
+        ("createModMickeyPartTorso.TGA", 64, 128),
+        ("createModMickeyParts.TGA", 64, 128),
+        // Also the only one with an independent external check: the mesh that
+        // shares its name is flat with an aspect of 0.6221, which is closer to
+        // 1:2 tall than to 2:1.
+        ("createModMickeySlider.TGA", 64, 128),
+        // Its 256×128 rendering spells the game title; the 128×256 one is
+        // unreadable. The strongest single piece of evidence in the report.
+        ("introAxSplash.TGA", 256, 128),
+        ("shrBkLeft1.TGA", 128, 256),
+    ];
+
+    let mut checked = 0usize;
+    for (name, expect_w, expect_h) in measured.iter() {
+        let found = (0..textures.resource_count as usize)
+            .find(|&i| textures.name(i) == *name)
+            .unwrap_or_else(|| panic!("{name} is not in the Textures container"));
+        let texture = texfile::parse(textures.payload(found))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            (texture.width, texture.height),
+            (*expect_w, *expect_h),
+            "{name}: measured {expected}x{expected_h}, decoder says {width}x{height}",
+            expected = expect_w,
+            expected_h = expect_h,
+            width = texture.width,
+            height = texture.height
+        );
+        assert!(!texture.undecidable, "{name}: the decoder reports it undecidable");
+        checked += 1;
+    }
+    assert_eq!(checked, 21, "not every measured orientation was checked");
+}
+
+/// The rectangle count and its shapes, pinned.
+///
+/// An earlier version of `axis_of` considered every power of two that divided
+/// the area, and so read `beestripes` as 8×64 and `createBtFileIo` as 8×256 —
+/// 1:8 and 1:32, which contradicted the premise that the engine's rectangles
+/// are 1:2. All 21 independently-established orientations are 1:2, so the
+/// candidate set is that pair, and this test is what keeps it.
+#[test]
+fn every_rectangle_is_one_to_two() {
+    let Some(dir) = dma3d_dir() else {
+        eprintln!("skipping: the 3D game's assets are not present");
+        return;
+    };
+    let textures = Container::open(dir.join("DMA3D.MMX")).expect("open Textures");
+    let mut rectangles = 0usize;
+    let mut shapes: std::collections::BTreeMap<(usize, usize), usize> =
+        std::collections::BTreeMap::new();
+    for i in 0..textures.resource_count as usize {
+        let texture = texfile::parse(textures.payload(i))
+            .unwrap_or_else(|e| panic!("{}: {e}", textures.name(i)));
+        if texture.axis == texfile::Axis::Square {
+            continue;
+        }
+        rectangles += 1;
+        *shapes
+            .entry((texture.width, texture.height))
+            .or_insert(0usize) += 1;
+        let (wide, tall) = if texture.width > texture.height {
+            (texture.width, texture.height)
+        } else {
+            (texture.height, texture.width)
+        };
+        assert_eq!(
+            wide,
+            tall * 2,
+            "{}: {}x{} is not 1:2",
+            textures.name(i),
+            texture.width,
+            texture.height
+        );
+    }
+    assert_eq!(rectangles, 27, "the rectangle count changed");
+    eprintln!("the 27 rectangles by shape: {shapes:?}");
+}
+
+/// The one texture the payload cannot orient, reported rather than guessed.
+///
+/// `createBtFileIo.TGA` has `K == 1`: one palette entry and 2048 identical index
+/// bytes. Every statistic is degenerate at every width, so no reading differs
+/// from any other and any choice would be a guess wearing a measurement's
+/// clothes. It is flagged, not hidden.
+#[test]
+fn the_undecidable_texture_is_flagged() {
+    let Some(dir) = dma3d_dir() else {
+        eprintln!("skipping: the 3D game's assets are not present");
+        return;
+    };
+    let textures = Container::open(dir.join("DMA3D.MMX")).expect("open Textures");
+    let found = (0..textures.resource_count as usize)
+        .find(|&i| textures.name(i) == "createBtFileIo.TGA")
+        .expect("createBtFileIo.TGA is in the Textures container");
+    let texture = texfile::parse(textures.payload(found)).expect("parse");
+    assert_eq!(texture.palette.len(), 1, "K is not 1 any more");
+    assert!(
+        texture.undecidable,
+        "an all-identical index block must be reported as undecidable"
+    );
+
+    // And no other texture is: the flag is for the case where the data says
+    // nothing, not for the case where the rule is unsure.
+    let mut flagged = Vec::new();
+    for i in 0..textures.resource_count as usize {
+        let texture = texfile::parse(textures.payload(i))
+            .unwrap_or_else(|e| panic!("{}: {e}", textures.name(i)));
+        if texture.undecidable {
+            flagged.push(textures.name(i).to_string());
+        }
+    }
+    assert_eq!(flagged, vec!["createBtFileIo.TGA".to_string()]);
+}
