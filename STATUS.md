@@ -257,18 +257,44 @@ and that naming stays per `AGENTS.md`. Its own document is
 * **Two new container kinds**, selected by the tag in the signature:
   `MMFW Models` (N=460) and `MMFW Textures` (N=705). Both are **container
   version 3**, so the shared skeleton applies and only the metadata region
-  differs: `4*N + 100` and `6*N + 2`, both measured on the shipped files
-  (`offsets[0]` lands exactly on `names_end + region`, `offsets[N]` equals
-  the file length, the tables are monotone).
-* **Extracted**: 460 `.mod` payloads (4,120,513 bytes) and 705 `.tex`
-  payloads (3,989,968 bytes) per disc, **byte-exact on both the Italian and
-  the English build**, in both the modern and `--original` modes — the
-  payloads are written verbatim, which is honest while the payload formats
-  are still being decoded. Plus the shared kinds: **3 pictures, 145 sounds,
-  647 script objects, zero failures** on each disc.
-* **Not decoded**: the `.mod` record grammar (it begins `mod II` then a
-  little-endian stream of `u32`s and floats, with the magic recurring inside
-  the stream), the texture dimensions, and the per-resource palette selector.
+  differs: `4*N + 100` for models and `32*N + 4*N + 2*N + 2` for textures
+  (the texture region was measured wrong as `6*N + 2` at first — it was a
+  whole 32-byte-per-resource table short, and `container.rs` was reading its
+  `attr`/`flags`/`dimensions` arrays out of the middle of the names table).
+  Both sizes are structural, not arithmetic: `offsets[0]` lands exactly on
+  `names_end + region`, `offsets[N]` equals the file length, the tables are
+  monotone.
+* **Extracted, byte-exact on both the Italian and the English build and on
+  both modes**: `tests/dma3d.rs` round-trips all 1,165 resources.
+* **Texture payloads are decoded** (`src/dma3d/texfile.rs`): all 705 are
+  `RGBA[K]` palette entries followed by one-byte indices, where `K` is the
+  smallest size making every trailing byte a valid index — i.e.
+  `1 + max(index)`. The evidence is that every palette entry is then
+  genuinely used and `payload_len - 4*K` lands on a power of two in all 705.
+  The container holds **no dimension table**, so the width and height come
+  from the pixel data: 678 of the 705 areas are perfect squares, and the 27
+  rectangles (`16×32`, `32×64`, `64×128`, `128×256`) are split by a measured
+  row-continuity statistic validated at 643/659 on the known squares. **27
+  textures may be transposed** — that is the weakest measurement in the work
+  and it is flagged in `docs/DMA3D.md` §4.2.
+* **Model payloads carry the mesh** in 144 of 460 (`src/dma3d/modfile.rs`):
+  a zero-based `u16[V]` index list, `vec3` positions with `w == 1.0`, and a
+  unit-length normal array with `w == 0.0`. The counts are not in the header,
+  so the chain is located structurally.
+* **Modern output**: 705 PNG textures, 144 self-contained glTF 2.0 models,
+  316 payloads written through unchanged, a `.tail` file per glTF holding the
+  590,532 bytes the mesh decoder does not read, a 256×256 rasterised preview
+  per mesh (`src/dma3d/render.rs`), and one dependency-free `index.html`
+  making the whole set browsable. Verification is by reading the output back:
+  every PNG's pixels against `texfile::parse`, every glTF's indices/positions/
+  normals against `modfile::parse_mesh` (`gltf::read_gltf`, a minimal JSON
+  reader — `serde_json` is not reachable offline). Every count is pinned in
+  `tests/dma3d_numbers.rs`.
+* **Not decoded**: the animation record grammar and which node each track
+  drives (the tail header `[0, 1, V]` is universal over all 144 and the tracks
+  are named `key01`…`key06` in some files); the material link, because no
+  mesh-bearing payload names a texture; `createPropUI*`'s field meanings (42
+  records of exactly 276 bytes that are references rather than meshes).
   The engine's class names are in `DMA3D.exe`'s RTTI (`MM3D*`), and its
   resource readers report `Bad checksum / version / header in
   model|texture resource file '%s'`.
