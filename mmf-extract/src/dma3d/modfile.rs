@@ -312,11 +312,12 @@ mod real_files {
                     continue;
                 }
             };
-            // The measured ranges: 151..=257 vertices over 42 props, and the
-            // index list is zero-based and every value names a vertex.
-            // Sanity, not a measured bound: the props run from 24 to 257
-            // vertices in the files measured by hand, so anything far outside
-            // that means a false positive rather than a small mesh.
+            // Sanity, not a measured bound: the 144 payloads that carry a chain
+            // run 24..=257 vertices, so anything far outside that range means a
+            // false positive rather than a small mesh. The counts 144 / 316 /
+            // 460 are asserted in `tests/dma3d_numbers.rs`, so this comment
+            // cannot drift from the data again. The index list is zero-based
+            // and every value names a vertex -- asserted directly below.
             assert!(
                 (4..=4096).contains(&mesh.vertex_count()),
                 "{name}: {} vertices is outside any sane range",

@@ -308,6 +308,178 @@ fn every_3d_payload_round_trips_byte_exactly() {
             }
         }
         eprintln!("{meshes} glTF models, {passthrough} payloads written through");
-        assert!(meshes > 80, "only {meshes} payloads carried a mesh");
+        assert_eq!(meshes, 144, "the mesh-bearing payload count changed");
+        assert_eq!(meshes + passthrough, container.resource_count as usize);
     }
+
+    // ---- the glTF plus its `.tail` reconstructs the payload ----
+    //
+    // The mesh decoder stops after the normals, so the modern output would be
+    // lossy for models unless what follows is kept. It is, beside the glTF, and
+    // the tail is exactly the slice of the payload the decoder did not read.
+    {
+        let container = Container::open(dir.join(MODEL_CONTAINER)).expect("open models");
+        let modern = tmp.join("modern/models2");
+        let report = mmf_extract::dma3d::extract_models(
+            &container,
+            &modern,
+            false,
+            Some(&tmp.join("modern/textures")),
+        )
+        .expect("extract models");
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert_eq!(report.written, container.resource_count as usize);
+
+        let mut with_tail = 0usize;
+        let mut tail_bytes = 0usize;
+        for entry in &report.resources {
+            let payload = container.payload(entry.index);
+            let Ok(mesh) = mmf_extract::dma3d::modfile::parse_mesh(payload) else {
+                continue;
+            };
+            if payload.len() == mesh.tail_offset() {
+                // Nothing follows the mesh, so no tail file is written.
+                with_tail += 1;
+                continue;
+            }
+            let name = entry
+                .path
+                .file_name()
+                .expect("output has a file name")
+                .to_string_lossy()
+                .to_string();
+            let tail_path = entry
+                .path
+                .with_file_name(mmf_extract::dma3d::gltf::tail_name(&name));
+            let tail = std::fs::read(&tail_path).expect("read the tail");
+            assert_eq!(
+                tail.as_slice(),
+                &payload[mesh.tail_offset()..],
+                "model {}: the tail is not the undecoded slice of the payload",
+                entry.index
+            );
+            assert!(
+                tail.len() < payload.len(),
+                "model {}: the tail is the whole payload",
+                entry.index
+            );
+            with_tail += 1;
+            tail_bytes += tail.len();
+        }
+        assert_eq!(with_tail, 144, "not every mesh payload kept its tail");
+        assert_eq!(
+            tail_bytes, 590_532,
+            "the undecoded tail size changed from the measured value"
+        );
+        eprintln!("{tail_bytes} bytes of undecoded tail preserved by {with_tail} payloads");
+    }
+}
+
+/// The whole modern path, driven the way a user drives it: `cli::run` over the
+/// carved folder, then the output checked as a reader would find it.
+///
+/// This is the test that holds the "easy to view" claim together -- the index
+/// page exists, every reference in it resolves to a file on disk, every object
+/// has a rendered preview that covers pixels, and every glTF's vertices, when
+/// read back, agree with the decoder.
+#[test]
+fn the_modern_output_is_a_browsable_whole() {
+    let Some(dir) = dma3d_dir() else {
+        eprintln!("skipping: the 3D game's assets are not present");
+        return;
+    };
+    let tmp = tempdir("dma3d-e2e");
+
+    let selection = mmf_extract::cli::AssetSelection::parse(&["models".to_string()])
+        .expect("models is a selectable type");
+    let summary = mmf_extract::cli::run(&dir, &tmp, &selection, false, false)
+        .expect("extract the 3D game");
+    assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+    assert_eq!(summary.models, 460 + 705);
+
+    // ---- the index page, and every reference in it ----
+    let index = tmp.join("index.html");
+    assert!(index.is_file(), "no index.html was written");
+    let page = std::fs::read_to_string(&index).expect("read index.html");
+    assert!(page.contains("<!DOCTYPE html>"), "the index is not an HTML document");
+    // No dependency: it has to open from a local folder with no network.
+    assert!(!page.contains("http://") && !page.contains("https://") || page.contains("gltf-viewer"),
+        "the index must not fetch anything except the offer of a viewer");
+    assert!(!page.contains("<script"), "the index must not need a script");
+    let references = page
+        .split('"')
+        .filter(|s| s.starts_with("Models/") || s.starts_with("Textures/"))
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    // A figure is a link and an image, so each asset appears twice in the
+    // markup; the distinct paths are what must exist.
+    let mut distinct = references.clone();
+    distinct.sort();
+    distinct.dedup();
+    // Every asset the page shows: 705 textures, 144 object previews, and the
+    // 144 glTFs those previews link to.
+    assert_eq!(distinct.len(), 705 + 144 + 144, "the index does not list every asset");
+    assert_eq!(
+        distinct.iter().filter(|p| p.ends_with(".png")).count(),
+        705 + 144,
+        "the index does not list every picture"
+    );
+    assert_eq!(
+        distinct.iter().filter(|p| p.ends_with(".gltf")).count(),
+        144,
+        "the index does not link every model"
+    );
+    for reference in &references {
+        assert!(
+            tmp.join(reference).is_file(),
+            "the index refers to {reference}, which is not on disk"
+        );
+    }
+
+    // ---- every object's preview covers pixels ----
+    let model_dir = tmp.join("Models").join("DMA3D");
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&model_dir)
+        .expect("read the models directory")
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    let previews = entries
+        .iter()
+        .filter(|p| p.file_name().unwrap().to_string_lossy().ends_with(".preview.png"))
+        .count();
+    let gltfs = entries
+        .iter()
+        .filter(|p| p.file_name().unwrap().to_string_lossy().ends_with(".gltf"))
+        .count();
+    assert_eq!(gltfs, 144, "the number of glTF files changed");
+    assert_eq!(previews, gltfs, "every glTF needs a preview beside it");
+
+    let mut blank = Vec::new();
+    let mut checked = 0usize;
+    for path in &entries {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if !name.ends_with(".preview.png") {
+            continue;
+        }
+        let preview = std::fs::read(path).expect("read a preview");
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(&preview[..]))
+            .read_info()
+            .expect("PNG header");
+        let mut buf = vec![0u8; decoder.output_buffer_size().expect("buffer")];
+        let frame = decoder.next_frame(&mut buf).expect("frame");
+        assert_eq!(frame.width as usize, 256, "{name} is not square");
+        assert_eq!(frame.height as usize, 256, "{name} is not square");
+        let covered = buf[..frame.buffer_size()]
+            .chunks(4)
+            .filter(|p| p[3] != 0)
+            .count();
+        // A preview that covers no pixels is a broken rasteriser, and would
+        // otherwise sit in the page as a blank tile.
+        if covered == 0 {
+            blank.push(name);
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 144);
+    assert!(blank.is_empty(), "previews that cover no pixels: {blank:?}");
 }

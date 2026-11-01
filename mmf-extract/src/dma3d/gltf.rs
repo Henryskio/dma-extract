@@ -365,6 +365,29 @@ mod json {
     }
 }
 
+/// Write the part of a `.mod` payload the glTF does not carry.
+///
+/// The mesh decoder reads the index list, the vertices and the normals, and
+/// stops. What follows it -- `u32 0`, `u32 1`, `u32 V`, then the texture
+/// coordinates and the animation tracks -- is **not decoded**
+/// (`docs/DMA3D.md` §3.3), so writing only the mesh would drop it and the
+/// modern output would be lossy for models.
+///
+/// So the tail is written next to the glTF, under its own name, verbatim. A
+/// modern model is therefore the mesh plus the bytes still closed, and the
+/// round trip is: glTF for the geometry, `.tail` for the rest, and
+/// concatenating them reproduces the payload the game stored. Nothing is
+/// invented and nothing is thrown away.
+pub fn write_tail(path: &Path, tail: &[u8]) -> Result<()> {
+    std::fs::write(path, tail).with_context(|| format!("writing {}", path.display()))
+}
+
+/// The filename a payload's undecoded tail is written under, beside the glTF
+/// for the same resource.
+pub fn tail_name(stem: &str) -> String {
+    format!("{stem}.tail")
+}
+
 /// A glTF document read back off disk, for the tests that verify the writer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadBack {

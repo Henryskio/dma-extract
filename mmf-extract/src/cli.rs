@@ -353,6 +353,15 @@ pub fn run(
         }
     }
 
+    // The index page, once both 3D containers have been extracted: the output is
+    // browsable as one page instead of 849 files in a tree. It is written last
+    // because it lists what is on disk rather than what the container claims.
+    if let Some(texture) = texture_dir.as_deref() {
+        if let Err(e) = crate::dma3d::write_index(output, texture, &output.join("Models").join("DMA3D")) {
+            eprintln!("warning: could not write the 3D index page: {e:#}");
+        }
+    }
+
     Ok(summary)
 }
 

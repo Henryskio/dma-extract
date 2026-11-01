@@ -45,6 +45,7 @@ use crate::cli::sanitize;
 use crate::container::Container;
 
 pub mod gltf;
+pub mod render;
 pub mod modfile;
 pub mod texfile;
 use anyhow::{Context, Result};
@@ -105,10 +106,12 @@ pub struct Extract3DReport {
 ///   `tests/dma3d.rs` round-trip covers.
 /// * the modern mode writes a **glTF** for every payload that carries the
 ///   measured mesh chain, and the payload verbatim for the rest. That split is
-///   the honest state: 87 of the 460 payloads carry a mesh
+///   the honest state: 144 of the 460 payloads carry a mesh
 ///   (`docs/DMA3D.md` §3.2), and every one of those becomes a viewable model.
-///   The 373 that do not -- animation records, lights, UI references -- are
-///   written through unchanged so nothing is lost.
+///   The 316 that do not -- animation records, lights, UI references -- are
+///   written through unchanged. A glTF is accompanied by a `.tail` file with
+///   the bytes the mesh decoder does not read, which is what keeps the modern
+///   output from being a lossy subset.
 ///
 /// `texture_dir` is where the `Textures` container's PNGs live. A model whose
 /// payload names a texture gets it embedded; the rest come out untextured,
@@ -279,6 +282,35 @@ fn extract_gltf(
         let path = out_dir.join(format!("{index:05}_{stem}.gltf"));
         gltf::write_gltf(&path, name, &mesh, &materials)
             .with_context(|| format!("writing {}", path.display()))?;
+        // The undecoded tail goes beside the glTF, verbatim, so the modern
+        // output is the mesh *plus* the bytes still closed rather than a
+        // lossy subset. `--original` stays the mode that is byte-exact; this
+        // is what makes the modern mode not *destructive*.
+        gltf::write_tail(
+            &out_dir.join(gltf::tail_name(&format!("{index:05}_{stem}.gltf"))),
+            &payload[mesh.tail_offset()..],
+        )
+        .with_context(|| format!("writing the tail of {name}"))?;
+        // A preview beside the glTF, so the index page can show what each
+        // object is without the reader opening a 3D tool first.
+        let preview = render::render(&mesh);
+        let preview_path = out_dir.join(format!("{index:05}_{stem}.preview.png"));
+        gltf::encode_png(&preview.rgba, render::PREVIEW_PIXELS, render::PREVIEW_PIXELS)
+            .and_then(|png| {
+                std::fs::write(&preview_path, png)
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+                    .map_err(Into::into)
+            })
+            .with_context(|| format!("writing the preview of {name}"))?;
+        if preview.covered == 0 {
+            eprintln!(
+                "warning: {}: model {index} '{name}': the preview covers no pixels",
+                container.path.display()
+            );
+            report
+                .failed
+                .push((index, name.to_string(), "preview covers no pixels".into()));
+        }
         let bytes = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
         report.written += 1;
         report.resources.push(Extracted3D {
@@ -341,6 +373,157 @@ fn texture_names_in(payload: &[u8]) -> Vec<String> {
         }
     }
     names
+}
+
+
+/// Write the index page that makes the 3D output browsable.
+///
+/// The modern mode exists for people who have never opened a 3D program, and a
+/// folder of 705 `.png`s and 144 `.gltf`s is not browsable on its own: nothing
+/// connects a texture to the object it belongs to, and nothing says how to open
+/// a glTF. This page is one file that does both, and it is deliberately
+/// dependency-free — no script, no stylesheet, no network — so it works by
+/// double-clicking it from a local folder, which is how a desktop user will
+/// actually open it.
+///
+/// `texture_dir` and `model_dir` hold the PNGs written by [`extract_textures`]
+/// and the glTFs plus previews written by [`extract_models`]. The index goes at
+/// `base`, beside both, and refers to them by a relative path.
+pub fn write_index(
+    base: &Path,
+    texture_dir: &Path,
+    model_dir: &Path,
+) -> Result<usize> {
+    let mut files = 0usize;
+
+    // List the two directories, so the page is built from what was written
+    // rather than from what the container claims it holds.
+    let textures = list_dir(texture_dir, "png");
+    let models = list_dir(model_dir, "gltf");
+    let previews = list_dir(model_dir, "preview.png");
+
+    let relative_to = |dir: &Path| -> String {
+        dir.strip_prefix(base)
+            .unwrap_or(dir)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let texture_prefix = relative_to(texture_dir);
+    let model_prefix = relative_to(model_dir);
+
+    let mut page = String::with_capacity(64 * 1024);
+    page.push_str(INDEX_HEAD);
+    page.push_str(&format!(
+        "<h2>Objects <span class=\"count\">{}</span></h2>\n",
+        models.len()
+    ));
+    page.push_str(
+        "<p>Every object below is a rendered picture of the model itself, made from \
+         the model's own vertices. The file next to it is a <code>.gltf</code>, \
+         which is the model. <a href=\"#how\">How to open one</a>.</p>\n",
+    );
+    page.push_str("<div class=\"grid\">\n");
+    for (i, (index, name)) in models.iter().enumerate() {
+        let preview = previews
+            .iter()
+            .find(|(j, _)| j == index)
+            .map(|(_, p)| p.clone())
+            .unwrap_or_default();
+        page.push_str(&format!(
+            "<figure>\
+             <a href=\"{model_prefix}/{name}\" title=\"Open {index:05}\" >\
+             <img src=\"{model_prefix}/{preview}\" alt=\"{index:05}\" loading=\"lazy\">\
+             </a><figcaption>{index:05}</figcaption></figure>\n"
+        ));
+        let _ = i;
+        files += 1;
+    }
+    page.push_str("</div>\n");
+
+    page.push_str(&format!(
+        "<h2>Textures <span class=\"count\">{}</span></h2>\n",
+        textures.len()
+    ));
+    page.push_str(
+        "<p>The game stores each texture as a palette and a grid of one-byte \
+         indices. They are expanded to ordinary PNGs here.</p>\n",
+    );
+    page.push_str("<div class=\"grid\">\n");
+    for (index, name) in &textures {
+        page.push_str(&format!(
+            "<figure>\
+             <a href=\"{texture_prefix}/{name}\" title=\"Open {index:05}\" >\
+             <img src=\"{texture_prefix}/{name}\" alt=\"{index:05}\" loading=\"lazy\">\
+             </a><figcaption>{index:05}</figcaption></figure>\n"
+        ));
+        files += 1;
+    }
+    page.push_str("</div>\n");
+    page.push_str(INDEX_TAIL);
+
+    let path = base.join("index.html");
+    std::fs::write(&path, page).with_context(|| format!("writing {}", path.display()))?;
+    Ok(files)
+}
+
+/// The page's head: no script, no stylesheet, no network.
+const INDEX_HEAD: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<title>3D assets</title>
+<style>
+ body { font: 15px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 76rem; padding: 2rem 1rem; background: #16181d; color: #e6e6e6; }
+ h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+ h2 { font-size: 1.2rem; margin: 2.5rem 0 .25rem; border-top: 1px solid #2c3038; padding-top: 1.5rem; }
+ .count { color: #8b93a3; font-weight: normal; font-size: .9rem; }
+ .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: .75rem; margin: 1rem 0; }
+ figure { margin: 0; }
+ img { width: 100%; height: auto; background: #0b0d10; border: 1px solid #2c3038; border-radius: 4px; display: block; }
+ figcaption { font-size: .7rem; color: #8b93a3; text-align: center; margin-top: .2rem; }
+ #how { background: #1b1f26; border: 1px solid #2c3038; border-radius: 6px; padding: 1rem 1.25rem; margin: 2rem 0 0; }
+ #how h2 { border: 0; margin: 0 0 .5rem; padding: 0; font-size: 1rem; }
+ #how code { background: #0b0d10; padding: .1rem .3rem; border-radius: 3px; }
+</style>
+<h1>3D assets</h1>
+<p>Pictures of everything this game shipped, recovered from its own containers.</p>
+"#;
+
+/// The page's tail: what a reader does with a glTF they have just been shown.
+const INDEX_TAIL: &str = r#"
+<div id="how">
+<h2>How to open a <code>.gltf</code></h2>
+<ul>
+ <li><b>In a browser, no install:</b> drag the file onto
+     <code>https://gltf-viewer.donmccurdy.com</code>. Nothing is uploaded.</li>
+ <li><b>In Blender:</b> <code>File &rarr; Import &rarr; glTF 2.0</code>.</li>
+ <li><b>On Windows 10/11:</b> open it in the <i>3D Viewer</i> app.</li>
+ <li>Each <code>.gltf</code> has a <code>.tail</code> file beside it holding the
+     bytes that are still undecoded (the animation and the texture
+     coordinates), so nothing is thrown away.</li>
+</ul>
+</div>
+"#;
+
+/// List the files of `dir` whose names match `<index>_<rest>`, returning the
+/// index and the full file name.
+fn list_dir(dir: &Path, extension: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(extension) {
+            continue;
+        }
+        // The output names are `<index:05>_<rest>.<ext>`, so the leading digits
+        // are the container's resource index and the sort order is the game's.
+        let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let index = digits.parse::<usize>().unwrap_or(usize::MAX);
+        out.push((index, name));
+    }
+    out.sort();
+    out
 }
 
 /// Build a filename stem from the resource name, dropping the source
