@@ -23,7 +23,7 @@
 //! one. glTF's index base is zero.
 
 use crate::dma3d::modfile::ModelMesh;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 /// The base64 alphabet, RFC 4648.
@@ -87,9 +87,7 @@ fn base64_decode(text: &str) -> Result<Vec<u8>> {
     }
     let mut out = Vec::with_capacity(sextets.len() / 4 * 3 + 3);
     for group in sextets.chunks(4) {
-        let n = group
-            .iter()
-            .fold(0u32, |acc, &s| (acc << 6) | u32::from(s));
+        let n = group.iter().fold(0u32, |acc, &s| (acc << 6) | u32::from(s));
         // A full group is 24 bits in three bytes. A *short* group is left
         // aligned, so its bytes sit higher in the word: three sextets carry 18
         // bits (two bytes at shifts 10 and 2) and two sextets carry 12 bits
@@ -116,7 +114,7 @@ fn base64_decode(text: &str) -> Result<Vec<u8>> {
 /// hand-rolled reader for the document this project emits is smaller and more
 /// honest than reaching for a half-supported crate.
 mod json {
-    use anyhow::{bail, Context, Result};
+    use anyhow::{Context, Result, bail};
     /// A decoded JSON value.
     #[derive(Debug, Clone, PartialEq)]
     pub enum Value {
@@ -132,10 +130,7 @@ mod json {
         /// Look a key up in an object.
         pub fn get(&self, key: &str) -> Option<&Value> {
             match self {
-                Value::Object(entries) => entries
-                    .iter()
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v),
+                Value::Object(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
                 _ => None,
             }
         }
@@ -161,13 +156,6 @@ mod json {
         pub fn as_array(&self) -> Option<&[Value]> {
             match self {
                 Value::Array(a) => Some(a),
-                _ => None,
-            }
-        }
-        /// A f32 field.
-        pub fn as_f32(&self) -> Option<f32> {
-            match self {
-                Value::Number(n) => Some(*n as f32),
                 _ => None,
             }
         }
@@ -303,7 +291,9 @@ mod json {
             *at += 1;
         }
         let text = std::str::from_utf8(&b[start..*at]).context("number is not UTF-8")?;
-        let n: f64 = text.parse().with_context(|| format!("bad number {text:?}"))?;
+        let n: f64 = text
+            .parse()
+            .with_context(|| format!("bad number {text:?}"))?;
         Ok(Value::Number(n))
     }
 
@@ -407,7 +397,8 @@ pub struct ReadBack {
 
 /// Read a glTF document written by [`write_gltf`] back off disk.
 pub fn read_gltf(path: &Path) -> Result<ReadBack> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let document = json::parse(&text)?;
 
     let version = document
@@ -497,7 +488,9 @@ pub fn read_gltf(path: &Path) -> Result<ReadBack> {
                 accessor
                     .get("bufferView")
                     .and_then(|v| v.as_usize())
-                    .with_context(|| format!("{}: accessor {index} has no bufferView", path.display()))?,
+                    .with_context(|| {
+                        format!("{}: accessor {index} has no bufferView", path.display())
+                    })?,
             )
             .with_context(|| format!("bufferView for accessor {index} does not exist"))?;
         let offset = view.get("byteOffset").and_then(|o| o.as_u64()).unwrap_or(0) as usize;
@@ -508,7 +501,9 @@ pub fn read_gltf(path: &Path) -> Result<ReadBack> {
         let component = accessor
             .get("componentType")
             .and_then(|c| c.as_u64())
-            .with_context(|| format!("{}: accessor {index} has no componentType", path.display()))?;
+            .with_context(|| {
+                format!("{}: accessor {index} has no componentType", path.display())
+            })?;
         let width = match component {
             5123 => 2,
             5126 => 4,
@@ -525,16 +520,9 @@ pub fn read_gltf(path: &Path) -> Result<ReadBack> {
         for k in 0..count * parts {
             let at = offset + k * width;
             let raw = match component {
-                5123 => {
-                    f64::from(u16::from_le_bytes([binary[at], binary[at + 1]]))
-                }
+                5123 => f64::from(u16::from_le_bytes([binary[at], binary[at + 1]])),
                 _ => {
-                    let bytes = [
-                        binary[at],
-                        binary[at + 1],
-                        binary[at + 2],
-                        binary[at + 3],
-                    ];
+                    let bytes = [binary[at], binary[at + 1], binary[at + 2], binary[at + 3]];
                     f64::from(f32::from_le_bytes(bytes))
                 }
             };
@@ -563,10 +551,7 @@ pub fn read_gltf(path: &Path) -> Result<ReadBack> {
         .chunks(3)
         .map(|c| [c[0], c[1], c[2]])
         .collect();
-    let normals = normals_flat
-        .chunks(3)
-        .map(|c| [c[0], c[1], c[2]])
-        .collect();
+    let normals = normals_flat.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
 
     Ok(ReadBack {
         version,
@@ -657,7 +642,7 @@ impl Accessor {
 pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Material]) -> Result<()> {
     // ---- the binary buffer: indices, then positions, then normals ----
     let mut buffer = Vec::new();
-    let mut pad4 = |buf: &mut Vec<u8>| {
+    let pad4 = |buf: &mut Vec<u8>| {
         while buf.len() % 4 != 0 {
             buf.push(0);
         }
@@ -724,9 +709,7 @@ pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Materi
             component_type: 5126,
             kind: "VEC3",
             count: mesh.positions.len(),
-            min_max: Some([
-                min[0], min[1], min[2], max[0], max[1], max[2],
-            ]),
+            min_max: Some([min[0], min[1], min[2], max[0], max[1], max[2]]),
         },
         Accessor {
             offset: normals_start,
@@ -772,9 +755,7 @@ pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Materi
 
     // ---- the document ----
     let mut sections: Vec<String> = vec![
-        format!(
-            "\"asset\": {{\n \"version\": \"2.0\",\n \"generator\": \"mmf-extract\"\n}}"
-        ),
+        format!("\"asset\": {{\n \"version\": \"2.0\",\n \"generator\": \"mmf-extract\"\n}}"),
         "\"scene\": 0".to_string(),
         "\"scenes\": [\n {\n  \"name\": \"scene\",\n  \"nodes\": [0]\n }\n]".to_string(),
         format!(
@@ -792,15 +773,27 @@ pub fn write_gltf(path: &Path, name: &str, mesh: &ModelMesh, materials: &[Materi
         ),
     ];
     if !materials_json.is_empty() {
-        sections.push(format!("\"materials\": [\n {}\n]", materials_json.join(",\n ")));
-        sections.push(format!("\"textures\": [\n {}\n]", textures_json.join(",\n ")));
+        sections.push(format!(
+            "\"materials\": [\n {}\n]",
+            materials_json.join(",\n ")
+        ));
+        sections.push(format!(
+            "\"textures\": [\n {}\n]",
+            textures_json.join(",\n ")
+        ));
         sections.push(format!("\"images\": [\n {}\n]", images_json.join(",\n ")));
         sections.push(
             "\"samplers\": [\n {\n  \"magFilter\": 9729,\n  \"minFilter\": 9987,\n  \"wrapS\": 10497,\n  \"wrapT\": 10497\n }\n]".to_string(),
         );
     }
-    sections.push(format!("\"accessors\": [\n {}\n]", accessor_json.join(",\n")));
-    sections.push(format!("\"bufferViews\": [\n {}\n]", buffer_views.join(",\n")));
+    sections.push(format!(
+        "\"accessors\": [\n {}\n]",
+        accessor_json.join(",\n")
+    ));
+    sections.push(format!(
+        "\"bufferViews\": [\n {}\n]",
+        buffer_views.join(",\n")
+    ));
     sections.push(format!(
         "\"buffers\": [\n {{\n  \"byteLength\": {},\n  \"uri\": \"data:application/octet-stream;base64,{}\"\n }}\n]",
         buffer.len(),
@@ -836,8 +829,18 @@ mod gltf_tests {
         let mesh = ModelMesh {
             index_count_offset: 0,
             indices: vec![0, 1, 2, 1, 2, 3],
-            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            normals: vec![[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            normals: vec![
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+            ],
         };
         let path = std::env::temp_dir().join("mmf-gltf-selftest.gltf");
         write_gltf(&path, "test", &mesh, &[]).expect("write");

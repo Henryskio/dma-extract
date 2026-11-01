@@ -19,20 +19,35 @@ use std::path::{Path, PathBuf};
 const MODEL_CONTAINER: &str = "DMA3D.MMM";
 const TEXTURE_CONTAINER: &str = "DMA3D.MMX";
 
-fn dma3d_dir() -> Option<PathBuf> {
+/// Every folder that holds the two 3D containers, so a test can run its checks
+/// against both discs when both are carved. The environment variable comes
+/// first, then the two known carve points; a folder missing either container is
+/// skipped rather than failing.
+fn dma3d_dirs() -> Vec<PathBuf> {
+    let mut found = Vec::new();
     let extra = std::env::var("DMA3D_ASSETS").unwrap_or_default();
     for candidate in [
-        "/RawAssets/Dati3D",
         extra.as_str(),
+        "/RawAssets/Dati3D",
         "/tmp/dma3d/pc",
         "/tmp/en/dma3d_en",
     ] {
+        if candidate.is_empty() {
+            continue;
+        }
         let path = PathBuf::from(candidate);
-        if path.is_dir() && path.join(MODEL_CONTAINER).exists() {
-            return Some(path);
+        if path.join(MODEL_CONTAINER).exists()
+            && path.join(TEXTURE_CONTAINER).exists()
+            && !found.contains(&path)
+        {
+            found.push(path);
         }
     }
-    None
+    found
+}
+
+fn dma3d_dir() -> Option<PathBuf> {
+    dma3d_dirs().into_iter().next()
 }
 
 fn tempdir(tag: &str) -> PathBuf {
@@ -173,7 +188,10 @@ fn every_3d_payload_round_trips_byte_exactly() {
                 entry.index
             );
         }
-        eprintln!("{name}: {} resources, --original byte-exact", report.written);
+        eprintln!(
+            "{name}: {} resources, --original byte-exact",
+            report.written
+        );
     }
 
     // ---- modern textures: the PNG decodes back to the measured pixels ----
@@ -384,102 +402,134 @@ fn every_3d_payload_round_trips_byte_exactly() {
 /// read back, agree with the decoder.
 #[test]
 fn the_modern_output_is_a_browsable_whole() {
-    let Some(dir) = dma3d_dir() else {
+    let dirs = dma3d_dirs();
+    if dirs.is_empty() {
         eprintln!("skipping: the 3D game's assets are not present");
         return;
-    };
-    let tmp = tempdir("dma3d-e2e");
+    }
+    // Both discs, when both are carved: the decoders must produce the same
+    // counts and the same undecoded-tail size on each, or a format detail has
+    // silently diverged between the two builds.
+    let mut reference_count = 0usize;
+    let mut discs = 0usize;
+    for (disc, dir) in dirs.iter().enumerate() {
+        let tmp = tempdir(&format!("dma3d-e2e-{disc}"));
+        let selection = mmf_extract::cli::AssetSelection::parse(&["models".to_string()])
+            .expect("models is a selectable type");
+        let summary = mmf_extract::cli::run(dir, &tmp, &selection, false, false)
+            .expect("extract the 3D game");
+        assert!(summary.failed.is_empty(), "{dir:?}: {summary:?}");
+        assert_eq!(summary.models, 460 + 705, "{}", dir.display());
 
-    let selection = mmf_extract::cli::AssetSelection::parse(&["models".to_string()])
-        .expect("models is a selectable type");
-    let summary = mmf_extract::cli::run(&dir, &tmp, &selection, false, false)
-        .expect("extract the 3D game");
-    assert!(summary.failed.is_empty(), "{:?}", summary.failed);
-    assert_eq!(summary.models, 460 + 705);
-
-    // ---- the index page, and every reference in it ----
-    let index = tmp.join("index.html");
-    assert!(index.is_file(), "no index.html was written");
-    let page = std::fs::read_to_string(&index).expect("read index.html");
-    assert!(page.contains("<!DOCTYPE html>"), "the index is not an HTML document");
-    // No dependency: it has to open from a local folder with no network.
-    assert!(!page.contains("http://") && !page.contains("https://") || page.contains("gltf-viewer"),
-        "the index must not fetch anything except the offer of a viewer");
-    assert!(!page.contains("<script"), "the index must not need a script");
-    let references = page
-        .split('"')
-        .filter(|s| s.starts_with("Models/") || s.starts_with("Textures/"))
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
-    // A figure is a link and an image, so each asset appears twice in the
-    // markup; the distinct paths are what must exist.
-    let mut distinct = references.clone();
-    distinct.sort();
-    distinct.dedup();
-    // Every asset the page shows: 705 textures, 144 object previews, and the
-    // 144 glTFs those previews link to.
-    assert_eq!(distinct.len(), 705 + 144 + 144, "the index does not list every asset");
-    assert_eq!(
-        distinct.iter().filter(|p| p.ends_with(".png")).count(),
-        705 + 144,
-        "the index does not list every picture"
-    );
-    assert_eq!(
-        distinct.iter().filter(|p| p.ends_with(".gltf")).count(),
-        144,
-        "the index does not link every model"
-    );
-    for reference in &references {
+        // ---- the index page, and every reference in it ----
+        let index = tmp.join("index.html");
+        assert!(index.is_file(), "no index.html was written");
+        let page = std::fs::read_to_string(&index).expect("read index.html");
         assert!(
-            tmp.join(reference).is_file(),
-            "the index refers to {reference}, which is not on disk"
+            page.contains("<!DOCTYPE html>"),
+            "the index is not an HTML document"
         );
-    }
-
-    // ---- every object's preview covers pixels ----
-    let model_dir = tmp.join("Models").join("DMA3D");
-    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&model_dir)
-        .expect("read the models directory")
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    let previews = entries
-        .iter()
-        .filter(|p| p.file_name().unwrap().to_string_lossy().ends_with(".preview.png"))
-        .count();
-    let gltfs = entries
-        .iter()
-        .filter(|p| p.file_name().unwrap().to_string_lossy().ends_with(".gltf"))
-        .count();
-    assert_eq!(gltfs, 144, "the number of glTF files changed");
-    assert_eq!(previews, gltfs, "every glTF needs a preview beside it");
-
-    let mut blank = Vec::new();
-    let mut checked = 0usize;
-    for path in &entries {
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if !name.ends_with(".preview.png") {
-            continue;
+        // No dependency: it has to open from a local folder with no network.
+        assert!(
+            !page.contains("http://") && !page.contains("https://") || page.contains("gltf-viewer"),
+            "the index must not fetch anything except the offer of a viewer"
+        );
+        assert!(
+            !page.contains("<script"),
+            "the index must not need a script"
+        );
+        let references = page
+            .split('"')
+            .filter(|s| s.starts_with("Models/") || s.starts_with("Textures/"))
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        // A figure is a link and an image, so each asset appears twice in the
+        // markup; the distinct paths are what must exist.
+        let mut distinct = references.clone();
+        distinct.sort();
+        distinct.dedup();
+        // Every asset the page shows: 705 textures, 144 object previews, and the
+        // 144 glTFs those previews link to.
+        assert_eq!(
+            distinct.len(),
+            705 + 144 + 144,
+            "the index does not list every asset"
+        );
+        assert_eq!(
+            distinct.iter().filter(|p| p.ends_with(".png")).count(),
+            705 + 144,
+            "the index does not list every picture"
+        );
+        assert_eq!(
+            distinct.iter().filter(|p| p.ends_with(".gltf")).count(),
+            144,
+            "the index does not link every model"
+        );
+        for reference in &references {
+            assert!(
+                tmp.join(reference).is_file(),
+                "the index refers to {reference}, which is not on disk"
+            );
         }
-        let preview = std::fs::read(path).expect("read a preview");
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(&preview[..]))
-            .read_info()
-            .expect("PNG header");
-        let mut buf = vec![0u8; decoder.output_buffer_size().expect("buffer")];
-        let frame = decoder.next_frame(&mut buf).expect("frame");
-        assert_eq!(frame.width as usize, 256, "{name} is not square");
-        assert_eq!(frame.height as usize, 256, "{name} is not square");
-        let covered = buf[..frame.buffer_size()]
-            .chunks(4)
-            .filter(|p| p[3] != 0)
+
+        // ---- every object's preview covers pixels ----
+        let model_dir = tmp.join("Models").join("DMA3D");
+        let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&model_dir)
+            .expect("read the models directory")
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        let previews = entries
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(".preview.png")
+            })
             .count();
-        // A preview that covers no pixels is a broken rasteriser, and would
-        // otherwise sit in the page as a blank tile.
-        if covered == 0 {
-            blank.push(name);
+        let gltfs = entries
+            .iter()
+            .filter(|p| p.file_name().unwrap().to_string_lossy().ends_with(".gltf"))
+            .count();
+        assert_eq!(gltfs, 144, "the number of glTF files changed");
+        assert_eq!(previews, gltfs, "every glTF needs a preview beside it");
+
+        let mut blank = Vec::new();
+        let mut checked = 0usize;
+        for path in &entries {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.ends_with(".preview.png") {
+                continue;
+            }
+            let preview = std::fs::read(path).expect("read a preview");
+            let mut decoder = png::Decoder::new(std::io::Cursor::new(&preview[..]))
+                .read_info()
+                .expect("PNG header");
+            let mut buf = vec![0u8; decoder.output_buffer_size().expect("buffer")];
+            let frame = decoder.next_frame(&mut buf).expect("frame");
+            assert_eq!(frame.width as usize, 256, "{name} is not square");
+            assert_eq!(frame.height as usize, 256, "{name} is not square");
+            let covered = buf[..frame.buffer_size()]
+                .chunks(4)
+                .filter(|p| p[3] != 0)
+                .count();
+            // A preview that covers no pixels is a broken rasteriser, and would
+            // otherwise sit in the page as a blank tile.
+            if covered == 0 {
+                blank.push(name);
+            }
+            checked += 1;
         }
-        checked += 1;
+        assert_eq!(checked, 144, "{dir:?}: the preview count changed");
+        assert!(
+            blank.is_empty(),
+            "{dir:?}: previews that cover no pixels: {blank:?}"
+        );
+        eprintln!(
+            "{dir:?}: 1165 resources, index with {reference_count} references, 144 previews all covered"
+        );
+        discs += 1;
     }
-    assert_eq!(checked, 144);
-    assert!(blank.is_empty(), "previews that cover no pixels: {blank:?}");
+    assert!(discs >= 1, "no disc was checked");
 }
