@@ -480,18 +480,51 @@ build. Bugs it caught, all invisible to the Rust tests: the index base is
 the last byte or two of every buffer was garbage — three sextets carry 18 bits,
 not 24.
 
-## 6. Known failures
+## 6. Films — measured, and it was two failures
 
-`DMA3D.MMF` (Films, 3 resources) does **not** extract: the shared film decoder
-reports `bad bounds top=258 left=772 bottom=0 right=0` on film 0. The other two
-films are not reached. The 22-byte record the shared decoder reads must be laid
-out differently in this build; that is the next thing to measure. Everything
-else on both discs extracts.
+`DMA3D.MMF` extracts in both modes now. It cost two separate mistakes, both of
+which the second and third games had hidden by shipping exactly one film each.
 
-No texture or model payload fails to decode in modern mode. The two
-weaknesses are measured and bounded, not silent: the 27 texture orientations
-(§4.2) and the animation, which is not decoded at all and is therefore carried
-as a `.tail` file rather than as glTF channels.
+**The metadata is eight parallel tables, not a 26-byte record.** The shared
+decoder read the per-film data as records and went eight bytes short on the
+first of three films. The loader says otherwise (`DMA3D.exe` at `0x477940`,
+class `MM2DFilmResourceFile`): marker 7, then `N` bytes, `N` bytes, `4*N`
+big-endian u16, `N` u32, `4*N` bytes, `N` u16, `N` u32, `N` u16, then the
+palette count and the 1024-byte palettes. Both readings total `26*N`, which is
+why the length solve found 26 and why nothing was suspicious until a container
+arrived with more than one film. The layout, the disassembly and the arithmetic
+that settles the field order are all in **`FILMS.md`** §2.
+
+The three rects, each confirmed by its own key-frame chunk's declared decoded
+size:
+
+| film | rect | width | height | stride | frame bytes |
+| --- | --- | --- | --- | --- | --- |
+| `introAxDisney` | `0, 0, 600, 800` | 800 | 600 | 800 | 480,000 |
+| `introAxImageBuilder` | `60, 107, 486, 696` | 589 | 426 | 592 | 252,192 |
+| `introAxSplash` | `60, 80, 540, 720` | 640 | 480 | 640 | 307,200 |
+
+`introAxImageBuilder`'s width of 589 padded to a 592-byte stride is the
+detail that proves the field order: reading the rect as
+`{left, top, right, bottom}` gives 636x379 and a buffer 11,148 bytes short.
+
+**Key frames are not unique per film.** The shared decoder demanded exactly
+one; this build re-sends a key frame mid-stream — 45, 12 and 1 across its three
+films — in the pattern `timestamp, key frame` or `timestamp, delta`. A key
+frame after the first now replaces the frame buffer instead of failing.
+
+All three decode, and they are plainly the right pictures: `introAxDisney`'s
+Disney Interactive logo at 800x600, `introAxImageBuilder`'s ImageBuilder card
+at 589x426, and `introAxSplash`'s "Disney CREAZIONI in 3D" title card at
+640x480. 61 + 62 + 901 frames, 16 + 49 + 748 unique, 4.1 s + 4.2 s + 29.7 s.
+`tests/film_3d.rs` pins the rects, the geometry, the chunk counts and a golden
+hash per film's first and last frame, and decodes every PNG back to the exact
+palette-expanded bytes.
+
+No texture or model payload fails to decode in modern mode. The remaining
+weaknesses are measured and bounded, not silent: the five open texture
+orientations (§4.2), and the animation, which is not decoded at all and is
+therefore carried as a `.tail` file rather than as glTF channels.
 
 ## 7. Measured vs inferred
 
@@ -503,6 +536,10 @@ tail's `V` float pairs and the header distribution of §3.2 (94 / 49 / 1); the
 `[u32 count][32-byte names]` texture table; the texture palette/index split and
 `K = 1 + max(index)` over all 705; the 129-class `MM3D*` RTTI vocabulary of
 §3.3; the `DMA3D.MMX` reference inside the models' trailer.
+
+**Measured** — the films (§6): the rect array's position among the eight
+per-film tables, each film's rect, and the palette that belongs to each film.
+Every one is confirmed against the film's own key-frame chunks.
 
 **Measured with a known error rate** — the orientation of the 27 rectangles
 (§4.2): all 21 independently-established orientations are reproduced, five are

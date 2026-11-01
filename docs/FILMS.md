@@ -1,18 +1,28 @@
 # \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista — MMFW Films Format
 
-Reverse-engineered notes for the single Films container shipped with the game,
-`/RawAssets/DMA.MMF` (Italian release: \*\*\*\*\*\* Magico Artista, 2002).
-Everything below was derived from the shipped files and the game's own
-executable (`DMA4.exe`); the decoder was checked numerically against all 139
-frames. No external format documentation was used as authority.
+Reverse-engineered notes for the Films containers: `/RawAssets/DMA.MMF` (the
+third game's, Italian release \*\*\*\*\*\* Magico Artista, 2002), the second
+game's `DMA.MMF`, and the 3D game's `DMA3D.MMF`. Everything below was derived
+from the shipped files and the games' own executables (`DMA4.exe`,
+`DMA.exe`, `DMA3D.exe`); the third game's decoder was checked numerically
+against all 139 of its frames, the 3D game's against its 1,024. No external
+format documentation was used as authority.
 
 > **Which game this covers.** Container versions 2 and 3, whose `.MMF` files
-> differ only in the film fields listed at the end. The decoder in
-> `src/film.rs` has no version branch. The first game ships no `.MMF` at all:
-> its videos sit in an opaque `Blobs` container (`pack.BLB`) whose inner
-> format is undecoded, so there is nothing to describe here yet. The blob
-> payload's header *is* measured, though, and that measurement lives in
-> **`GAME1.md`** §6.
+> differ only in the film fields listed at the end. The 3D game's `DMA3D.MMF`
+> is version 3 as well and reads the same layout — it ships three films rather
+> than one, which is what exposed the record-vs-table mistake in §2. The
+> decoder in `src/film.rs` has no version branch. The first game ships no
+> `.MMF` at all: its videos sit in an opaque `Blobs` container (`pack.BLB`)
+> whose inner format is undecoded, so there is nothing to describe here yet.
+> The blob payload's header *is* measured, though, and that measurement lives
+> in **`GAME1.md`** §6.
+
+> **Where each game's deltas live.** This document is the shared chain: it
+> describes the layout versions 2 and 3 have in common. What is particular to
+> one game is recorded in that game's own document — the second game's
+> differences in **`SEQUEL.md`**, the 3D game's in **`DMA3D.md`** §6 — so an
+> edit inside one game's chain cannot silently change another's.
 
 > **Engine note.** Despite the `MMFW` container signature this is **not a
 > Clickteam Multimedia Fusion 2 application**. `DMA4.exe` carries the PDB path
@@ -56,15 +66,23 @@ the payload region. `--original` therefore writes `payload(0)` verbatim.
 
 ## 2. Films metadata block
 
-After the names table comes the generic `4*N` u32 array (zero here), then the
-Films block. Let `ne = names_end` (for `DMA.MMF`, `0x4E`).
+After the names table comes the generic `4*N` u32 array (zero in the third
+game, Mac-style timestamps in the 3D game), then the Films block. Let
+`ne = names_end` (for `DMA.MMF`, `0x4E`; for `DMA3D.MMF`, `0x96` with `N == 3`).
 
 | Offset | Size | Contents |
 | --- | --- | --- |
 | `ne` | `4*N` | generic u32 array, `0` in this file |
 | `ne + 4*N` | `2` | marker, must be **7** |
-| `ne + 4*N + 2` | `26*N` | one 26-byte record per film |
-| `ne + 4*N + 2 + 26*N` | `2` | palette count `P` |
+| `ne + 4*N + 2` | `N` | per-film table 1, one byte each |
+| `+ N` | `N` | per-film table 2, one byte each |
+| `+ 2N` | `4*N` | **the rects**, four big-endian u16 per film |
+| `+ 2N + 8N` | `4*N` | per-film table 4, one big-endian u32 each |
+| `+ 6N + 8N` | `4*N` | per-film table 5, four raw bytes each |
+| `+ 10N + 8N` | `2*N` | per-film table 6, one big-endian u16 each |
+| `+ 12N + 8N` | `4*N` | per-film table 7, one big-endian u32 each |
+| `+ 16N + 8N` | `2*N` | per-film table 8, one big-endian u16 each |
+| `+ 26N` | `2` | palette count `P` |
 | next | `1024*P` | palettes, 256 RGBA-ish entries each |
 
 The payload must start exactly at the end of the last palette. For
@@ -73,47 +91,93 @@ The payload must start exactly at the end of the last palette. For
 ```text
 0x4E  00 00 00 00                 generic u32 = 0
 0x52  00 07                       marker = 7
-0x54  19 02 00 00 00 00 01 9a 02 22 00 03 fe ca 5e 00
-      00 00 05 dc 00 3f 3e 64 00 fa          26-byte record
+0x54  19 02                       table 1 = 0x19, table 2 = 0x02
+0x56  00 00 00 00 01 9a 02 22     the rect {top, left, bottom, right}
+0x5E  00 03 fe ca                 table 4 = 0x0003FECA
+0x62  5e 00 00 00                 table 5
+0x66  05 dc                       table 6 = 1500
+0x68  00 3f 3e 64                 table 7 = 0x003F3E64
+0x6C  00 fa                       table 8 = 250
 0x6E  00 01                       palette count = 1
 0x70  1024-byte palette
 0x470 payload starts
 ```
 
-### The 26-byte film record
+### The eight per-film tables, and why they are not a record
 
-The loader reads the record as eight per-film fields, in this order:
-`N` bytes, `N` bytes, an 8-byte group (two u32s split into four u16s),
-then u32, u32, u16, u32, u16. The exact bytes for `Intro.flm` are:
+The loader reads eight per-film tables in this order: `N` bytes, `N` bytes,
+**`4*N` big-endian u16**, `N` u32, `4*N` raw bytes, `N` u16, `N` u32, `N` u16.
+That is `26*N` bytes — the same total a 26-byte record per film would be, and
+for every container shipped with the second and third games `N == 1`, so the
+two readings sit on the same bytes and it did not matter which was used.
+Reading them as records is wrong the moment there is more than one film, which
+is why the 3D game's three films all failed to decode.
+
+**The loader, measured.** `DMA3D.exe`'s film container class is
+`MM2DFilmResourceFile` (RTTI string `.?AVMM2DFilmResourceFile@@` at `0x569df0`,
+vtable at `0x536930`, whose slot-3 virtual at `0x477930` returns the string
+`MMFW Films` at `0x53691c`). Its slot-4 virtual, the metadata reader, is at
+`0x477940` and reads:
 
 ```text
-19 02 | 00 00 00 00 01 9a 02 22 | 00 03 fe ca | 5e 00 00 00 |
-05 dc | 00 3f 3e 64 | 00 fa
+0x477970  u16 marker, compared against 7      `cmpw $0x7,0x1a(%esp)` at 0x47798b
+0x4779ca  N   bytes   stream vt[5], count = this+0x448
+0x4779f2  N   bytes   stream vt[5]
+0x477a16  4*N u16     0x4ec9d0 — 2*N big-endian u32, each halved into two u16
+0x477a40  N   u32     0x4e8810 — 4 bytes each, byte-swapped (`lea 0x0(,%edi,4)`)
+0x477a6d  4*N bytes   stream vt[5], count << 2
+0x477a92  N   u16     0x4e87c0 — 2 bytes each, byte-swapped (`lea (%edi,%edi)`)
+0x477ab9  N   u32     0x4e8810
+0x477ae1  N   u16     0x4e87c0, with a third argument
+0x477aef  u16 palette count, must be > 0     `jle` to the error at 0x477afc
+0x477b52  P * 1024 palette bytes             `shl $0xa`, `add $0x400`
 ```
 
-| Record offset | Size | Value | Meaning |
-| --- | --- | --- | --- |
-| `+0` | u8 | `0x19` (25) | unknown |
-| `+1` | u8 | `0x02` (2) | unknown |
-| `+2` | 4×u16 BE | `0, 0, 410, 546` | working interpretation: `top, left, bottom, right` |
-| `+10` | u32 BE | `0x0003FECA` (261,834) | unknown |
-| `+14` | u32 BE | `0x5E000000` (1,577,058,304) | unknown |
-| `+18` | u16 BE | `1500` | unknown |
-| `+20` | u32 BE | `0x003F3E64` (4,140,644) | unknown |
-| `+24` | u16 BE | `250` | unknown |
+The byte swaps are what make every multi-byte field big-endian, and the cap of
+100 u32 inside `0x4ec9d0` (`cmp $0x64,%ebx` at `0x4ec9f3`) is a stack-buffer
+limit for the name table, not a limit on the rect array.
 
-The four u16 values at `+2` are certain; the field names `top/left/bottom/
-right` are the working interpretation. They yield
+**The rects.** Table 3 holds four big-endian u16 per film, in resource order,
+read as `{top, left, bottom, right}`. For the third game's `Intro.flm`
+(`N == 1`, so the rect sits at `ne + 4*N + 4`, the same address a record's
+`+2` field would hold) the values are `0, 0, 410, 546` and give
 
 ```text
 width  = right - left  = 546
 height = bottom - top  = 410
+stride = stride8(546)  = 548     (rows padded to a multiple of four)
+frame  = 548 * 410     = 224,680
 ```
 
-which is exactly the decoded frame geometry. The five remaining fields are
-preserved verbatim as `record_hex` in the manifest; their meaning is still
-open. In particular, `0x19` is **not** a frame rate: the measured timestamp
-step is 83 ticks, i.e. about 12.05 fps, not 25 fps.
+which is exactly the byte count the film's own key-frame chunk declares it
+decodes to. That identity — not the shape of the metadata — is what settles the
+field order and the padding.
+
+**The 3D game's three films, measured the same way** (`DMA3D.MMF`, also version
+3, `N == 3`):
+
+| film | rect | width | height | stride | frame bytes | key-frame chunk says |
+| --- | --- | --- | --- | --- | --- | --- |
+| `introAxDisney` | `0, 0, 600, 800` | 800 | 600 | 800 | 480,000 | 480,000 |
+| `introAxImageBuilder` | `60, 107, 486, 696` | 589 | 426 | 592 | 252,192 | 252,192 |
+| `introAxSplash` | `60, 80, 540, 720` | 640 | 480 | 640 | 307,200 | 307,200 |
+
+`introAxImageBuilder` is the one that shows why the rect and the stride have to
+be measured rather than inferred: its width is 589, which pads to a 592-byte
+stride, and only that reading consumes the frame buffer exactly. Reading the
+rect as `{left, top, right, bottom}` instead gives 636×379 and a buffer 11,148
+bytes short.
+
+The other five tables are preserved verbatim in the manifest
+(`record_hex` reassembles them in the reader's order); their meaning is still
+open. In particular table 1's `0x19` is **not** a frame rate: the measured
+timestamp step is 83 ticks, i.e. about 12.05 fps, not 25 fps.
+
+**Key frames are not one per film.** The second and third games ship a single
+key-frame chunk. `DMA3D.MMF`'s films re-send a key frame mid-stream — 45, 12
+and 1 across its three films — in the pattern `timestamp, key frame` or
+`timestamp, delta`, so a key frame anywhere after the first replaces the frame
+buffer rather than being an error.
 
 ### Palette
 
@@ -401,8 +465,10 @@ cargo test --release
 
 ## 11. Open questions
 
-* The five unknown record fields (`+10..+26`) are preserved but not
-  interpreted.
+* Five of the eight per-film tables (all but the rects) are preserved verbatim
+  in the manifest but not interpreted. Tables 4 and 7 are big-endian u32 and
+  tables 1, 2 and 5 are raw bytes; table 6 is a u16 that reads 1500 in all
+  three of the 3D game's films and 250 in the third and second games'.
 * The type-`0x03` marker's exact role is unconfirmed.
 * The audio sample rate/format is inferred from byte counts, not declared in
   the container; audio is not decoded.

@@ -32,7 +32,7 @@ blobs, `--original` byte-exact for 13,717 of 13,718 resources. `HD.PIC` and
 | Builds offline | `cargo build` → `target/debug/mmf-extract` (debug is the convention) |
 | Extracted pictures (30,404 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
 | Extracted scripts (4,813 objects) | `/workspace/extracted/Scripts/HD/…` |
-| Extracted films (139 frames) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
+| Extracted films (139 frames; 1,024 for the 3D game) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
 | Extracted sounds (683 FLACs) | `/workspace/extracted/Sounds/{HD,app}/…` |
 | Format findings | `/workspace/docs/PICTURES.md` (+ `SOUNDS.md`, `SCRIPTS.md`, `FILMS.md`) |
 | First game (1997) format | `/workspace/docs/GAME1.md` |
@@ -102,9 +102,10 @@ for **all** of them:
   one per foreground pixel** (a palette index when kind is 1, four bytes
   `(T,R,G,B)` when kind is 0). The same format is in the sequel's `app.MMP`.
 
-Tests: `cargo test --release` → **33/33 pass** against the real assets
-(5 unit tests, 8 in `tests/roundtrip.rs`, 6 in `tests/colors.rs`, 4 in
-`tests/sounds.rs`, 3 in `tests/scripts.rs`, 2 in `tests/film_roundtrip.rs`). The color tests include a corpus-wide scan
+Tests: `cargo test` (debug, per `AGENTS.md`) → **90/90 pass** against the real
+assets. Suites: `colors`, `roundtrip`, `sounds`, `scripts`, `film_roundtrip`,
+`game1`, `game1_blobs`, `game1_payloads`, `dma3d`, `dma3d_numbers`, `sound_order`
+and `film_3d`. The color tests include a corpus-wide scan
 of `/workspace/extracted/Pictures` (30,404 PNGs): it fails if blue is zero on
 more than 15% of opaque pixels or is far more often zero than red/green.
 Current measurement: R 5.81%, G 5.45%, B 8.71%.
@@ -136,9 +137,14 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 ## 5. Films — what is solved (see `docs/FILMS.md`)
 
 * `DMA.MMF` holds **one** film, `Intro.flm` (6,856,628 bytes). The Films
-  metadata block is `marker = 7`, one 26-byte per-film record (its four u16s
-  at `+2` are `top/left/bottom/right` = 0/0/410/546, matching the decoded
-  frame geometry) and one 1024-byte palette in the picture byte order.
+  metadata block is `marker = 7`, then **eight per-film tables** — `N` bytes,
+  `N` bytes, `4*N` big-endian u16 (the rects), `N` u32, `4*N` bytes, `N` u16,
+  `N` u32, `N` u16 — then the palette count and the 1024-byte palettes. Both
+  readings total `26*N`, and every film before the 3D game's shipped `N == 1`,
+  so the tables and a 26-byte record sit on the same bytes; reading them as
+  records is what broke `DMA3D.MMF`. Its four u16s are
+  `top/left/bottom/right` = 0/0/410/546, matching the decoded frame geometry.
+  One palette per film, in resource order.
 * The container `sizes[0]` for Films is **not** a decompressed size
   (26,870,306 vs the real 6,856,628); `--original` writes `payload(0)`
   verbatim and is SHA-256 verified byte-identical to the container slice.
@@ -148,8 +154,10 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
   412 chunks total.
 * Decoded 139 frames (133 unique, 6 duplicate timestamps), 83-tick spacing
   (11,537 ticks), 132 deltas decode to their declared sizes; all writes are
-  bounds-checked. Audio PCM and the five fields at record `+10..+26` remain
-  uninterpreted.
+  bounds-checked. Audio PCM and five of the eight tables (all but the rects)
+  remain uninterpreted. Key frames are not necessarily unique per film: the 3D
+  game re-sends them mid-stream (45, 12, 1), so the reader accepts more than
+  one instead of bailing.
 * Modern output: `frame_000.png … frame_138.png` (546×410, palette-expanded,
   lossless) plus `manifest.json`. `tests/film_roundtrip.rs` re-decodes every
   PNG back to the exact palette-expanded RGBA bytes.
@@ -310,9 +318,16 @@ and that naming stays per `AGENTS.md`. Its own document is
   The engine's class names are in `DMA3D.exe`'s RTTI (`MM3D*`), and its
   resource readers report `Bad checksum / version / header in
   model|texture resource file '%s'`.
-* **Known failure**: `DMA3D.MMF` (Films, 3 resources) does not extract — the
-  shared film decoder reports `bad bounds top=258 left=772 bottom=0 right=0`
-  on film 0. Its 22-byte record must be laid out differently in this build.
+* **Films solved** (`docs/FILMS.md` §2, `docs/DMA3D.md` §6). `DMA3D.MMF`'s
+  three films failed twice: the metadata was read as 26-byte records rather than
+  the eight tables the loader (`DMA3D.exe` `0x477940`, class
+  `MM2DFilmResourceFile`) reads, and the decoder demanded exactly one key frame
+  where this build sends 45, 12 and 1. Both fixed, each film's rect confirmed
+  by its own key-frame chunk's decoded size — `0,0,600,800` → 800×600,
+  `60,107,486,696` → 589×426 (stride 592), `60,80,540,720` → 640×480 — and the
+  output checked by eye: the Disney Interactive logo, the ImageBuilder card and
+  the "Disney CREAZIONI in 3D" title card. 61 + 62 + 901 frames,
+  `tests/film_3d.rs`.
 
 ---
 

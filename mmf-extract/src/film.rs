@@ -224,14 +224,17 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
         .iter()
         .filter(|c| c.kind == full_frame_kind(container))
         .collect();
-    if full_chunks.len() != 1 {
-        bail!(
-            "film {index} ('{name}'): expected exactly one full-frame chunk (type {:#06x}), found {}",
-            full_frame_kind(container),
-            full_chunks.len()
-        );
-    }
-    let mut buffer = decode_full_frame(data, full_chunks[0], is_film_v2(container))
+    // The first key frame seeds the buffer. It is not necessarily the only
+    // one: the 3D game's films re-send a key frame mid-stream (45, 12 and 1
+    // key frames across its three films), where the second and third games
+    // ship one each. Requiring exactly one dropped all three of its films.
+    let first_full = full_chunks.first().copied().ok_or_else(|| {
+        anyhow::anyhow!(
+            "film {index} ('{name}'): no full-frame chunk (type {:#06x}) in the stream",
+            full_frame_kind(container)
+        )
+    })?;
+    let mut buffer = decode_full_frame(data, first_full, is_film_v2(container))
         .with_context(|| format!("film {index} ('{name}'): decoding full frame"))?;
 
     let frame_size = meta
@@ -255,6 +258,9 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
         tick: u32,
         timestamp: &'a Chunk,
         delta: Option<&'a Chunk>,
+        /// A key frame that follows this timestamp, so the next frame starts
+        /// from it rather than from the previous frame.
+        full: Option<&'a Chunk>,
     }
     let mut events: Vec<Event> = Vec::new();
     for chunk in &chunks {
@@ -273,7 +279,39 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
                     tick,
                     timestamp: chunk,
                     delta: None,
+                    full: None,
                 });
+            }
+            kind if kind == full_frame_kind(container) => {
+                // A key frame in mid-stream. It belongs to the frame whose
+                // timestamp precedes it: the stream reads
+                // `timestamp, key frame` or `timestamp, delta`, so the chunk
+                // after a timestamp is what that frame is built from.
+                match events.last_mut() {
+                    Some(event) => {
+                        if event.full.is_some() || event.delta.is_some() {
+                            bail!(
+                                "film {index} ('{name}'): key frame at {:#x} follows a frame that \\
+                                 already has one",
+                                chunk.offset
+                            );
+                        }
+                        event.full = Some(chunk);
+                    }
+                    None => {
+                        // Before the first timestamp: that is the seeding key
+                        // frame, already decoded above. Anything else here
+                        // would be a second key frame with no frame to attach
+                        // it to.
+                        if chunk.offset != first_full.offset {
+                            bail!(
+                                "film {index} ('{name}'): key frame at {:#x} precedes the first \\
+                                 timestamp and is not the first key frame",
+                                chunk.offset
+                            );
+                        }
+                    }
+                }
             }
             TYPE_DELTA | TYPE_DELTA_V2 => {
                 let event = events.last_mut().ok_or_else(|| {
@@ -330,7 +368,33 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
 
         let mut delta_rects = Vec::new();
         let mut wrote = true;
-        if let Some(delta) = event.delta {
+        let mut full_offset = None;
+        if let Some(full) = event.full {
+            // This frame starts from a key frame rather than from the previous
+            // frame, so the buffer is replaced. Its size must match the same
+            // frame geometry the seeding key frame does.
+            let decoded = decode_full_frame(data, full, is_film_v2(container))
+                .with_context(|| {
+                    format!(
+                        "film {index} ('{name}'): decoding full frame at {:#x}",
+                        full.offset
+                    )
+                })?;
+            if decoded.len() != frame_size {
+                bail!(
+                    "film {index} ('{name}'): full frame at {:#x} is {} bytes, expected {}x{} \\
+                     (stride {}) = {}",
+                    full.offset,
+                    decoded.len(),
+                    meta.width,
+                    meta.height,
+                    meta.stride,
+                    frame_size
+                );
+            }
+            buffer = decoded;
+            full_offset = Some(full.offset);
+        } else if let Some(delta) = event.delta {
             match decode_delta(data, delta, &mut buffer, is_film_v2(container)) {
                 Ok(rects) => delta_rects = rects,
                 Err(e) => {
@@ -358,11 +422,13 @@ pub fn decode_film(container: &Container, index: usize) -> Result<Film> {
         frames.push(Frame {
             start_tick: event.tick,
             duration_tick,
-            duplicate: event.delta.is_none() || !wrote,
+            // A frame is a repeat when nothing was sent for it: neither a key
+            // frame nor a delta.
+            duplicate: (event.delta.is_none() && event.full.is_none()) || !wrote,
             indices: buffer.clone(),
             timestamp_chunk: Some(event.timestamp.offset),
             delta_chunk: event.delta.map(|c| c.offset),
-            full_chunk: None,
+            full_chunk: full_offset,
             delta_rects,
         });
     }
@@ -439,11 +505,49 @@ struct FilmMeta {
 /// Parse the Films metadata region for one resource.
 ///
 /// After the common names table comes the generic `4*N` u32 array, then the
-/// film block: `u16` marker (7 in the third game, 5 in the second), `N`
-/// per-film records, `u16` palette count and that many 1024-byte palettes.
-/// The payload starts immediately after the last palette; that equality is
-/// what pins the record length down, so the length is solved for rather than
-/// assumed.
+/// film block: `u16` marker (7 in the third game, 5 in the second), the
+/// per-film tables, `u16` palette count and that many 1024-byte palettes.
+///
+/// ## What the per-film tables are
+///
+/// **They are not records, and reading them as one is what broke the third
+/// game's 3D sibling.** The loader is `MM2DFilmResourceFile`'s vtable slot 4
+/// (`DMA3D.exe` at `0x477940`; the same class's slot-3 virtual at `0x477930`
+/// returns the string `MMFW Films` at `0x53691c`, which is how the class was
+/// identified). It reads, in this order:
+///
+/// ```text
+/// u16     marker, which must be 7        `cmpw $0x7,0x1a(%esp)` at 0x47798b
+/// N       bytes       raw                stream vt[5], count from this+0x448
+/// N       bytes       raw                stream vt[5]
+/// 4*N     u16  big-endian               0x4ec9d0: 2*N big-endian u32, halved
+/// N       u32  big-endian               0x4e8810: `lea 0x0(,%edi,4)` + swap
+/// 4*N     bytes       raw                stream vt[5], count << 2
+/// N       u16  big-endian               0x4e87c0: `lea (%edi,%edi)` + swap
+/// N       u32  big-endian               0x4e8810
+/// N       u16  big-endian               0x4e87c0
+/// u16     palette count, must be > 0    `jle` to the error at 0x477afc
+/// P * 1024 bytes      palettes          `shl $0xa` at 0x477b52, `add $0x400`
+/// ```
+///
+/// That is **26*N** bytes of per-film data, which is exactly what a 26-byte
+/// record table would also total — the coincidence that hid the difference.
+/// The third and second games ship one film each, so `2*N` precedes the rects
+/// and the rect lands at `block + 4`, the same address a record's `+2` field
+/// would have held. `DMA3D.MMF` ships three, so the rects sit at `block + 2 +
+/// 2*N` and the record reading went eight bytes short on the first film and
+/// further out on the rest.
+///
+/// The rect array is `{top, left, bottom, right}` per film, one `u16` each,
+/// big-endian, in resource order. That is measured, not assumed: for all three
+/// of `DMA3D.MMF`'s films, `stride8(right - left) * (bottom - top)` equals the
+/// byte count the film's own key-frame chunk declares it decodes to —
+/// 800*600 = 480000, 592*426 = 252192 and 640*480 = 307200. The same identity
+/// holds for the third game's shipped film, where 548*410 = 224680 is what its
+/// key frame says.
+///
+/// The palettes are one per film, in the same order (`P == N` in all four
+/// shipped containers), so a film's palette is entry `index`.
 fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> {
     let n = container.resource_count as usize;
     if index >= n {
@@ -480,15 +584,17 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
         );
     }
 
-    // Solve: record_len, palette_count such that
-    //   block + 2 + n*record_len + 2 + 1024*palette_count == payload_start
+    // Solve: the per-film table byte total and the palette count, such that
+    //   block + 2 + table * n + 2 + 1024 * palette_count == payload_start
+    // The payload starting immediately after the last palette is what pins the
+    // total down, so it is solved for rather than assumed.
     let payload_start = container.offsets[0] as usize;
-    let mut found: Option<(usize, usize)> = None; // (record_len, palette_count)
-    for record_len in (16..=MAX_RECORD_LEN).step_by(2) {
+    let mut found: Option<(usize, usize)> = None; // (table, palette_count)
+    for table in (16..=MAX_RECORD_LEN).step_by(2) {
         let count_at = block
             .checked_add(2)
-            .and_then(|v| v.checked_add(record_len * n))
-            .ok_or_else(|| anyhow::anyhow!("film record table overflow"))?;
+            .and_then(|v| v.checked_add(table * n))
+            .ok_or_else(|| anyhow::anyhow!("film metadata table overflow"))?;
         let palette_count = match read_u16_checked(data, count_at) {
             Ok(v) => v as usize,
             Err(_) => continue,
@@ -504,20 +610,20 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
             None => continue,
         };
         if palettes_end == payload_start {
-            found = Some((record_len, palette_count));
+            found = Some((table, palette_count));
             break;
         }
     }
-    let (record_len, palette_count) = found.ok_or_else(|| {
+    let (table, palette_count) = found.ok_or_else(|| {
         anyhow::anyhow!(
-            "{}: no film record length/palette count ends exactly at the payload start {:#x}",
+            "{}: no film table/palette count ends exactly at the payload start {:#x}",
             container.path.display(),
             payload_start
         )
     })?;
 
-    let records_start = block + 2;
-    let palette_count_at = records_start + record_len * n;
+    let tables_start = block + 2;
+    let palette_count_at = tables_start + table * n;
     let palettes_start = palette_count_at + 2;
     if palettes_start + 1024 * palette_count > data.len() {
         bail!(
@@ -528,19 +634,26 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
         );
     }
 
-    let record_start = records_start + record_len * index;
-    let record = data
-        .get(record_start..record_start + record_len)
-        .ok_or_else(|| anyhow::anyhow!("film record {index} is outside the file"))?
-        .to_vec();
-
-    // Bytes +2..+10 are four big-endian u16 values in the order
-    // {top, left, bottom, right}.  The shipped film is (0, 0, 410, 546).
+    // The rect array is the third of the eight tables: two single-byte tables
+    // come first, so it starts `2*n` bytes in and holds four big-endian u16 —
+    // eight bytes — per film. This is the address a record's `+2` field would
+    // hold when there is one film, which is why the record reading worked for
+    // the second and third games and failed here.
+    let rect_at = tables_start
+        .checked_add(2 * n)
+        .and_then(|v| v.checked_add(8 * index))
+        .ok_or_else(|| anyhow::anyhow!("film rect offset overflow"))?;
+    if rect_at + 8 > palettes_start {
+        bail!(
+            "{}: film {index}'s rect at {rect_at:#x} is outside the metadata region",
+            container.path.display()
+        );
+    }
     let bounds = [
-        u16::from_be_bytes([record[2], record[3]]),
-        u16::from_be_bytes([record[4], record[5]]),
-        u16::from_be_bytes([record[6], record[7]]),
-        u16::from_be_bytes([record[8], record[9]]),
+        u16::from_be_bytes([data[rect_at], data[rect_at + 1]]),
+        u16::from_be_bytes([data[rect_at + 2], data[rect_at + 3]]),
+        u16::from_be_bytes([data[rect_at + 4], data[rect_at + 5]]),
+        u16::from_be_bytes([data[rect_at + 6], data[rect_at + 7]]),
     ];
     let (top, left, bottom, right) = (bounds[0], bounds[1], bounds[2], bounds[3]);
     if right <= left || bottom <= top {
@@ -557,7 +670,36 @@ fn parse_film_metadata(container: &Container, index: usize) -> Result<FilmMeta> 
         picture::stride8(width)
     };
 
-    let palette = data[palettes_start..palettes_start + 1024].to_vec();
+    // The per-film record as the tables present it, reassembled for the report
+    // and for tests that pin the bytes. Field order is the reader's:
+    // byte, byte, the rect, u32, four bytes, u16, u32, u16.
+    let mut record = Vec::with_capacity(table);
+    let (b1, b2) = (tables_start + index, tables_start + n + index);
+    let (r4, r5, r6, r7, r8) = (
+        tables_start + 2 * n + 8 * n + 4 * index,
+        tables_start + 6 * n + 8 * n + 4 * index,
+        tables_start + 10 * n + 8 * n + 2 * index,
+        tables_start + 12 * n + 8 * n + 4 * index,
+        tables_start + 16 * n + 8 * n + 2 * index,
+    );
+    if r8 + 2 <= palettes_start {
+        record.push(data[b1]);
+        record.push(data[b2]);
+        record.extend_from_slice(&data[rect_at..rect_at + 8]);
+        record.extend_from_slice(&data[r4..r4 + 4]);
+        record.extend_from_slice(&data[r5..r5 + 4]);
+        record.extend_from_slice(&data[r6..r6 + 2]);
+        record.extend_from_slice(&data[r7..r7 + 4]);
+        record.extend_from_slice(&data[r8..r8 + 2]);
+    }
+
+    // One palette per film, in resource order. All four shipped containers have
+    // `palette_count == N`, so the film's own entry is `index`; a container
+    // that shipped fewer palettes than films would need measuring, and taking
+    // the first is what the single-film cases amount to anyway.
+    let palette_index = index.min(palette_count - 1);
+    let palette_at = palettes_start + 1024 * palette_index;
+    let palette = data[palette_at..palette_at + 1024].to_vec();
 
     Ok(FilmMeta {
         record,
