@@ -44,7 +44,9 @@
 use crate::cli::sanitize;
 use crate::container::Container;
 
+pub mod gltf;
 pub mod modfile;
+pub mod texfile;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -97,33 +99,51 @@ pub struct Extract3DReport {
 
 /// Extract every model payload of a `Models` container.
 ///
-/// Each resource is written as a `.mod` file holding the payload exactly as
-/// the container stores it. `_original` is accepted for the uniform dispatch
-/// signature in `cli.rs` and deliberately ignored: the modern path is a
-/// passthrough while the payload format is being decoded, so the two modes
-/// write the *same* bytes today. `tests/game1_payloads.rs`-style coverage for
-/// this contract lives in `tests/dma3d.rs`, which asserts both the byte-exact
-/// `--original` output and that the modern path agrees with it -- that second
-/// assertion is the tripwire that fires when a real decoder lands.
+/// Two modes, with different output:
+///
+/// * `--original` writes each payload byte for byte, and is the mode the
+///   `tests/dma3d.rs` round-trip covers.
+/// * the modern mode writes a **glTF** for every payload that carries the
+///   measured mesh chain, and the payload verbatim for the rest. That split is
+///   the honest state: 87 of the 460 payloads carry a mesh
+///   (`docs/DMA3D.md` §3.2), and every one of those becomes a viewable model.
+///   The 373 that do not -- animation records, lights, UI references -- are
+///   written through unchanged so nothing is lost.
+///
+/// `texture_dir` is where the `Textures` container's PNGs live. A model whose
+/// payload names a texture gets it embedded; the rest come out untextured,
+/// because no payload that carries a mesh has been found to name one.
 pub fn extract_models(
     container: &Container,
     out_dir: &Path,
-    _original: bool,
+    original: bool,
+    texture_dir: Option<&Path>,
 ) -> Result<Extract3DReport> {
-    extract(container, out_dir, "mod")
+    if original {
+        return extract(container, out_dir, "mod");
+    }
+    extract_gltf(container, out_dir, texture_dir)
 }
 
 /// Extract every texture payload of a `Textures` container.
 ///
-/// See [`extract_models`] for why the payload is written unchanged.
+/// `--original` writes the payload byte for byte. The modern mode decodes
+/// every one of the 705 textures as the measured indexed image
+/// (`docs/DMA3D.md` §2.1) and writes it as a PNG; a texture that does not fit
+/// the layout is reported as a failure rather than written as something it is
+/// not.
 pub fn extract_textures(
     container: &Container,
     out_dir: &Path,
-    _original: bool,
+    original: bool,
 ) -> Result<Extract3DReport> {
-    extract(container, out_dir, "tex")
+    if original {
+        return extract(container, out_dir, "tex");
+    }
+    extract_pngs(container, out_dir)
 }
 
+/// The `--original` path: every payload written exactly as stored.
 fn extract(container: &Container, out_dir: &Path, extension: &str) -> Result<Extract3DReport> {
     std::fs::create_dir_all(out_dir)?;
     let mut report = Extract3DReport::default();
@@ -155,6 +175,172 @@ fn extract(container: &Container, out_dir: &Path, extension: &str) -> Result<Ext
     }
 
     Ok(report)
+}
+
+/// The modern texture path: decode each payload and write a PNG.
+fn extract_pngs(container: &Container, out_dir: &Path) -> Result<Extract3DReport> {
+    std::fs::create_dir_all(out_dir)?;
+    let mut report = Extract3DReport::default();
+
+    for index in 0..container.resource_count as usize {
+        let name = container.name(index);
+        let payload = container.payload(index);
+        let stem = output_stem(container, index);
+        let path = out_dir.join(format!("{index:05}_{stem}.png"));
+
+        let outcome = texfile::parse(payload)
+            .map_err(|e| format!("{e:#}"))
+            .and_then(|texture| {
+                let rgba = texture.to_rgba();
+                let png = gltf::encode_png(&rgba, texture.width, texture.height)
+                    .map_err(|e| format!("{e:#}"))?;
+                Ok((png, texture.width * texture.height * 4))
+            })
+            .and_then(|(png, _)| {
+                std::fs::write(&path, &png)
+                    .map(|_| png.len())
+                    .map_err(|e| format!("{e:#}"))
+            });
+
+        match outcome {
+            Ok(bytes) => {
+                report.written += 1;
+                report.resources.push(Extracted3D {
+                    index,
+                    name: name.to_string(),
+                    path,
+                    bytes,
+                });
+            }
+            Err(why) => {
+                eprintln!(
+                    "warning: {}: texture {index} '{name}': {why}",
+                    container.path.display()
+                );
+                report.failed.push((index, name.to_string(), why));
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// The modern model path: a glTF per payload that carries a mesh.
+fn extract_gltf(
+    container: &Container,
+    out_dir: &Path,
+    texture_dir: Option<&Path>,
+) -> Result<Extract3DReport> {
+    std::fs::create_dir_all(out_dir)?;
+    let mut report = Extract3DReport::default();
+
+    for index in 0..container.resource_count as usize {
+        let name = container.name(index);
+        let payload = container.payload(index);
+        let stem = output_stem(container, index);
+
+        let mesh = match modfile::parse_mesh(payload) {
+            Ok(m) => m,
+            Err(_) => {
+                // No mesh in this payload: written through unchanged so nothing
+                // is lost, and counted as a model that is not geometry.
+                let path = out_dir.join(format!("{index:05}_{stem}.mod"));
+                std::fs::write(&path, payload)
+                    .with_context(|| format!("writing {}", path.display()))?;
+                report.written += 1;
+                report.resources.push(Extracted3D {
+                    index,
+                    name: name.to_string(),
+                    path,
+                    bytes: payload.len(),
+                });
+                continue;
+            }
+        };
+
+        // Materials: the textures this payload names, embedded from the PNGs
+        // the `Textures` container produced. Six payloads name theirs and none
+        // of those carries a mesh, so the meshes are untextured until the
+        // material record is read out of the payload (`docs/DMA3D.md` §3.4).
+        let mut materials = Vec::new();
+        for wanted in texture_names_in(payload) {
+            let stem = sanitize(wanted.trim_end_matches(".TGA"), 0);
+            let path = texture_dir.map(|dir| dir.join(format!("{stem}.png")));
+            if let Some(path) = path {
+                if let Ok(png) = std::fs::read(&path) {
+                    materials.push(gltf::Material {
+                        name: wanted.clone(),
+                        png,
+                    });
+                }
+            }
+        }
+
+        let path = out_dir.join(format!("{index:05}_{stem}.gltf"));
+        gltf::write_gltf(&path, name, &mesh, &materials)
+            .with_context(|| format!("writing {}", path.display()))?;
+        let bytes = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
+        report.written += 1;
+        report.resources.push(Extracted3D {
+            index,
+            name: name.to_string(),
+            path,
+            bytes,
+        });
+    }
+
+    Ok(report)
+}
+
+/// The texture names a model payload carries, in payload order.
+///
+/// The table is `[u32 count][count * 32-byte NUL-padded names]` (measured on
+/// `createBtDraw.mod`, which holds 31 of them). A candidate that does not
+/// validate -- a record that is empty, or does not name a `.TGA` -- is
+/// rejected, so a stray `TGA` in the geometry is not read as a material.
+fn texture_names_in(payload: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut at = 0usize;
+    while at + 4 <= payload.len() {
+        let count = u32::from_le_bytes([
+            payload[at],
+            payload[at + 1],
+            payload[at + 2],
+            payload[at + 3],
+        ]) as usize;
+        if !(1..=64).contains(&count) {
+            at += 4;
+            continue;
+        }
+        let table = at + 4;
+        if table + count * 32 > payload.len() {
+            at += 4;
+            continue;
+        }
+        let mut ok = true;
+        let mut found = Vec::new();
+        for record in 0..count {
+            let rec = &payload[table + record * 32..table + (record + 1) * 32];
+            let end = rec.iter().position(|&b| b == 0).unwrap_or(rec.len());
+            if end == 0 {
+                ok = false;
+                break;
+            }
+            let text = String::from_utf8_lossy(&rec[..end]).to_string();
+            if !text.contains("TGA") {
+                ok = false;
+                break;
+            }
+            found.push(text);
+        }
+        if ok {
+            names.extend(found);
+            at = table + count * 32;
+        } else {
+            at += 4;
+        }
+    }
+    names
 }
 
 /// Build a filename stem from the resource name, dropping the source

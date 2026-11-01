@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! u32   C                 index count
-//! u16[C]                  index list, one-based, values < V
+//! u16[C]                  index list, **zero-based**, values < V
 //! u32   V                 vertex count
 //! vertex[V]               16 bytes: x, y, z (f32) + w (f32, 1.0)
 //! u32   V                 normal count (== V)
@@ -29,7 +29,7 @@
 //! texture coordinates and the animation tracks — is measured but not decoded,
 //! so it is left alone here.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
 /// Bytes per vertex record: three f32s and the type marker.
 pub const VERTEX_RECORD_BYTES: usize = 16;
@@ -49,7 +49,7 @@ const UNIT_LENGTH_EPSILON: f32 = 1e-3;
 pub struct ModelMesh {
     /// Where the index count was read from, for diagnostics.
     pub index_count_offset: usize,
-    /// The index list, still one-based exactly as stored.
+    /// The index list, zero-based exactly as stored.
     pub indices: Vec<u16>,
     /// World-space positions, `[x, y, z]` per vertex.
     pub positions: Vec<[f32; 3]>,
@@ -313,7 +313,7 @@ mod real_files {
                 }
             };
             // The measured ranges: 151..=257 vertices over 42 props, and the
-            // index list is one-based and shorter than the vertex count.
+            // index list is zero-based and every value names a vertex.
             // Sanity, not a measured bound: the props run from 24 to 257
             // vertices in the files measured by hand, so anything far outside
             // that means a false positive rather than a small mesh.
@@ -325,6 +325,18 @@ mod real_files {
             assert!(
                 mesh.indices.iter().all(|&x| usize::from(x) < mesh.vertex_count()),
                 "{name}: an index names a vertex that does not exist"
+            );
+            // The index base, checked on the real files: zero-based because
+            // every mesh carries the value 0 and none carries its own vertex
+            // count. This is the assertion that caught the glTF writer
+            // subtracting one from a base that was already zero.
+            assert!(
+                mesh.indices.contains(&0),
+                "{name}: no index 0, so the base may not be zero"
+            );
+            assert!(
+                !mesh.indices.iter().any(|&x| usize::from(x) == mesh.vertex_count()),
+                "{name}: index == vertex count, so the base may not be zero"
             );
             assert_eq!(mesh.normals.len(), mesh.vertex_count());
             for (k, nrm) in mesh.normals.iter().enumerate() {

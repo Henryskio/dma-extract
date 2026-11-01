@@ -131,7 +131,7 @@ checking the leading `u16`:
 
 ```text
 u32   C                 index count
-u16[C]                  index list, one-based, values < V
+u16[C]                  index list, zero-based, values < V
 u32   V                 vertex count
 vertex[V]               16 bytes: x, y, z (f32) + w (f32, 1.0)
 u32   V                 normal count (== V)
@@ -139,7 +139,8 @@ normal[V]               16 bytes: nx, ny, nz (f32) + a fourth f32
 ...                     texture coordinates, then animation tracks
 ```
 
-The layout holds on **31 of the 42 non-UI static props** (`createProp*`); the
+The layout holds on **87 of the 460 payloads** (`createProp*`, the buttons and
+the preview objects); the
 `createPropUI*` variants are the ones it does not fit (§3.3).
 
 Measured, `createPropBucket.mod` (`/tmp/dma3d/pc/DMA3D.MMM`, 7,240 bytes):

@@ -129,8 +129,15 @@ fn the_metadata_regions_are_measured() {
     }
 }
 
-/// Every resource's payload must come out byte-exact in `--original` mode,
-/// and the modern path must agree with it while it is a passthrough.
+/// `--original` must be byte-exact for every resource, and the modern path
+/// must lose nothing: a texture's PNG decodes back to the same pixels the
+/// measured layout holds, and a model's glTF holds the same geometry.
+///
+/// This replaces the old tripwire, which asserted that the modern path agreed
+/// with `--original` *because* it was a passthrough. It is not one any more
+/// (`docs/DMA3D.md` §2 and §3), so the assertion that matters is the one the
+/// rest of the project uses for every other decoder: the modern output
+/// decodes back to what was measured.
 #[test]
 fn every_3d_payload_round_trips_byte_exactly() {
     let Some(dir) = dma3d_dir() else {
@@ -139,103 +146,168 @@ fn every_3d_payload_round_trips_byte_exactly() {
     };
     let tmp = tempdir("dma3d");
 
+    // ---- `--original`: every payload byte for byte ----
     for (name, kind) in [
         (MODEL_CONTAINER, ContainerKind::Models),
         (TEXTURE_CONTAINER, ContainerKind::Textures),
     ] {
         let container = Container::open(dir.join(name)).expect("open container");
         assert_eq!(container.kind, kind);
-        let n = container.resource_count as usize;
-
-        let modern = tmp.join(format!("modern/{name}"));
         let original = tmp.join(format!("original/{name}"));
         let report = match kind {
-            ContainerKind::Models => mmf_extract::dma3d::extract_models(&container, &modern, false)
-                .expect("extract models"),
-            _ => mmf_extract::dma3d::extract_textures(&container, &modern, false)
-                .expect("extract textures"),
-        };
-        assert!(report.failed.is_empty(), "{name}: {:?}", report.failed);
-        assert_eq!(report.written, n, "{name}: not every resource was written");
-
-        let report_orig = match kind {
             ContainerKind::Models => {
-                mmf_extract::dma3d::extract_models(&container, &original, true)
+                mmf_extract::dma3d::extract_models(&container, &original, true, None)
                     .expect("extract models")
             }
             _ => mmf_extract::dma3d::extract_textures(&container, &original, true)
                 .expect("extract textures"),
         };
-        assert_eq!(report_orig.written, n);
-
+        assert!(report.failed.is_empty(), "{name}: {:?}", report.failed);
+        assert_eq!(report.written, container.resource_count as usize);
         for entry in &report.resources {
             let payload = container.payload(entry.index);
-            assert_eq!(entry.bytes, payload.len());
-
-            let modern_bytes = std::fs::read(&entry.path).expect("read modern output");
+            let bytes = std::fs::read(&entry.path).expect("read original output");
             assert_eq!(
-                modern_bytes, payload,
-                "{name} resource {}: modern output is not byte-exact",
-                entry.index
-            );
-            // The tripwire: while the payload is a passthrough, `--original`
-            // writes the same bytes. A real decoder breaks this on purpose.
-            let original_bytes = std::fs::read(
-                &original.join(entry.path.file_name().expect("output has a file name")),
-            )
-            .expect("read original output");
-            assert_eq!(
-                original_bytes, payload,
+                bytes, payload,
                 "{name} resource {}: --original is not byte-exact",
                 entry.index
             );
         }
-        eprintln!("{name}: {n} resources, all byte-exact");
+        eprintln!("{name}: {} resources, --original byte-exact", report.written);
     }
-}
 
-/// The model payloads begin with the `mod II` magic and recur inside the
-/// stream. This is what the geometry decoder has to explain; asserting it
-/// here keeps the measurement visible next to the decoder that will use it.
-#[test]
-fn the_model_payloads_carry_the_mod_magic() {
-    let Some(dir) = dma3d_dir() else {
-        eprintln!("skipping: the 3D game's assets are not present");
-        return;
-    };
-    let container = Container::open(dir.join(MODEL_CONTAINER)).expect("open Models");
-    let n = container.resource_count as usize;
+    // ---- modern textures: the PNG decodes back to the measured pixels ----
+    {
+        let container = Container::open(dir.join(TEXTURE_CONTAINER)).expect("open textures");
+        let modern = tmp.join("modern/textures");
+        let report = mmf_extract::dma3d::extract_textures(&container, &modern, false)
+            .expect("extract textures");
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert_eq!(report.written, container.resource_count as usize);
 
-    let mut with_magic = 0usize;
-    for i in 0..n {
-        let payload = container.payload(i);
-        if payload.starts_with(b"mod II") {
-            with_magic += 1;
+        let mut checked = 0usize;
+        for entry in &report.resources {
+            let measured = mmf_extract::dma3d::texfile::parse(container.payload(entry.index))
+                .unwrap_or_else(|e| panic!("texture {}: {e}", entry.index));
+            let expected = measured.to_rgba();
+
+            let file = std::fs::File::open(&entry.path).expect("open PNG");
+            let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+                .read_info()
+                .expect("PNG header");
+            let mut buf = vec![0u8; reader.output_buffer_size().expect("PNG buffer size")];
+            let frame = reader.next_frame(&mut buf).expect("PNG frame");
+            let rgba = &buf[..frame.buffer_size()];
+
+            assert_eq!(
+                frame.width as usize, measured.width,
+                "texture {}: PNG width is not the measured width",
+                entry.index
+            );
+            assert_eq!(
+                frame.height as usize, measured.height,
+                "texture {}: PNG height is not the measured height",
+                entry.index
+            );
+            assert_eq!(
+                rgba.len(),
+                expected.len(),
+                "texture {}: PNG byte count is not the measured pixel count",
+                entry.index
+            );
+            assert_eq!(
+                rgba,
+                expected.as_slice(),
+                "texture {}: PNG pixels are not the measured pixels",
+                entry.index
+            );
+            checked += 1;
         }
+        eprintln!("{checked} textures: PNG decodes back to the measured pixels");
     }
-    assert_eq!(
-        with_magic, n,
-        "{with_magic} of {n} model payloads start with the `mod II` magic"
-    );
 
-    // The magic is little-endian ("II"), and the stream carries 32-bit
-    // floats: 0x3f800000 read little-endian from payload[0] is 1.0.
-    let payload = container.payload(0);
-    let float_at = |off: usize| {
-        f32::from_le_bytes([
-            payload[off],
-            payload[off + 1],
-            payload[off + 2],
-            payload[off + 3],
-        ])
-    };
-    let floats = (6..payload.len().saturating_sub(4))
-        .step_by(4)
-        .map(float_at)
-        .filter(|f| f.is_finite() && f.abs() < 1e6)
-        .count();
-    assert!(
-        floats > 0,
-        "the model stream holds no plausible little-endian floats"
-    );
+    // ---- modern models: the glTF holds the measured geometry ----
+    {
+        let container = Container::open(dir.join(MODEL_CONTAINER)).expect("open models");
+        let modern = tmp.join("modern/models");
+        let report = mmf_extract::dma3d::extract_models(
+            &container,
+            &modern,
+            false,
+            Some(&tmp.join("modern/textures")),
+        )
+        .expect("extract models");
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert_eq!(report.written, container.resource_count as usize);
+
+        let mut meshes = 0usize;
+        let mut passthrough = 0usize;
+        for entry in &report.resources {
+            let payload = container.payload(entry.index);
+            match mmf_extract::dma3d::modfile::parse_mesh(payload) {
+                Err(_) => {
+                    // No mesh: the payload is written through unchanged.
+                    passthrough += 1;
+                    assert_eq!(
+                        std::fs::read(&entry.path).expect("read passthrough"),
+                        payload,
+                        "model {}: payload without a mesh is not byte-exact",
+                        entry.index
+                    );
+                    continue;
+                }
+                Ok(mesh) => {
+                    // The written document is read back off disk and compared
+                    // with the decoder, which is the same contract every other
+                    // asset type in this project tests.
+                    let back = mmf_extract::dma3d::gltf::read_gltf(&entry.path)
+                        .unwrap_or_else(|e| panic!("model {}: {e}", entry.index));
+                    assert_eq!(back.version, "2.0", "model {}: glTF version", entry.index);
+                    assert_eq!(
+                        back.indices.len(),
+                        mesh.indices.len(),
+                        "model {}: glTF index count differs from the decoder",
+                        entry.index
+                    );
+                    assert_eq!(
+                        back.positions.len(),
+                        mesh.positions.len(),
+                        "model {}: glTF vertex count differs from the decoder",
+                        entry.index
+                    );
+                    assert_eq!(
+                        back.normals.len(),
+                        mesh.normals.len(),
+                        "model {}: glTF normal count differs from the decoder",
+                        entry.index
+                    );
+                    for (k, (wrote, read)) in mesh.indices.iter().zip(&back.indices).enumerate() {
+                        assert_eq!(
+                            read, wrote,
+                            "model {}: index {k} differs from the decoder",
+                            entry.index
+                        );
+                    }
+                    for (k, (wrote, read)) in mesh.positions.iter().zip(&back.positions).enumerate()
+                    {
+                        assert_eq!(
+                            read, wrote,
+                            "model {}: position {k} differs from the decoder",
+                            entry.index
+                        );
+                    }
+                    for (k, (wrote, read)) in mesh.normals.iter().zip(&back.normals).enumerate() {
+                        assert_eq!(
+                            read, wrote,
+                            "model {}: normal {k} differs from the decoder",
+                            entry.index
+                        );
+                    }
+                    meshes += 1;
+                }
+            }
+        }
+        eprintln!("{meshes} glTF models, {passthrough} payloads written through");
+        assert!(meshes > 80, "only {meshes} payloads carried a mesh");
+    }
 }

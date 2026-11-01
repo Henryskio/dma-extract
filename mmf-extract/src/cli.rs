@@ -141,12 +141,18 @@ impl AssetSelection {
                     "blobs" | "blob" => sel.blobs = true,
                     "models" | "model" | "textures" | "texture" | "3d" => sel.models = true,
                     other => anyhow::bail!(
-                        "unknown asset type '{other}' (expected all, pictures, sounds, films, scripts or blobs)"
+                        "unknown asset type '{other}' (expected all, pictures, sounds, films, scripts, blobs or models)"
                     ),
                 }
             }
         }
-        if !(sel.pictures || sel.sounds || sel.films || sel.scripts || sel.blobs) {
+        if !(sel.pictures
+            || sel.sounds
+            || sel.films
+            || sel.scripts
+            || sel.blobs
+            || sel.models)
+        {
             anyhow::bail!("no asset types selected");
         }
         Ok(sel)
@@ -209,6 +215,34 @@ pub fn run(
         .collect();
     entries.sort();
 
+    // Textures are extracted first, on their own pass, because the 3D game's
+    // models embed the textures they name (`crate::dma3d::extract_models`) and
+    // the container iteration order is alphabetical, which puts `Models` first.
+    let mut texture_dir: Option<PathBuf> = None;
+    for path in &entries {
+        let container = match Container::open(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if container.kind != ContainerKind::Textures || !selection.wants(container.kind) {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("resource")
+            .to_string();
+        let out_dir = output.join("Textures").join(&stem);
+        let report = crate::dma3d::extract_textures(&container, &out_dir, original)?;
+        summary.models += report.written;
+        for (i, name, why) in report.failed {
+            summary
+                .failed
+                .push(format!("{}: resource {i} '{name}': {why}", path.display()));
+        }
+        texture_dir = Some(out_dir);
+    }
+
     for path in entries {
         let container = match Container::open(&path) {
             Ok(c) => c,
@@ -216,6 +250,11 @@ pub fn run(
         };
 
         if !selection.wants(container.kind) {
+            continue;
+        }
+        // Textures were handled on the pass above, so that the models could
+        // embed them.
+        if container.kind == ContainerKind::Textures {
             continue;
         }
 
@@ -300,7 +339,8 @@ pub fn run(
                 // verbatim, so both paths are byte-exact; the geometry decode
                 // is the documented next step (`crate::dma3d`).
                 let out_dir = output.join("Models").join(&stem);
-                let report = crate::dma3d::extract_models(&container, &out_dir, original)?;
+                let report =
+                    crate::dma3d::extract_models(&container, &out_dir, original, texture_dir.as_deref())?;
                 summary.models += report.written;
                 for (i, name, why) in report.failed {
                     summary
@@ -308,17 +348,8 @@ pub fn run(
                         .push(format!("{}: resource {i} '{name}': {why}", path.display()));
                 }
             }
-            ContainerKind::Textures => {
-                let out_dir = output.join("Textures").join(&stem);
-                let report = crate::dma3d::extract_textures(&container, &out_dir, original)?;
-                summary.models += report.written;
-                for (i, name, why) in report.failed {
-                    summary
-                        .failed
-                        .push(format!("{}: resource {i} '{name}': {why}", path.display()));
-                }
-            }
-            ContainerKind::Unknown => {}
+            // Textures are extracted on the pass before this loop.
+            ContainerKind::Textures | ContainerKind::Unknown => {}
         }
     }
 
