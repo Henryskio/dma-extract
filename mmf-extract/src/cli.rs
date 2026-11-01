@@ -9,11 +9,11 @@
 //!   runtime would hand it to the blitter, or the sound's sample data in
 //!   its original encoding.
 
-use anyhow::{Context, Result};
 use crate::container::{Container, ContainerKind};
 use crate::picture;
 use crate::picture::Decoded;
 use crate::v1;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// The picture decoder to use for `container`.
@@ -58,9 +58,7 @@ pub fn picture_payload(container: &Container) -> fn(&Container, usize) -> Result
 /// format is documented in `docs/GAME1.md` §6 and implemented by
 /// [`v1::blobs`]. A `Blobs` container from any other version has no measured
 /// layout, so it is written back verbatim rather than guessed at.
-pub fn blobs_extractor(
-    container: &Container,
-) -> fn(&Container, &Path, bool) -> Result<usize> {
+pub fn blobs_extractor(container: &Container) -> fn(&Container, &Path, bool) -> Result<usize> {
     if container.version == 1 {
         v1::blobs::extract_container
     } else {
@@ -146,13 +144,7 @@ impl AssetSelection {
                 }
             }
         }
-        if !(sel.pictures
-            || sel.sounds
-            || sel.films
-            || sel.scripts
-            || sel.blobs
-            || sel.models)
-        {
+        if !(sel.pictures || sel.sounds || sel.films || sel.scripts || sel.blobs || sel.models) {
             anyhow::bail!("no asset types selected");
         }
         Ok(sel)
@@ -188,12 +180,7 @@ pub struct Summary {
 
 impl Summary {
     pub fn total(&self) -> usize {
-        self.pictures
-            + self.sounds
-            + self.films
-            + self.scripts
-            + self.blobs
-            + self.models
+        self.pictures + self.sounds + self.films + self.scripts + self.blobs + self.models
     }
 }
 
@@ -271,7 +258,12 @@ pub fn run(
                 let report = if original {
                     extract_pictures_original(&container, &out_dir)?
                 } else {
-                    picture::extract_container(&path, &out_dir, &raw_dir, picture_decoder(&container))?
+                    picture::extract_container(
+                        &path,
+                        &out_dir,
+                        &raw_dir,
+                        picture_decoder(&container),
+                    )?
                 };
                 summary.pictures += report.png_written;
                 for (i, name, why) in report.failed {
@@ -299,9 +291,7 @@ pub fn run(
                 // rather than aborting the whole run.
                 match crate::film::extract_container(&container, &out_dir, original) {
                     Ok(n) => summary.films += n,
-                    Err(e) => summary
-                        .failed
-                        .push(format!("{}: {e:#}", path.display())),
+                    Err(e) => summary.failed.push(format!("{}: {e:#}", path.display())),
                 }
             }
             ContainerKind::Scripts => {
@@ -328,9 +318,7 @@ pub fn run(
                 match blobs_extractor(&container)(&container, &out_dir, original) {
                     Ok(n) => summary.blobs += n,
                     Err(e) => {
-                        summary
-                            .failed
-                            .push(format!("{}: {e}", path.display()));
+                        summary.failed.push(format!("{}: {e}", path.display()));
                     }
                 }
             }
@@ -339,8 +327,12 @@ pub fn run(
                 // verbatim, so both paths are byte-exact; the geometry decode
                 // is the documented next step (`crate::dma3d`).
                 let out_dir = output.join("Models").join(&stem);
-                let report =
-                    crate::dma3d::extract_models(&container, &out_dir, original, texture_dir.as_deref())?;
+                let report = crate::dma3d::extract_models(
+                    &container,
+                    &out_dir,
+                    original,
+                    texture_dir.as_deref(),
+                )?;
                 summary.models += report.written;
                 for (i, name, why) in report.failed {
                     summary
@@ -357,7 +349,9 @@ pub fn run(
     // browsable as one page instead of 849 files in a tree. It is written last
     // because it lists what is on disk rather than what the container claims.
     if let Some(texture) = texture_dir.as_deref() {
-        if let Err(e) = crate::dma3d::write_index(output, texture, &output.join("Models").join("DMA3D")) {
+        if let Err(e) =
+            crate::dma3d::write_index(output, texture, &output.join("Models").join("DMA3D"))
+        {
             eprintln!("warning: could not write the 3D index page: {e:#}");
         }
     }
@@ -401,8 +395,7 @@ pub fn extract_pictures_original(
                 continue;
             }
         };
-        std::fs::write(&file, &data)
-            .with_context(|| format!("writing {}", file.display()))?;
+        std::fs::write(&file, &data).with_context(|| format!("writing {}", file.display()))?;
         report.raw_written += 1;
         report.png_written += 1;
         report.resources.push(picture::ResourceEntry {

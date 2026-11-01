@@ -73,7 +73,10 @@ fn the_payloads_that_carry_a_mesh_are_counted() {
     assert_eq!(ui, 42, "the createPropUI twin-record count changed");
     assert_eq!(ui_named, 64, "the UI-named payload count changed");
     assert_eq!(meshed, 144, "the mesh-bearing payload count changed");
-    assert_eq!(meshed_ui, 0, "a createPropUI twin record now carries a mesh");
+    assert_eq!(
+        meshed_ui, 0,
+        "a createPropUI twin record now carries a mesh"
+    );
     eprintln!(
         "{n} payloads: {meshed} carry a mesh, {ui} are createPropUI twins, \
          {ui_named} are UI-named"
@@ -107,7 +110,11 @@ fn every_texture_decodes_and_no_palette_entry_is_dead() {
             used
         );
         let area = t.width * t.height;
-        assert!(area.is_power_of_two(), "{}: {area} is not a power of two", textures.name(i));
+        assert!(
+            area.is_power_of_two(),
+            "{}: {area} is not a power of two",
+            textures.name(i)
+        );
         match t.axis {
             texfile::Axis::Square => square += 1,
             texfile::Axis::Wide => wide += 1,

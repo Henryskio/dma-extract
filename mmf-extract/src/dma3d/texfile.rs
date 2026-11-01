@@ -42,7 +42,7 @@
 //! usual colour key for this era of engine, and it is why the alpha channel
 //! has to be carried rather than dropped.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Bytes per palette entry: straight RGBA, no premultiplication.
 pub const PALETTE_ENTRY_BYTES: usize = 4;
@@ -82,7 +82,11 @@ impl Texture {
     pub fn to_rgba(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.indices.len() * 4);
         for &i in &self.indices {
-            let entry = self.palette.get(usize::from(i)).copied().unwrap_or([0, 0, 0, 0]);
+            let entry = self
+                .palette
+                .get(usize::from(i))
+                .copied()
+                .unwrap_or([0, 0, 0, 0]);
             out.extend_from_slice(&entry);
         }
         out
@@ -120,11 +124,7 @@ pub fn parse(payload: &[u8]) -> Result<Texture> {
 
     let (width, height, axis) = split_area(indices.as_slice(), area);
     if width * height != area {
-        bail!(
-            "{area} index bytes do not factor into {}x{}",
-            width,
-            height
-        );
+        bail!("{area} index bytes do not factor into {}x{}", width, height);
     }
 
     Ok(Texture {
@@ -204,7 +204,11 @@ fn axis_of(indices: &[u8], area: usize) -> (usize, usize, Axis) {
             best = (w, score);
         }
     }
-    let w = if best.0 == 0 { WIDTH_CANDIDATES[0] } else { best.0 };
+    let w = if best.0 == 0 {
+        WIDTH_CANDIDATES[0]
+    } else {
+        best.0
+    };
     let h = area / w;
     if w > h {
         (w, h, Axis::Wide)
@@ -302,8 +306,7 @@ mod tests {
             let mut tall = 0usize;
             let mut axes = Vec::new();
             for i in 0..n {
-                let t = parse(c.payload(i))
-                    .unwrap_or_else(|e| panic!("{}: {e}", c.name(i)));
+                let t = parse(c.payload(i)).unwrap_or_else(|e| panic!("{}: {e}", c.name(i)));
                 let area = t.width * t.height;
                 assert!(
                     area.is_power_of_two(),
@@ -333,9 +336,7 @@ mod tests {
                     }
                 }
             }
-            eprintln!(
-                "{n} textures: {square} square, {wide} wide, {tall} tall ({axes:?})"
-            );
+            eprintln!("{n} textures: {square} square, {wide} wide, {tall} tall ({axes:?})");
             assert!(square > 600, "only {square} square textures");
         }
 

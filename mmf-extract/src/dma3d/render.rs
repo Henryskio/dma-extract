@@ -110,11 +110,7 @@ pub fn render(mesh: &ModelMesh) -> Preview {
     let right = normalise(cross([0.0, 1.0, 0.0], eye));
     let up = cross(eye, right);
     let project = |p: [f32; 3]| -> (f32, f32, f32) {
-        let d = [
-            p[0] - centre[0],
-            p[1] - centre[1],
-            p[2] - centre[2],
-        ];
+        let d = [p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]];
         let sx = dot(d, right) * scale + half;
         let sy = half - dot(d, up) * scale;
         let sz = dot(d, eye);

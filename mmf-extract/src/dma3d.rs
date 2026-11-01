@@ -45,8 +45,8 @@ use crate::cli::sanitize;
 use crate::container::Container;
 
 pub mod gltf;
-pub mod render;
 pub mod modfile;
+pub mod render;
 pub mod texfile;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -157,14 +157,16 @@ fn extract(container: &Container, out_dir: &Path, extension: &str) -> Result<Ext
         let stem = output_stem(container, index);
         let path = out_dir.join(format!("{index:05}_{stem}.{extension}"));
 
-        let written = std::fs::write(&path, payload)
-            .with_context(|| format!("writing {}", path.display()));
+        let written =
+            std::fs::write(&path, payload).with_context(|| format!("writing {}", path.display()));
         if let Err(error) = written {
             eprintln!(
                 "warning: {}: 3D resource {index} '{name}': {error:#}",
                 container.path.display()
             );
-            report.failed.push((index, name.to_string(), error.to_string()));
+            report
+                .failed
+                .push((index, name.to_string(), error.to_string()));
             continue;
         }
 
@@ -295,13 +297,17 @@ fn extract_gltf(
         // object is without the reader opening a 3D tool first.
         let preview = render::render(&mesh);
         let preview_path = out_dir.join(format!("{index:05}_{stem}.preview.png"));
-        gltf::encode_png(&preview.rgba, render::PREVIEW_PIXELS, render::PREVIEW_PIXELS)
-            .and_then(|png| {
-                std::fs::write(&preview_path, png)
-                    .map_err(|e| anyhow::anyhow!("{e}"))
-                    .map_err(Into::into)
-            })
-            .with_context(|| format!("writing the preview of {name}"))?;
+        gltf::encode_png(
+            &preview.rgba,
+            render::PREVIEW_PIXELS,
+            render::PREVIEW_PIXELS,
+        )
+        .and_then(|png| {
+            std::fs::write(&preview_path, png)
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
+        })
+        .with_context(|| format!("writing the preview of {name}"))?;
         if preview.covered == 0 {
             eprintln!(
                 "warning: {}: model {index} '{name}': the preview covers no pixels",
@@ -311,7 +317,9 @@ fn extract_gltf(
                 .failed
                 .push((index, name.to_string(), "preview covers no pixels".into()));
         }
-        let bytes = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
+        let bytes = std::fs::metadata(&path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
         report.written += 1;
         report.resources.push(Extracted3D {
             index,
@@ -375,7 +383,6 @@ fn texture_names_in(payload: &[u8]) -> Vec<String> {
     names
 }
 
-
 /// Write the index page that makes the 3D output browsable.
 ///
 /// The modern mode exists for people who have never opened a 3D program, and a
@@ -389,11 +396,7 @@ fn texture_names_in(payload: &[u8]) -> Vec<String> {
 /// `texture_dir` and `model_dir` hold the PNGs written by [`extract_textures`]
 /// and the glTFs plus previews written by [`extract_models`]. The index goes at
 /// `base`, beside both, and refers to them by a relative path.
-pub fn write_index(
-    base: &Path,
-    texture_dir: &Path,
-    model_dir: &Path,
-) -> Result<usize> {
+pub fn write_index(base: &Path, texture_dir: &Path, model_dir: &Path) -> Result<usize> {
     let mut files = 0usize;
 
     // List the two directories, so the page is built from what was written

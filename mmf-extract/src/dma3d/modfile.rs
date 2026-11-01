@@ -29,7 +29,7 @@
 //! texture coordinates and the animation tracks — is measured but not decoded,
 //! so it is left alone here.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Bytes per vertex record: three f32s and the type marker.
 pub const VERTEX_RECORD_BYTES: usize = 16;
@@ -147,7 +147,12 @@ pub fn parse_mesh(payload: &[u8]) -> Result<ModelMesh> {
         if indices.iter().any(|&i| usize::from(i) >= v) {
             continue;
         }
-        if indices.iter().collect::<std::collections::HashSet<_>>().len() < 2 {
+        if indices
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            < 2
+        {
             continue;
         }
 
@@ -156,7 +161,11 @@ pub fn parse_mesh(payload: &[u8]) -> Result<ModelMesh> {
         let mut marked = 0usize;
         for k in 0..v {
             let off = vertices_start + VERTEX_RECORD_BYTES * k;
-            let coord = [f32_at(payload, off), f32_at(payload, off + 4), f32_at(payload, off + 8)];
+            let coord = [
+                f32_at(payload, off),
+                f32_at(payload, off + 4),
+                f32_at(payload, off + 8),
+            ];
             if !coord.iter().all(|&x| plausible(x)) {
                 positions.clear();
                 break;
@@ -175,7 +184,11 @@ pub fn parse_mesh(payload: &[u8]) -> Result<ModelMesh> {
         let mut unit = 0usize;
         for k in 0..v {
             let off = normals_start + NORMAL_RECORD_BYTES * k;
-            let coord = [f32_at(payload, off), f32_at(payload, off + 4), f32_at(payload, off + 8)];
+            let coord = [
+                f32_at(payload, off),
+                f32_at(payload, off + 4),
+                f32_at(payload, off + 8),
+            ];
             let length = coord.iter().map(|x| x * x).sum::<f32>().sqrt();
             if !coord.iter().all(|&x| plausible(x)) || (length - 1.0).abs() > UNIT_LENGTH_EPSILON {
                 normals.clear();
@@ -263,8 +276,14 @@ mod tests {
         let mesh = super::parse_mesh(&p).expect("parse the synthetic chain");
         assert_eq!(mesh.vertex_count(), 3);
         assert_eq!(mesh.indices, vec![1, 2, 1]);
-        assert_eq!(mesh.positions, vec![[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]]);
-        assert_eq!(mesh.normals, vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert_eq!(
+            mesh.positions,
+            vec![[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]]
+        );
+        assert_eq!(
+            mesh.normals,
+            vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
         // The tail starts right after the normal array, and the test's own
         // trailing u32 is the first thing in it.
         assert_eq!(mesh.tail_offset(), 122);
@@ -294,8 +313,7 @@ mod real_files {
             eprintln!("skipping: the 3D game's assets are not present");
             return;
         };
-        let container =
-            Container::parse("DMA3D.MMM", data).expect("open Models");
+        let container = Container::parse("DMA3D.MMM", data).expect("open Models");
         let n = container.resource_count as usize;
 
         let mut parsed = 0usize;
@@ -324,7 +342,9 @@ mod real_files {
                 mesh.vertex_count()
             );
             assert!(
-                mesh.indices.iter().all(|&x| usize::from(x) < mesh.vertex_count()),
+                mesh.indices
+                    .iter()
+                    .all(|&x| usize::from(x) < mesh.vertex_count()),
                 "{name}: an index names a vertex that does not exist"
             );
             // The index base, checked on the real files: zero-based because
@@ -336,13 +356,19 @@ mod real_files {
                 "{name}: no index 0, so the base may not be zero"
             );
             assert!(
-                !mesh.indices.iter().any(|&x| usize::from(x) == mesh.vertex_count()),
+                !mesh
+                    .indices
+                    .iter()
+                    .any(|&x| usize::from(x) == mesh.vertex_count()),
                 "{name}: index == vertex count, so the base may not be zero"
             );
             assert_eq!(mesh.normals.len(), mesh.vertex_count());
             for (k, nrm) in mesh.normals.iter().enumerate() {
                 let len = nrm.iter().map(|x| x * x).sum::<f32>().sqrt();
-                assert!((len - 1.0).abs() < 1e-3, "{name}: normal {k} is not unit length");
+                assert!(
+                    (len - 1.0).abs() < 1e-3,
+                    "{name}: normal {k} is not unit length"
+                );
             }
             parsed += 1;
         }
@@ -359,8 +385,7 @@ mod real_files {
             eprintln!("skipping: the 3D game's assets are not present");
             return;
         };
-        let container =
-            Container::parse("DMA3D.MMM", data).expect("open Models");
+        let container = Container::parse("DMA3D.MMM", data).expect("open Models");
         let mut ui = 0usize;
         for i in 0..container.resource_count as usize {
             if !container.name(i).starts_with("createPropUI") {
