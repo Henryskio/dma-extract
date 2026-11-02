@@ -262,8 +262,6 @@ fn count_at(payload: &[u8], off: usize) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// The payload a structural parser has to reject.
     #[test]
     fn a_payload_without_the_magic_is_not_a_model() {

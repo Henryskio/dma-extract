@@ -306,6 +306,24 @@ pub fn decode(container: &Container, index: usize) -> Result<DecodedSound> {
     let mut bits = format.bits_per_sample;
     let mut overridden = false;
     if matches!(encoding, Encoding::Pcm8 | Encoding::Pcm16) {
+        // An odd payload cannot be 16-bit PCM: there is no whole number of
+        // two-byte samples in it. `AGENTS.md`'s rule applies -- the byte count
+        // is ground truth and the format byte is a hint -- so the payload
+        // forces 8-bit here, before the rail statistics are consulted. This is
+        // what `mpApp.SND` resource 119 needs: its format byte says 16-bit and
+        // it is 7,817 bytes, which no 16-bit reading can account for.
+        if bits >= 16 && stored.len() % 2 != 0 {
+            eprintln!(
+                "note: {}: resource {index} '{}': the format byte says 16-bit but the \
+                 payload is {} bytes and cannot hold a whole number of 16-bit samples; \
+                 using the payload",
+                container.path.display(),
+                container.name(index),
+                stored.len()
+            );
+            bits = 8;
+            overridden = true;
+        }
         if let Some(implied) = implied_bits(stored, bits) {
             // `AGENTS.md`'s rule for metadata hints: the bytes win, but the
             // disagreement is never silent, so it is reported here rather than

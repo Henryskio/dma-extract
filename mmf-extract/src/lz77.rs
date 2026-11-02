@@ -201,7 +201,10 @@ impl<'a> Decompressor<'a> {
     }
 
     fn run(&mut self) -> Result<()> {
-        let mut state = State::LiteralControl;
+        // Every branch of the entry sequence below assigns this, so it is
+        // declared without a value rather than initialised to one that is
+        // immediately overwritten.
+        let mut state;
 
         // The first byte is read before the loop, mirroring the entry
         // sequence at `0x4c558c`.

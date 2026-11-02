@@ -19,7 +19,6 @@
 use mmf_extract::container::{Container, ContainerKind};
 use mmf_extract::sound;
 use mmf_extract::sound::format_of;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// The first game's containers, which is where the byte order was measured.

@@ -134,6 +134,69 @@ Current measurement: R 5.81%, G 5.45%, B 8.71%.
 * `tests/scripts.rs` verifies every `--original` file byte-for-byte against
   its `[off[i], off[i+1])` container slice.
 
+## 4a. Verification of every extracted image and sound, all four games
+
+Done as two halves, because they answer different questions. Both were run over
+**every** game: the first (`Dati`), the second (`dma2`), the third
+(`dma4/Data`), and the 3D game.
+
+**1. Exhaustive and programmatic — every file, no sampling.**
+
+* `cargo check --all-targets`: 0 errors. The only remaining warnings are in the
+  other agent's scratch bins (`texmeasure`, `oddfix`, `oddcol`, `oddscan`); the
+  ones in `src/lz77.rs`, `src/dma3d/modfile.rs`, `tests/sounds.rs`,
+  `tests/dma3d.rs` and `tests/sound_order.rs` were all fixed on the way. Four of
+  them were real: a `use super::*` that was dead, an `unused_mut` hiding a
+  counter that was never incremented (so "0 references" was being asserted), an
+  unused import, and — the one that mattered — `tests/sounds.rs` had a complete
+  and valid `--original` test that had lost its `#[test]` attribute, so the
+  sound archival promise was not actually being checked.
+* Pictures: `imgcheck` decodes every PNG and reports the channel-zero fractions
+  that the old channel-order bug produced. **83,003 pictures** (game 1 12,961;
+  game 2 39,628; game 3 30,404) all pass with the three channels balanced. Game
+  3 reproduces the numbers `STATUS.md` already recorded (R 5.81%, G 5.45%,
+  B 8.71%) exactly, which is the check that the extraction is reproducible.
+* 3D images: 705 textures, 1,024 film frames and 144 model previews, all with
+  balanced channels; the films' 95% opaque-black is the intros' black
+  background, and the visible pixels carry the logos.
+* Sounds: `earshot measure` on **all 2,170 FLACs** (451 + 891 + 683 + 145),
+  reporting duration, LUFS, true peak, noise floor, DC, clipping and bandwidth.
+  No file is silent except the one literally named `silence.flac`. The DC
+  offsets that looked suspicious were checked against the source and are not
+  decode errors: `ITchalkINUSEattack` and `TthAkS01` are stored 8-bit PCM, so
+  the payload *is* the samples and its own DC is +0.1619 — exactly what the
+  decode produces. The other flagged files are `Dpcm16`, where the payload's
+  byte mean means nothing; those were settled independently instead.
+* An independent re-implementation of `decode_dpcm`, written from the format
+  notes rather than by calling the Rust one, reproduces the extractor's samples
+  **byte for byte** on `ICflushCLICK`, `IStoolareaHOTSPOTrolloff`,
+  `shrFxBtScrollBD`, `shrFxBtScrollFD` and `ITchalkINUSEattack`, and every
+  decoded length equals the container's own declared size.
+
+**2. Judgement — needs ears and eyes, so sampled.**
+
+* `earshot realness` on 32 sounds across the four games: 30 "real or
+  pro-produced" (p_real 0.61–0.99). The two exceptions are honest findings about
+  the *source*, not the extraction: one is a steady oscillator-like UI tone and
+  one an 8 s loop the tool calls weak calibration.
+* `earshot describe` on five sounds: the descriptions match the resource names.
+  `CPtBtS01` reads as "an enter key press / a box lid closing" — it is a button
+  click; `PollockINUSEloop` as "a squishy wet squelch, digging in soil" — it is
+  a paint loop; `Circus1` tags as Music 0.44 / Drum 0.29; `createAxMickeySoccer`
+  as "a basketball bouncing, dominoes falling".
+* `qwen/qwen3.8-27b` on **386 extracted images** across the four games, each
+  asked what it depicts and whether it is coherent or the noise a wrong
+  palette/stride/bit-depth produces. Images under 32×32 (which Groq refuses)
+  were nearest-neighbour upscaled first, which duplicates pixels and changes
+  nothing else.
+
+**The one asset that was still failing and now is not:** `mpApp.SND` resource
+119 `SifBtS10.aif`. Its format byte says 16-bit and its payload is 7,817 bytes
+— an odd count that no 16-bit reading can account for. The decoder only refused
+to switch *to* 16 for odd payloads; now it also switches away, and the payload
+length is what decides, per `AGENTS.md`. It extracts as a 0.355 s "error buzz"
+UI sound and `describe` agrees.
+
 ## 5. Films — what is solved (see `docs/FILMS.md`)
 
 * `DMA.MMF` holds **one** film, `Intro.flm` (6,856,628 bytes). The Films

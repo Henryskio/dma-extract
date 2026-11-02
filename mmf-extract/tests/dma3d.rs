@@ -477,8 +477,10 @@ fn the_modern_output_is_a_browsable_whole() {
             .filter(|s| s.starts_with("Models/") || s.starts_with("Textures/"))
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
-        // A figure is a link and an image, so each asset appears twice in the
-        // markup; the distinct paths are what must exist.
+        // Every asset is a figure with a link and an image, but a texture's
+        // link and image are the same path while an object's are not, so the
+        // distinct paths are what must exist and the occurrences are counted
+        // separately below.
         let mut distinct = references.clone();
         distinct.sort();
         distinct.dedup();
@@ -499,12 +501,33 @@ fn the_modern_output_is_a_browsable_whole() {
             144,
             "the index does not link every model"
         );
+        let before = reference_count;
         for reference in &references {
+            reference_count += 1;
             assert!(
                 tmp.join(reference).is_file(),
                 "the index refers to {reference}, which is not on disk"
             );
         }
+        // A texture's figure links to the very file it shows, so its path
+        // appears twice (once as the link, once as the image); an object's
+        // figure links to its `.gltf` and shows its `.preview.png`, which are
+        // two different paths. So the occurrence count is the distinct count
+        // plus the number of textures, and asserting that is what keeps the
+        // page from silently dropping a figure. The count is reset per disc so
+        // the second disc's page is checked against its own markup.
+        let texture_count = distinct.iter().filter(|p| p.starts_with("Textures/")).count();
+        assert_eq!(
+            reference_count - before,
+            distinct.len() + texture_count,
+            "the index's markup does not reference every asset as expected"
+        );
+        assert_eq!(texture_count, 705, "the index does not list every texture");
+        assert_eq!(
+            distinct.len() - texture_count,
+            288,
+            "the index does not list every object's preview and model"
+        );
 
         // ---- every object's preview covers pixels ----
         let model_dir = tmp.join("Models").join("DMA3D");

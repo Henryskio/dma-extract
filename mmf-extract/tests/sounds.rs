@@ -306,6 +306,9 @@ fn assert_streaminfo_matches(name: &str, index: usize, path: &Path, decoded: &so
     );
 }
 
+/// `--original` must write the decoded samples unchanged, and the decoded
+/// length must match the container's own size table.
+#[test]
 fn original_output_is_the_decoded_payload_verbatim() {
     let Some(dir) = raw_assets_dir() else {
         eprintln!("skipping: game assets not present");
