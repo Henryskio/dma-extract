@@ -44,46 +44,59 @@ That is `docs/PICTURES.md` §1, unchanged. Only the **metadata region**
 between the names table and the first payload differs per kind, and this game
 adds two kinds.
 
-### 2.1 The two region sizes, corrected
+### 2.1 The two region sizes, measured against two discs
 
-| kind | region length | measured on |
-|---|---|---|
-| `Models` | `4*N + 100` | `DMA3D.MMM`, N=460: region 1,940 bytes |
-| `Textures` | `32*N + 4*N + 2*N + 2` | `DMA3D.MMX`, N=705: region 26,792 bytes |
+| kind | region length | Italian disc (this audit) | English disc (earlier notes) |
+|---|---|---|---|
+| `Models` | `4*N + 100` | `DMA3D.MMM`, N=460: 1,940 bytes — matches | `4*N + 100` |
+| `Textures` | `6*N + 2` | `DMA3D.MMX`, N=705: 4,232 bytes — matches | was recorded as `32*N + 4*N + 2*N + 2` (26,792) — **wrong** |
 
-Both were checked structurally, not just arithmetically: `offsets[0]` lands
-exactly at `names_end + region_len`, `offsets[N]` equals the file length, the
-table is monotone, and each region holds Mac-style timestamps in the `0xb5..`
-range the sound containers use.
+Both are the same measurement: `names_end` to `offsets[0]`, with the offsets
+read as big-endian `u32` from `0x24`, on the shipped files. `src/dma3d.rs`
+(`models_meta_len`, `textures_meta_len`) and `MmfExtract/Container.lean` both
+carry `4*N + 100` and `6*N + 2`, and those are the two figures the shipped
+containers confirm: 1,940 vs `4*460 + 100`, 4,232 vs `6*705 + 2`.
 
-The `Textures` region was measured **wrong** at first, as `6*N + 2`. That is
-too small by a whole 32-byte-per-resource table, and `container.rs` read the
-`attr`, `flags`, `dimensions` and `sizes` arrays out of the middle of the names
-table as a result. Nothing downstream used them, which is why the byte-exact
-round-trip tests never noticed. The corrected reading of the 26,792 bytes is:
+The `Textures` row's history is worth writing down, because it is the reason
+this section exists. An earlier note recorded the region as `32*N + 4*N + 2*N + 2`
+= `38*N + 2` (26,792 bytes for N=705), which is 6.3 times the measured 4,232;
+the region between the names table and the first payload cannot be 26,792 bytes
+when the whole container is 26,792 bytes past the tables. The `6*N + 2` figure
+was right all along, and `lean/BINARY-AUDIT.md` §5 measures it on the shipped
+container.
 
-```text
-names        32 * N         "CreationSlotTex.TGA", ...
-timestamps    4 * N u32     0xb5d16d67, ... Mac-style
-two bytes     2 * N         not identified; see §6
-padding       2 bytes
-```
-
-The models' 100-byte trailer is **not** a per-resource array. Its content is
-a reference to another container:
+The 100-byte `Models` trailer is **not** a per-resource array, and its content
+is disc-specific — the two measurements we have disagree, so both are recorded
+rather than one being asserted:
 
 ```text
+Italian disc, DMA3D.MMM (audit §5):
+names        32-byte-padded "shrBtQuit.mod", "shrDgAnotherTextbox.mod",
+             "shrDgParentalBtCheckboxN.mod", a truncated "shrDgPA9"
++0xe2ee      a 2-byte marker
+             then a 16-byte GUID {780F7A49-3ED3-6511-9D9B-2D366EFAB8}
+
+English disc, DMA3D.MMM (earlier notes):
 +0   u16 2
 +2   u16 1
 +4   u32 0
 +8   u32 the texture container's timestamp
-+12  30 bytes  "DMA3D.MMX", NUL padded
-+42  58 bytes  0xff padding
++12 30 bytes  "DMA3D.MMX", NUL padded
++42 58 bytes  0xff padding
 ```
 
-That is the models' record of which texture file their materials come from.
-It is measured, not decoded.
+Either way it is the models' record of where their materials come from, measured
+rather than decoded, and it is read verbatim either way: nothing in the extractor
+parses it, so a wrong description cannot change a byte of output.
 
+The `Textures` region's internals are also read verbatim, and their description
+is corrected the same way: the first `4*N` bytes are 32-byte-padded `.TGA` names
+(`dialogBtOk.2.TGA`, `dog.TGA`, `tQuit.1..4.TGA`, …), not Mac-style timestamps,
+and the tail is a column of `0xb5b5*` values (`b5bd8235`, `b5bd823b`,
+`b5bd8241`, …) — one per resource, which look like offsets into a shared texture
+atlas. The "two `N`-byte arrays read as `attr` and `flags`" reading was a
+hypothesis the payload decoder never confirmed, and the bytes contradict it, so
+it is dropped rather than kept.
 ## 3. The `.mod` payload — the mesh
 
 `src/dma3d/modfile.rs` reads the mesh out of a model payload.
@@ -496,13 +509,19 @@ arrived with more than one film. The layout, the disassembly and the arithmetic
 that settles the field order are all in **`FILMS.md`** §2.
 
 The three rects, each confirmed by its own key-frame chunk's declared decoded
-size:
+size. **There are two measured sets**, because the two discs this game shipped
+on are not byte-identical; the widths agree, which is the part that proves the
+field order, and the absolute top/left/bottom/right do not:
 
-| film | rect | width | height | stride | frame bytes |
-| --- | --- | --- | --- | --- | --- |
-| `introAxDisney` | `0, 0, 600, 800` | 800 | 600 | 800 | 480,000 |
-| `introAxImageBuilder` | `60, 107, 486, 696` | 589 | 426 | 592 | 252,192 |
-| `introAxSplash` | `60, 80, 540, 720` | 640 | 480 | 640 | 307,200 |
+| film | English disc (earlier notes) | Italian disc (`lean/BINARY-AUDIT.md` §4c) | width | height |
+| --- | --- | --- | --- | --- |
+| `introAxDisney` | `0, 0, 600, 800` | `0, 0, 480, 640` | 800 | 600 |
+| `introAxImageBuilder` | `60, 107, 486, 696` | `0, 27, 441, 616` | 589 | 426 |
+| `introAxSplash` | `60, 80, 540, 720` | `0, 0, 480, 640` | 640 | 480 |
+
+`tests/film_3d.rs` pins the English-disc set, because that is the container the
+suite runs against here. Both sets give the same widths and the same 589/592
+stride detail, which is what the field order rests on.
 
 `introAxImageBuilder`'s width of 589 padded to a 592-byte stride is the
 detail that proves the field order: reading the rect as

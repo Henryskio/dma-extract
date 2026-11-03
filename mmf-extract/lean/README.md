@@ -77,6 +77,17 @@ deltas and points at the shared module rather than restating it. `Container`
 imports `V1.Metadata` and never the other way round, which is why the shared
 parser and the first game's cannot be edited into each other.
 
+## The two other documents here
+
+* **`CORRECTIONS.md`** — every place the port had to choose between the Rust
+  code, the `docs/` chain and a measurement, and what it chose. It also records
+  the three bugs the port itself had, all caught by a test: the version-1
+  `--original` payload, the differential PCM's byte order, and a parity test
+  that was silently selecting nothing.
+* **`BINARY-AUDIT.md`** — a subagent's re-derivation of five format rules from
+  the game's own instructions with REA/rizin, rather than from the Rust source
+  or the docs. Its verdicts feed `CORRECTIONS.md` §9.
+
 ## What is not ported yet
 
 `Dma3d`'s **modern model path** — `src/dma3d/gltf.rs`, `modfile.rs`, `anim.rs`,
