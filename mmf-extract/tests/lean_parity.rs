@@ -56,10 +56,14 @@ fn smallest_picture_container(dir: &Path) -> Option<PathBuf> {
         if !path.is_file() {
             continue;
         }
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        // The second and third game's picture containers, and the first
-        // game's, which the shared skeleton reads too.
-        if !stem.ends_with("MMP") && stem != "HD" && !stem.ends_with(".PIC") && "Topolino" != stem {
+        // The extension names the kind, not the stem: `stmp1.MMP` has the stem
+        // `stmp1`, so a stem test matches nothing and the check silently skips.
+        let extension = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if extension != "MMP" && extension != "PIC" && extension != "CPK" {
             continue;
         }
         let Ok(container) = Container::open(&path) else {
@@ -99,8 +103,9 @@ fn the_lean_core_writes_the_same_pictures_as_the_rust_reference() {
         return;
     };
     let Some(source) = smallest_picture_container(&asset_dir) else {
-        eprintln!("no picture container: skipping the Lean/Rust parity test");
-        return;
+        // A selector that finds nothing would silently compare nothing, which
+        // is the failure mode that hid a real bug once already.
+        panic!("no picture container in {}", asset_dir.display());
     };
     println!(
         "comparing the Lean extractor against the Rust reference on {}",
@@ -213,8 +218,12 @@ fn smallest_sound_container(dir: &Path) -> Option<PathBuf> {
         if !path.is_file() {
             continue;
         }
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        if !stem.ends_with("MMA") && !stem.ends_with("SND") {
+        let extension = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if extension != "MMA" && extension != "SND" {
             continue;
         }
         let Ok(container) = Container::open(&path) else {
@@ -261,8 +270,7 @@ fn the_lean_core_writes_the_same_sounds_as_the_rust_reference() {
         return;
     };
     let Some(source) = smallest_sound_container(&asset_dir) else {
-        eprintln!("no sound container: skipping the Lean/Rust sound parity test");
-        return;
+        panic!("no sound container in {}", asset_dir.display());
     };
     println!(
         "comparing the Lean extractor against the Rust reference on {}",
@@ -295,12 +303,22 @@ fn the_lean_core_writes_the_same_sounds_as_the_rust_reference() {
     let lean_sounds = lean_out.join("Sounds").join(&stem);
 
     for entry in &rust_report.resources {
-        let reference_flac = rust_out.join(format!("{:05}_{}.flac", entry.index, entry.name));
-        let lean_flac = lean_sounds.join(format!("{:05}_{}.flac", entry.index, entry.name));
+        // The reference's own report names the file it wrote, so the comparison
+        // cannot drift to a path that does not exist. The Lean core writes the
+        // same name in its own tree.
+        let reference_flac = entry.path.clone();
+        let lean_flac = lean_sounds.join(reference_flac.file_name().unwrap());
         assert!(
             lean_flac.is_file(),
-            "the Lean core did not write {} for sound {}",
+            "the Lean core did not write {} for sound {} ('{}')",
             lean_flac.display(),
+            entry.index,
+            entry.name
+        );
+        assert!(
+            reference_flac.is_file(),
+            "the reference did not write {} for sound {}",
+            reference_flac.display(),
             entry.index
         );
         // Both tools encode with the same official `flac` tool at the same level
@@ -383,7 +401,9 @@ fn the_lean_core_writes_the_same_films_as_the_rust_reference() {
     );
 
     let stem = source.file_stem().unwrap().to_str().unwrap().to_string();
-    let rust_film_dir = rust_out.join(&stem);
+    // The Rust extractor writes `<out>/<index>_<name>/…`, while the Lean driver
+    // nests the same directories under `Films/<stem>`.
+    let rust_film_dir = rust_out.clone();
     let lean_film_dir = lean_out.join("Films").join(&stem);
     for film_dir in std::fs::read_dir(&rust_film_dir).expect("read the reference's films") {
         let film = film_dir.expect("read one film");

@@ -693,6 +693,10 @@ private def jf (name : String) (value : String) : String :=
 private def jObj (fields : List String) : String :=
   "{" ++ String.intercalate ", " fields ++ "}"
 
+/-- The name one frame's PNG is written under: a three-digit index, the way
+the Rust extractor spells it. -/
+def frameName (i : Nat) : String := "frame_" ++ pad0 3 i ++ ".png"
+
 /-- The manifest describing one film's timeline and audio. -/
 def manifestJson (container : Container) (film : Film) : String := Id.run do
   let mut s := ""
@@ -727,7 +731,7 @@ def manifestJson (container : Container) (film : Film) : String := Id.run do
     s := s ++ s!"      {q}start_ms{q}: {frame.startTick},\n"
     s := s ++ s!"      {q}duration_ms{q}: {frame.durationTick},\n"
     s := s ++ s!"      {q}duplicate{q}: {frame.duplicate},\n"
-    s := s ++ s!"      {q}png{q}: {q}frame_{MmfExtract.Path.padIndex i}{q},\n"
+    s := s ++ s!"      {q}png{q}: {q}{frameName i}{q},\n"
     let source :=
       match frame.fullChunk, frame.deltaChunk, frame.timestampChunk with
       | some offset, _, _ =>
@@ -789,7 +793,7 @@ def writeModern (container : Container) (film : Film) (dir : System.FilePath) : 
   for (frame, i) in film.frames.toList.zipIdx do
     let rgba := Picture.indexedRgbaStride film.palette frame.indices
       film.width film.height film.stride
-    Picture.writePng (MmfExtract.Path.join dir (s!"frame_{MmfExtract.Path.padIndex i}.png"))
+    Picture.writePng (MmfExtract.Path.join dir (frameName i))
       { width := film.width, height := film.height,
         format := MmfExtract.Picture.PixelFormat.paletted8, rgba }
   IO.FS.writeBinFile (MmfExtract.Path.join dir "manifest.json") ((manifestJson container film).toUTF8)

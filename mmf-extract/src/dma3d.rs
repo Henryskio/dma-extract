@@ -58,11 +58,14 @@ use std::path::{Path, PathBuf};
 /// Measured on `DMA3D.MMM` (N=460): the region between `names_end` (16602)
 /// and `offsets[0]` (18542) is 1940 bytes and `4*460 + 100 == 1940`.
 ///
-/// The trailer is not a per-resource array -- its content is a *reference to
-/// another container*: `u16 2`, `u16 1`, `u32 0`, the 4-byte timestamp of the
-/// textures container, a 30-byte NUL-padded name field holding `DMA3D.MMX`,
-/// then 58 bytes of `0xff` padding. That is the models' record of which
-/// texture file their materials come from. It is measured, not decoded.
+/// The trailer is not a per-resource array, and its content is read verbatim,
+/// not decoded — which is why the two descriptions this function has carried
+/// could both be wrong without changing a byte of output. On the English disc
+/// it was read as a reference to another container (`u16 2`, `u16 1`, `u32 0`,
+/// a timestamp, a 30-byte `DMA3D.MMX` name, `0xff` padding); `lean/BINARY-AUDIT.md`
+/// §5 reads the Italian disc's same 100 bytes as 32-byte-padded `.mod` names, an
+/// `0xe2ee` marker and a 16-byte GUID. Nothing here parses either reading, so
+/// only the length is asserted.
 pub fn models_meta_len(n: usize) -> usize {
     4 * n + MODELS_META_TRAILER
 }
@@ -78,6 +81,11 @@ pub const MODELS_META_TRAILER: usize = 100;
 /// are read here as `attr` and `flags`, the same positions the picture
 /// containers use, and that reading is a hypothesis the payload decoder has
 /// not confirmed.
+///
+/// The intermediate split is a hypothesis only, and `lean/BINARY-AUDIT.md` §5
+/// reads the Italian disc's 4,232 bytes as 32-byte-padded `.TGA` names followed
+/// by a column of `0xb5b5*` values, which contradicts it. Only the total is
+/// asserted here; the bytes are read verbatim.
 pub fn textures_meta_len(n: usize) -> usize {
     6 * n + 2
 }

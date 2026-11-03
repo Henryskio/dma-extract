@@ -123,10 +123,16 @@ def formatOf (container : Container) (index : Nat) : Except String SoundFormat :
   let bits : UInt16 := if (attr &&& 4) != 0 then 16 else 8
   return { sampleRate := rate, channels, bitsPerSample := bits }
 
-/-- Convert one `Int16` to its two little-endian bytes. -/
+/-- Convert one `Int16` to its two little-endian bytes.
+
+Least significant byte first: the WAV writer's 16-bit path, the DPCM decoder's
+output and `ofLe16` all agree on that order, and getting it wrong here would
+byte-swap every differential sample while the stored-PCM path still round-tripped
+— which is exactly what a test that only covers stored PCM would miss.
+-/
 private def le16 (v : Int16) : ByteArray :=
   let bits := (Int16.toUInt16 v).toUInt64
-  ByteArray.mk #[((bits >>> 8).toNat &&& 0xFF).toUInt8, (bits.toNat &&& 0xFF).toUInt8]
+  ByteArray.mk #[(bits.toNat &&& 0xFF).toUInt8, ((bits >>> 8).toNat &&& 0xFF).toUInt8]
 
 /-- Read two little-endian bytes back as an `Int16`. -/
 private def ofLe16 (b0 b1 : UInt8) : Int16 :=

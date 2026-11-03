@@ -10,9 +10,11 @@ hound = "3.5"
 png = "0.18.1"
 sha2 = "0.11.1"
 
-# The audio encoder is not a crate: `src/sound.rs` shells out to `ffmpeg`, which
-# is the only FLAC encoder reachable from here and whose 16-bit support this
-# project needs. See the module's note on why the Rust `flac` crate is not used.
+# The audio encoder is not a crate: the extractor shells out to the official
+# `flac` tool (`apt install flac` / `brew install flac`), which keeps the source
+# width -- an 8-bit file reports 16-bit when ffmpeg encodes it, so ffmpeg cannot
+# be used here. This comment previously named ffmpeg, which the code has not
+# shelled out to for a long time; see `lean/CORRECTIONS.md` §1.
 
 [dev-dependencies]
 # The parity test decodes both tools' PNGs back to pixels.

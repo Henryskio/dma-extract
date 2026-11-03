@@ -1,6 +1,7 @@
 import MmfExtract.Bytes
 import MmfExtract.Container
 import MmfExtract.Lz77
+import MmfExtract.Sound
 import MmfExtract.Dma3d.Texfile
 
 
@@ -74,6 +75,76 @@ def checkLz77RoundTrip : IO Bool := do
       IO.eprintln s!"lz77 round-trip mismatch for {payload.size} bytes"; ok := false
   return ok
 
+/-- The differential decoder's three vectors, from `src/sound.rs`'s own unit
+tests: the silence code produces zero samples, and the predictor is independent
+per channel. -/
+def checkDpcm : IO Bool := do
+  let mut ok := true
+  let wanted : List ByteArray := [
+    ByteArray.mk #[0, 0, 0, 0, 0, 0, 0, 0],                          -- the silence code
+    ByteArray.mk #[1, 0, 1, 8, 1, 16, 0, 0],                         -- 1, 2049, 4097, 0
+    ByteArray.mk #[1, 0, 1, 0, 1, 8, 1, 8]]                          -- 1, 1, 2049, 2049
+  let inputs : List (ByteArray × UInt16) := [
+    (ByteArray.mk #[0xF8, 0xF8, 0xF8, 0xF8], 1),
+    (ByteArray.mk #[0, 0x30, 0x30, 0xF8], 1),
+    (ByteArray.mk #[0, 0, 0x30, 0x30], 2)]
+  for ((input, channels), want) in inputs.zip wanted do
+    match Sound.decodeDpcm input channels with
+    | .error e => IO.eprintln s!"dpcm failed: {e}"; ok := false
+    | .ok got =>
+      if got != want then
+        IO.eprintln s!"dpcm produced {got}, expected {want}"
+        ok := false
+  -- A zero-channel stream is rejected rather than dividing by zero.
+  match Sound.decodeDpcm ByteArray.empty 0 with
+  | .ok _ => IO.eprintln "a zero-channel stream was accepted"; ok := false
+  | .error _ => pure ()
+  return ok
+
+/-- The differential codec, exercised on a real shipped resource.
+
+`HD.MMA` and `app.MMA` both hold resources whose flags byte is `9` — the
+differential codec — so the path is not a synthetic-only one; the parity test
+compares the resulting FLACs against the Rust reference byte for byte.
+-/
+def checkDifferentialSounds : IO Bool := do
+  let mut ok := true
+  let mut found := 0
+  for name in ["/RawAssets/app.MMA", "/RawAssets/HD.MMA"] do
+    let opened ← Container.read (System.FilePath.mk name)
+    match opened with
+    | .error e => IO.eprintln s!"{name}: {e}"; ok := false
+    | .ok container =>
+      for i in [0:container.resourceCount.toNat] do
+        -- `flags & 3 != 0` is the differential codec (`docs/SOUNDS.md` §2).
+        let flags := container.flags[i]?.getD 0 |>.toNat
+        if flags &&& 3 != 0 then
+          found := found + 1
+          match Sound.decode container i with
+          | .error e =>
+            IO.eprintln s!"{name} resource {i}: {e}"
+            ok := false
+          | .ok result =>
+            let decoded := result.sound
+            -- One stored byte expands to one 16-bit sample, so the output is
+            -- exactly twice the payload, in whole frames of one channel.
+            let stored := (Container.payload container i).toOption.getD ByteArray.empty
+            if decoded.pcm.size != stored.size * 2 then
+              IO.eprintln s!"{name} resource {i}: {stored.size} stored bytes expanded to {decoded.pcm.size}"
+              ok := false
+            if decoded.encoding != Sound.Encoding.dpcm16 then
+              IO.eprintln s!"{name} resource {i} is not the differential encoding"
+              ok := false
+            if decoded.format.bitsPerSample != 16 then
+              IO.eprintln s!"{name} resource {i}: differential output is not 16-bit"
+              ok := false
+  if found == 0 then
+    IO.eprintln "no differential sound was found in the shipped containers"
+    ok := false
+  else
+    IO.println s!"{found} differential sounds decoded"
+  return ok
+
 /-- A synthetic texture: a four-entry palette and 64 index bytes, which is a
 perfect square at every candidate width.
 
@@ -105,7 +176,7 @@ def checkTextures : IO Bool := do
     -- A payload whose index bytes are not a power of two must be reported, not
     -- factored into a width no texture in this engine can have.
     let mut odd := ByteArray.emptyWithCapacity (4 * 4 + 63)
-    for entry in [0:4] do
+    for _entry in [0:4] do
       odd := odd.append (ByteArray.mk #[255, 0, 0, 255])
     for _ in [0:63] do
       odd := odd.push 1
@@ -132,5 +203,7 @@ def main (_args : List String) : IO UInt32 := do
   let mut ok := true
   if !(← checkLz77RoundTrip) then ok := false
   if !(← checkTextures) then ok := false
+  if !(← checkDpcm) then ok := false
+  if !(← checkDifferentialSounds) then ok := false
   if !(← checkContainers "/RawAssets") then ok := false
   if ok then IO.println "all checks passed"; return 0 else return 1

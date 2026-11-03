@@ -22,6 +22,14 @@ For the `0x10..0x1F` form the distance gains a further `0x4000` when bit 3 of
 the control byte is set, giving a 32 KiB window instead of 16 KiB. A zero base
 offset with bit 3 clear is the end-of-stream marker (`0x4c56bd`).
 
+The `0x4000` in that table is a **base**, not an extra step, and the assembly
+reads it in two places rather than one (`lean/BINARY-AUDIT.md` §3): the
+end-of-stream test subtracts the offset first and only then subtracts the
+`0x4000` base, which is why a zero offset with bit 3 clear ends the stream
+rather than reaching 0x4000 bytes back. The distance the copy actually uses is
+`0x4000 + (O0>>2) + (O1<<6)` with bit 3 subtracting a further `0x4000`, which
+is the total `Lz77.threeByteOffset` computes.
+
 ## Other forms
 
 * `0x4c5593` -- a control byte above `0x11` means "copy `C - 0x11` literals

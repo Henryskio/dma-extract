@@ -116,8 +116,15 @@ fn lean_string(object: *mut std::ffi::c_void) -> Result<String> {
 /// The Lean runtime is initialised on the first call and left in place: a long
 /// program may extract more than one asset folder, and re-initialising it is
 /// both unnecessary and unsupported.
+///
+/// The calls are serialised by a lock. `unsafeIO` runs the Lean action
+/// immediately on the calling thread, and the Lean runtime is not prepared for
+/// that from two threads at once — with the test suite's default parallelism
+/// the process aborts inside the runtime. The CLI is single-threaded anyway, so
+/// the lock costs it nothing.
 pub fn run(request: &Request) -> Result<Report> {
     static INIT: std::sync::Once = std::sync::Once::new();
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     INIT.call_once(|| unsafe {
         lean_initialize_runtime_module();
         let initialised = initialize_lean_core();
@@ -126,6 +133,7 @@ pub fn run(request: &Request) -> Result<Report> {
             panic!("the Lean extraction core could not be initialised");
         }
     });
+    let _serialised = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let c_request = request.render()?;
     let reply = unsafe {
@@ -137,9 +145,6 @@ pub fn run(request: &Request) -> Result<Report> {
         if result.is_null() {
             bail!("the Lean extraction core returned nothing");
         }
-        // The Lean core's `mmf_extract` returns a `String`, whose payload is
-        // NUL-terminated; the report is line-oriented text, so reading it as a
-        // C string loses nothing.
         lean_string(result)?
     };
 
