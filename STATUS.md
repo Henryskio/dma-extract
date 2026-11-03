@@ -28,8 +28,10 @@ blobs, `--original` byte-exact for 13,717 of 13,718 resources. `HD.PIC` and
 
 | What | Path |
 |---|---|
-| Final Rust extractor (the deliverable) | `/workspace/mmf-extract` |
-| Builds offline | `cargo build` → `target/debug/mmf-extract` (debug is the convention) |
+| Final extractor (the deliverable) | `/workspace/mmf-extract` — Lean core + Rust CLI |
+| Builds offline | `cargo build` → `target/debug/mmf-extract`, and `lean/build/libmmfextract.so` |
+| Lean extraction core | `/workspace/mmf-extract/lean` (Lake project, `lean/src/MmfExtract/`) |
+| Lean port specs | `lean/PORT-SOUND.md` (sound + v1), `lean/PORT-REST.md` (script/film/3D) |
 | Extracted pictures (30,404 PNGs) | `/workspace/extracted/Pictures/…`, raw payloads in `/workspace/extracted/Raw/…` |
 | Extracted scripts (4,813 objects) | `/workspace/extracted/Scripts/HD/…` |
 | Extracted films (139 frames; 1,024 for the 3D game) | `/workspace/extracted/Films/DMA/00000_Intro/…` |
@@ -39,6 +41,24 @@ blobs, `--original` byte-exact for 13,717 of 13,718 resources. `HD.PIC` and
 | Workspace layout contract | `/workspace/docs/WORKSPACE.md` |
 | Agent instructions | `/workspace/AGENTS.md` (agents.md format) |
 | Game archives (read-only) | `/RawAssets/` (see table below) |
+
+The extraction itself is in Lean (`lean/src/MmfExtract/`): the Rust CLI
+(`src/main.rs`, `src/cli.rs`) parses the arguments, sends a request to the Lean
+core (`src/lean.rs`) and prints the report it gets back. The Rust decoder
+modules stay as the reference implementation for the analysis bins in
+`src/bin/` and for the parity test `tests/lean_parity.rs`. Pinned so far, with
+the parity test as evidence: **pictures** (v2/3 and v1 — pixel-identical to the
+Rust reference), **sounds** (byte-identical FLACs; HD.MMA+app.MMA = 683 written,
+0 failures), **scripts** (HD.MMS = 4,813 objects; payload/record/tail bytes
+3,329,791 / 3,282,998 / 46,793, the numbers `tests/scripts.rs` asserts).
+Films are ported (`DMA.MMF`: 139 frames + a manifest identical to the Rust
+reference's). The 3D game's **textures** are ported (PNG decode with the
+measured orientation decision) and `--original` writes both 3D containers'
+payloads byte for byte; the **modern model path** (glTF/mesh/animation/preview)
+is not ported yet and is reported as a per-resource failure rather than guessed
+at. The 3D containers are not in `/RawAssets` — they ship inside
+`Disney Creazioni in 3D (Italy).zip` — so that path is unmeasured in this
+workspace.
 
 CLI of the deliverable (`src/main.rs`, `src/cli.rs`):
 

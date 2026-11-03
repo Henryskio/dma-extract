@@ -27,10 +27,35 @@ match resource for resource — DMA Studio (`magicartiststudio`) and DMA Deluxe
 before the odd-payload run-length format was solved (`docs/PICTURES.md`
 §7.3), which added 105 pictures to game 3 and 1,181 to game 2.
 
+## The extraction is written in Lean
+
+The extractor is split in two, and the split is the point:
+
+* **`src/` (Rust)** keeps the command line. `main.rs` parses the arguments,
+  `cli.rs` turns them into a request and prints the report — nothing else.
+* **`lean/` (Lean 4, a Lake project)** holds everything that reads a container
+  or decodes a resource, and writes the output. `lean/src/MmfExtract/` contains
+  `Container`, `Lz77`, `Picture`, `Sound`, `Script`, `V1.*`, and the driver, one
+  module per format, mirroring `docs/` the same way the Rust modules did.
+
+`cargo build` builds both: `build.rs` runs `lean/build/build.sh`, which builds
+the Lake project and links `lean/build/libmmfextract.so`, and generates the Rust
+side of the C ABI from the symbols that library actually exports (the module
+initializer's name carries the Lake package name, so it is read rather than
+assumed). At run time `src/lean.rs` hands the core a request and reads its
+report back; the boundary is line-oriented text, so neither side knows the
+other's types.
+
+Two modules in `src/` remain as the **reference implementation** the Lean port
+was written against: `picture.rs`, `sound.rs`, `film.rs`, `script.rs`, `v1/` and
+`dma3d/` still decode containers, are still used by the analysis bins in
+`src/bin/`, and are what `tests/lean_parity.rs` compares the Lean output against
+(its sounds are byte-identical, its pictures identical pixel for pixel).
+
 ## Quick start
 
 ```sh
-cargo build
+cargo build                       # builds the Lean core too
 ./target/debug/mmf-extract /PathAssets -o out                   # modern, lossless
 ./target/debug/mmf-extract /PathAssets -o out --original        # game's own bytes
 ./target/debug/mmf-extract /PathAssets -o out --types pictures,sounds

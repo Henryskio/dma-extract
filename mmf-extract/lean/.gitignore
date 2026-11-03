@@ -1,0 +1,5 @@
+# Lake's build output: oleans, generated C, and the shared library the Rust
+# crate links. `build/build.sh` produces it from the sources in `src/`.
+/.lake/
+/build/
+/lake-manifest.json

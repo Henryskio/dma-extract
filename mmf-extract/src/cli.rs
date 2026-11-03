@@ -8,106 +8,77 @@
 //!   own on-disk format: the decompressed picture payload exactly as the
 //!   runtime would hand it to the blitter, or the sound's sample data in
 //!   its original encoding.
+//!
+//! The extraction itself is in Lean (`lean/src/MmfExtract/`): `run` below hands
+//! a request to the Lean core and reads its report back, so the parsing, the
+//! decoders and the output writers have one home.
 
-use crate::container::{Container, ContainerKind};
-use crate::picture;
+use crate::lean;
 use crate::picture::Decoded;
 use crate::v1;
-use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use anyhow::Result;
+use std::path::Path;
 
 /// The picture decoder to use for `container`.
-///
-/// This is the one place in the program that knows which container version
-/// needs which decoder. Version 1 is the first game's format, whose payloads
-/// are compressed with a different routine and whose palettes live outside the
-/// payload, so it gets its own path in [`crate::v1`]; every other version uses
-/// the shared one here.
-///
+
+/// This is the one place that knows which container version needs which
+/// decoder, and it belongs to the *reference* implementation: version 1 is the
+/// first game's format, whose payloads are compressed with a different routine
+/// and whose palettes live outside the payload, so it gets its own path in
+/// [`crate::v1`]; every other version uses the shared one.
+
 /// Keeping the choice in the wiring layer is deliberate: neither decoder has
 /// to mention the other's container, so editing one cannot change the other's
-/// output.
-pub fn picture_decoder(container: &Container) -> fn(&Container, usize) -> Result<Decoded> {
+/// output. The Lean extraction core picks the same two decoders, in
+/// `lean/src/MmfExtract/Extract.lean`.
+pub fn picture_decoder(container: &crate::container::Container) -> fn(&crate::container::Container, usize) -> Result<Decoded> {
     if container.version == 1 {
         v1::picture::decode
     } else {
-        picture::decode
+        crate::picture::decode
     }
 }
 
 /// The payload function to use for `container`.
-///
+
 /// The companion to [`picture_decoder`], for the `--original` mode, which has
 /// to write the payload *after* whatever decompression step the container's
 /// version applies — the bytes the game's runtime would hand to its blitter.
-///
-/// Both dispatchers exist for the same reason and are read the same way:
-/// neither the shared modules nor the first game's module has to know that the
-/// other's version exists.
-pub fn picture_payload(container: &Container) -> fn(&Container, usize) -> Result<Vec<u8>> {
+pub fn picture_payload(
+    container: &crate::container::Container,
+) -> fn(&crate::container::Container, usize) -> Result<Vec<u8>> {
     if container.version == 1 {
         v1::picture::payload
     } else {
-        picture::payload
+        crate::picture::payload
     }
-}
-
-/// The extractor to use for a `Blobs` container.
-///
-/// Only the first game's payloads are measured — its `goofy 2.6.3` record
-/// format is documented in `docs/GAME1.md` §6 and implemented by
-/// [`v1::blobs`]. A `Blobs` container from any other version has no measured
-/// layout, so it is written back verbatim rather than guessed at.
-pub fn blobs_extractor(container: &Container) -> fn(&Container, &Path, bool) -> Result<usize> {
-    if container.version == 1 {
-        v1::blobs::extract_container
-    } else {
-        extract_blobs_verbatim
-    }
-}
-
-/// Write every payload of an undecoded `Blobs` container unchanged.
-///
-/// The extension records which container a payload came from; nothing about
-/// the format is claimed.
-fn extract_blobs_verbatim(container: &Container, out_dir: &Path, _original: bool) -> Result<usize> {
-    std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
-    let mut written = 0usize;
-    for index in 0..container.resource_count as usize {
-        let name = sanitize(container.name(index), index);
-        let file = out_dir.join(format!("{index:05}_{name}.blb"));
-        if let Err(e) = std::fs::write(&file, container.payload(index)) {
-            eprintln!(
-                "warning: could not write {} (resource {index}): {e}",
-                file.display()
-            );
-            continue;
-        }
-        written += 1;
-    }
-    Ok(written)
 }
 
 /// Which asset types to extract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The Lean core reads the same list, so this struct is the CLI's own view: it
+/// is what `--types` was validated against and what the request carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetSelection {
-    pub pictures: bool,
-    pub sounds: bool,
-    pub films: bool,
-    pub scripts: bool,
+    pictures: bool,
+    sounds: bool,
+    films: bool,
+    scripts: bool,
     /// `Blobs` containers — the first game's `goofy 2.6.3` animation records.
-    pub blobs: bool,
+    blobs: bool,
     /// The 3D game's `Models` and `Textures` containers. One flag drives both
     /// because one name ("models") is what the game calls the pair; the
     /// textures ride along since they are the models' material source.
-    pub models: bool,
+    models: bool,
+    /// The names the user asked for, so the Lean core can apply the same rules.
+    names: Vec<String>,
 }
 
 impl AssetSelection {
     /// Parse a comma-separated list of type names.
     ///
-    /// `"all"` selects everything. Unknown names are an error, so a typo
-    /// does not silently extract nothing.
+    /// `"all"` selects everything. Unknown names are an error, so a typo does
+    /// not silently extract nothing.
     pub fn parse(names: &[String]) -> Result<Self> {
         let mut sel = Self {
             pictures: false,
@@ -116,6 +87,7 @@ impl AssetSelection {
             scripts: false,
             blobs: false,
             models: false,
+            names: Vec::new(),
         };
         for raw in names {
             for part in raw.split(',') {
@@ -142,6 +114,9 @@ impl AssetSelection {
                         "unknown asset type '{other}' (expected all, pictures, sounds, films, scripts, blobs or models)"
                     ),
                 }
+                if !sel.names.contains(&name) {
+                    sel.names.push(name);
+                }
             }
         }
         if !(sel.pictures || sel.sounds || sel.films || sel.scripts || sel.blobs || sel.models) {
@@ -150,18 +125,9 @@ impl AssetSelection {
         Ok(sel)
     }
 
-    /// Whether a container of this kind should be extracted.
-    pub fn wants(&self, kind: ContainerKind) -> bool {
-        match kind {
-            ContainerKind::Pictures => self.pictures,
-            ContainerKind::Sounds => self.sounds,
-            ContainerKind::Films => self.films,
-            ContainerKind::Scripts => self.scripts,
-            ContainerKind::Blobs => self.blobs,
-            ContainerKind::Models => self.models,
-            ContainerKind::Textures => self.models,
-            ContainerKind::Unknown => false,
-        }
+    /// The names `--types` was given, for the request the Lean core reads.
+    pub fn names(&self) -> &[String] {
+        &self.names
     }
 }
 
@@ -185,6 +151,11 @@ impl Summary {
 }
 
 /// Extract everything the selection asks for out of `asset_dir`.
+///
+/// The Lean core does the work; this is the request it reads and the report it
+/// returns, translated back into the CLI's own [`Summary`]. Every failure the
+/// Lean core reports is kept, so the summary prints the same lines whatever
+/// half of the program found the problem.
 pub fn run(
     asset_dir: &Path,
     output: &Path,
@@ -192,225 +163,36 @@ pub fn run(
     original: bool,
     raw: bool,
 ) -> Result<Summary> {
-    let mut summary = Summary::default();
+    let request = lean::Request {
+        asset_dir: asset_dir.to_path_buf(),
+        output: output.to_path_buf(),
+        types: selection.names().to_vec(),
+        original,
+        raw,
+    };
+    let report = lean::run(&request)?;
 
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(asset_dir)
-        .with_context(|| format!("reading {}", asset_dir.display()))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_file())
-        .collect();
-    entries.sort();
-
-    // Textures are extracted first, on their own pass, because the 3D game's
-    // models embed the textures they name (`crate::dma3d::extract_models`) and
-    // the container iteration order is alphabetical, which puts `Models` first.
-    let mut texture_dir: Option<PathBuf> = None;
-    for path in &entries {
-        let container = match Container::open(path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        if container.kind != ContainerKind::Textures || !selection.wants(container.kind) {
-            continue;
-        }
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("resource")
-            .to_string();
-        let out_dir = output.join("Textures").join(&stem);
-        let report = crate::dma3d::extract_textures(&container, &out_dir, original)?;
-        summary.models += report.written;
-        for (i, name, why) in report.failed {
-            summary
-                .failed
-                .push(format!("{}: resource {i} '{name}': {why}", path.display()));
-        }
-        texture_dir = Some(out_dir);
+    let mut summary = Summary {
+        pictures: report.pictures,
+        sounds: report.sounds,
+        films: report.films,
+        scripts: report.scripts,
+        blobs: report.blobs,
+        models: report.models,
+        failed: Vec::new(),
+    };
+    if report.total != 0 && report.total != summary.total() {
+        // The Lean core counts the same resources this CLI used to count; a
+        // mismatch means one of the two drifted, so it is reported rather than
+        // silently passed on.
+        anyhow::bail!(
+            "the Lean core reports {} resources but its per-type counts add up to {}",
+            report.total,
+            summary.total()
+        );
     }
-
-    for path in entries {
-        let container = match Container::open(&path) {
-            Ok(c) => c,
-            Err(_) => continue, // not one of ours
-        };
-
-        if !selection.wants(container.kind) {
-            continue;
-        }
-        // Textures were handled on the pass above, so that the models could
-        // embed them.
-        if container.kind == ContainerKind::Textures {
-            continue;
-        }
-
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("resource")
-            .to_string();
-
-        match container.kind {
-            ContainerKind::Pictures => {
-                let out_dir = output.join("Pictures").join(&stem);
-                let raw_dir = output.join("Raw").join(&stem);
-                let report = if original {
-                    extract_pictures_original(&container, &out_dir)?
-                } else {
-                    picture::extract_container(
-                        &path,
-                        &out_dir,
-                        &raw_dir,
-                        picture_decoder(&container),
-                    )?
-                };
-                summary.pictures += report.png_written;
-                for (i, name, why) in report.failed {
-                    summary
-                        .failed
-                        .push(format!("{}: resource {i} '{name}': {why}", path.display()));
-                }
-                if raw && !original {
-                    // `extract_container` already wrote the raw payloads.
-                }
-            }
-            ContainerKind::Sounds => {
-                let out_dir = output.join("Sounds").join(&stem);
-                let report = crate::sound::extract_container(&container, &out_dir, original)?;
-                summary.sounds += report.written;
-                for (i, name, why) in report.failed {
-                    summary
-                        .failed
-                        .push(format!("{}: resource {i} '{name}': {why}", path.display()));
-                }
-            }
-            ContainerKind::Films => {
-                let out_dir = output.join("Films").join(&stem);
-                // A film that cannot be fully decoded is reported and skipped
-                // rather than aborting the whole run.
-                match crate::film::extract_container(&container, &out_dir, original) {
-                    Ok(n) => summary.films += n,
-                    Err(e) => summary.failed.push(format!("{}: {e:#}", path.display())),
-                }
-            }
-            ContainerKind::Scripts => {
-                let out_dir = output.join("Scripts").join(&stem);
-                // The first game's Scripts container is not the versions-2/3
-                // object database: no names table, no metadata region, and a
-                // different marker after the offsets table. Its own module
-                // opens it; the shared one must never be asked to guess at a
-                // layout it has never measured.
-                let n = if container.version == 1 {
-                    crate::v1::scripts::extract_container(&container, &out_dir, original)?
-                } else {
-                    crate::script::extract_container(&container, &out_dir, original)?
-                };
-                summary.scripts += n;
-            }
-            ContainerKind::Blobs => {
-                // The first game's payloads are decoded; anything else stays
-                // opaque. The choice lives here, beside the two picture
-                // dispatchers, for the same reason: neither blobs module has
-                // to know the other's version exists.
-                let out_dir = output.join("Blobs").join(&stem);
-                std::fs::create_dir_all(&out_dir)?;
-                match blobs_extractor(&container)(&container, &out_dir, original) {
-                    Ok(n) => summary.blobs += n,
-                    Err(e) => {
-                        summary.failed.push(format!("{}: {e}", path.display()));
-                    }
-                }
-            }
-            ContainerKind::Models => {
-                // The 3D game's own kinds. Their payloads are written
-                // verbatim, so both paths are byte-exact; the geometry decode
-                // is the documented next step (`crate::dma3d`).
-                let out_dir = output.join("Models").join(&stem);
-                let report = crate::dma3d::extract_models(
-                    &container,
-                    &out_dir,
-                    original,
-                    texture_dir.as_deref(),
-                )?;
-                summary.models += report.written;
-                for (i, name, why) in report.failed {
-                    summary
-                        .failed
-                        .push(format!("{}: resource {i} '{name}': {why}", path.display()));
-                }
-            }
-            // Textures are extracted on the pass before this loop.
-            ContainerKind::Textures | ContainerKind::Unknown => {}
-        }
-    }
-
-    // The index page, once both 3D containers have been extracted: the output is
-    // browsable as one page instead of 849 files in a tree. It is written last
-    // because it lists what is on disk rather than what the container claims.
-    if let Some(texture) = texture_dir.as_deref() {
-        if let Err(e) =
-            crate::dma3d::write_index(output, texture, &output.join("Models").join("DMA3D"))
-        {
-            eprintln!("warning: could not write the 3D index page: {e:#}");
-        }
-    }
-
+    summary.failed = report.failed;
     Ok(summary)
-}
-
-/// Write each picture out in the game's original format.
-///
-/// The file written is the payload byte for byte — exactly what the game's
-/// runtime would hand to its blitter, before any of the optional byte-swap
-/// transforms. A resource whose container declares no uncompressed size was
-/// stored uncompressed and is copied through untouched; one that declares one
-/// is stored compressed and comes out expanded.
-///
-/// Which decompression step that is depends only on the container's version,
-/// and is chosen by [`picture_payload`] — the same dispatcher the modern path's
-/// decoder choice sits beside. Writing the rule out twice (once here, once in
-/// `picture::decode`) is what let this function drift out of step with the
-/// decoder and start writing stored bytes for a container version whose
-/// payloads are not stored.
-pub fn extract_pictures_original(
-    container: &Container,
-    out_dir: &Path,
-) -> Result<picture::ExtractReport> {
-    std::fs::create_dir_all(out_dir)?;
-    let mut report = picture::ExtractReport::default();
-    report.container = container.path.display().to_string();
-
-    let payload = picture_payload(container);
-
-    for index in 0..container.resource_count as usize {
-        let name = container.name(index);
-        let safe = sanitize(name, index);
-        let file = out_dir.join(format!("{index:05}_{safe}.dat"));
-
-        let data = match payload(container, index) {
-            Ok(d) => d,
-            Err(e) => {
-                report.failed.push((index, name.to_string(), e.to_string()));
-                continue;
-            }
-        };
-        std::fs::write(&file, &data).with_context(|| format!("writing {}", file.display()))?;
-        report.raw_written += 1;
-        report.png_written += 1;
-        report.resources.push(picture::ResourceEntry {
-            index,
-            name: name.to_string(),
-            width: container.dimension(index).width,
-            height: container.dimension(index).height,
-            bytes: data.len(),
-            format: picture::PixelFormat::TranspRgb32,
-            png: file.display().to_string(),
-            raw: file.display().to_string(),
-        });
-    }
-
-    Ok(report)
 }
 
 /// Turn a resource name into something safe to put in a filename.

@@ -545,15 +545,29 @@ fn original_mode_writes_the_expanded_payload() {
         Resource::plain("flat2", 2, 2),
         Resource::compressed("squashed2", 3, 3),
     ]);
-    let out_dir = tempdir("v1-original").join("Pictures").join("synthetic.PIC");
-    let report = cli::extract_pictures_original(&container, &out_dir).expect("extract");
-    assert_eq!(report.resources.len(), 4, "every resource must be written");
+    let asset_dir = container
+        .path
+        .parent()
+        .expect("the synthetic container's folder")
+        .to_path_buf();
+    let out_root = tempdir("v1-original");
+    let report = mmf_extract::lean::run(&mmf_extract::lean::Request {
+        asset_dir: asset_dir.clone(),
+        output: out_root.clone(),
+        types: vec!["pictures".to_string()],
+        original: true,
+        raw: false,
+    })
+    .expect("extract");
+    assert_eq!(report.pictures, 4, "every resource must be written");
     assert!(report.failed.is_empty(), "{:?}", report.failed);
 
+    let out_dir = out_root.join("Pictures").join("synthetic");
     let on_disk = std::fs::read(&container.path).expect("read container");
-    for entry in &report.resources {
-        let written = std::fs::read(&entry.png).expect("read .dat");
-        let index = entry.index;
+    for index in 0..4usize {
+        let written = std::fs::read(out_dir.join(format!("{index:05}_{}.dat",
+            cli::sanitize(container.name(index), index))))
+            .expect("read .dat");
         let stored =
             &on_disk[container.offsets[index] as usize..container.offsets[index + 1] as usize];
 
@@ -561,8 +575,7 @@ fn original_mode_writes_the_expanded_payload() {
         if v1::uncompressed_len(&container, index) == 0 {
             assert_eq!(
                 written, stored,
-                "resource {index} ('{}'): .dat must be the container's bytes verbatim",
-                entry.name
+                "resource {index}: .dat must be the container's bytes verbatim"
             );
             continue;
         }
@@ -570,28 +583,24 @@ fn original_mode_writes_the_expanded_payload() {
         // A compressed one must come out expanded, and be nothing else.
         assert_ne!(
             written, stored,
-            "resource {index} ('{}'): .dat must not be the stored stream",
-            entry.name
+            "resource {index}: .dat must not be the stored stream"
         );
         assert_eq!(
             written,
             v1::lzss::decompress(stored, v1::uncompressed_len(&container, index))
                 .expect("decompress"),
-            "resource {index} ('{}'): .dat must be the stream's exact expansion",
-            entry.name
+            "resource {index}: .dat must be the stream's exact expansion"
         );
         assert_eq!(
             written.len(),
             v1::uncompressed_len(&container, index),
-            "resource {index} ('{}'): .dat length must be the declared size",
-            entry.name
+            "resource {index}: .dat length must be the declared size"
         );
         // The stream really is shorter than what it expands to, so this check
         // cannot pass by writing the payload through unchanged.
         assert!(
             stored.len() < written.len(),
-            "resource {index} ('{}'): the stream should be shorter than its expansion",
-            entry.name
+            "resource {index}: the stream should be shorter than its expansion"
         );
     }
 }

@@ -1,3 +1,4 @@
+
 //! Tests for the **first** game's version-1 containers (`MMFW` version 1).
 //!
 //! Version 1 differs from versions 2 and 3 in ways that used to make the
@@ -12,6 +13,61 @@
 
 use mmf_extract::container::{Container, ContainerKind};
 use std::path::{Path, PathBuf};
+/// One `--original` resource the Lean extraction core wrote, read back for the
+/// byte checks the tests do.
+struct OriginalEntry {
+    index: usize,
+    name: String,
+    path: std::path::PathBuf,
+}
+
+/// Extract one container's pictures in the game's original format, through the
+/// Lean core the CLI uses.
+fn extract_original_pictures(
+    asset_dir: &std::path::Path,
+    out_dir: &std::path::Path,
+    container_name: &str,
+) -> anyhow::Result<(usize, Vec<OriginalEntry>)> {
+    let report = mmf_extract::lean::run(&mmf_extract::lean::Request {
+        asset_dir: asset_dir.join(std::path::Path::new(container_name).parent().unwrap_or(asset_dir)),
+        output: out_dir.to_path_buf(),
+        types: vec!["pictures".to_string()],
+        original: true,
+        raw: false,
+    })?;
+    let written = report.pictures;
+    let stem = std::path::Path::new(container_name)
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    // The files are `<out>/Pictures/<stem>/<index:05>_<name>.dat`.
+    let dir = out_dir.join("Pictures").join(&stem);
+    let mut entries = Vec::new();
+    if dir.is_dir() {
+        let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)?
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("dat"))
+            .map(|e| e.path())
+            .collect();
+        names.sort();
+        for path in names {
+            let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
+            if let Some(digits) = file_name.split('_').next() {
+                if let Ok(index) = digits.parse::<usize>() {
+                    let name = file_name
+                        .split_once('_')
+                        .map(|(_, rest)| rest.trim_end_matches(".dat").to_string())
+                        .unwrap_or_default();
+                    entries.push(OriginalEntry { index, name, path });
+                }
+            }
+        }
+    }
+    Ok((written, entries))
+}
+
 
 /// Where the first game's assets live. Point `GAME1_ASSETS` at the `Dati`
 /// folder carved from the CD image to run these anywhere.
@@ -268,14 +324,26 @@ fn original_mode_writes_the_expanded_payload() {
             continue;
         }
         let c = Container::open(&path).expect("parse container");
-        let report =
-            mmf_extract::cli::extract_pictures_original(&c, &out_dir.join(name)).expect("extract");
-        assert_eq!(report.resources.len(), c.resource_count as usize, "{name}");
-        assert!(report.failed.is_empty(), "{name}: {:?}", report.failed);
+        // The Lean extraction core writes the `--original` output; the test
+        // checks the files it produced byte for byte against the container.
+        // The Lean core extracts the whole folder, so the count it reports
+        // covers every v1 picture container in it; what this loop checks is the
+        // per-container file set.
+        let (folder_total, entries) =
+            extract_original_pictures(&dir, &out_dir, name).expect("extract");
+        assert_eq!(
+            entries.len(),
+            c.resource_count as usize,
+            "{name}: the Lean core did not write every resource"
+        );
+        assert!(
+            folder_total >= c.resource_count as usize,
+            "{name}: the Lean core reported {folder_total} pictures in total"
+        );
 
         let on_disk = std::fs::read(&path).expect("read container");
-        for entry in &report.resources {
-            let written = std::fs::read(&entry.png).expect("read .dat");
+        for entry in entries {
+            let written = std::fs::read(&entry.path).expect("read .dat");
             let i = entry.index;
             let start = c.offsets[i] as usize;
             let end = c.offsets[i + 1] as usize;
@@ -283,8 +351,7 @@ fn original_mode_writes_the_expanded_payload() {
             if declared == 0 {
                 assert_eq!(
                     written, &on_disk[start..end],
-                    "{name}[{i}] '{}': a stored-plain .dat must be the container slice",
-                    entry.name
+                    "{name}[{i}]: a stored-plain .dat must be the container slice"
                 );
             } else {
                 assert_eq!(

@@ -13,3 +13,7 @@ sha2 = "0.11.1"
 # The audio encoder is not a crate: `src/sound.rs` shells out to `ffmpeg`, which
 # is the only FLAC encoder reachable from here and whose 16-bit support this
 # project needs. See the module's note on why the Rust `flac` crate is not used.
+
+[dev-dependencies]
+# The parity test decodes both tools' PNGs back to pixels.
+png = "0.18.1"

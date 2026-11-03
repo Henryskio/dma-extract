@@ -11,6 +11,16 @@ containers of \*\*\*\*\*\*'s Magic Artist Deluxe / Magico Artista: pictures
 resource into a modern lossless format (PNG / FLAC / JSON+text), and can also
 re-emit the game's original bytes exactly.
 
+**The extraction is written in Lean.** `cargo build` builds both halves: the
+Lean core in `mmf-extract/lean/` (a Lake project) is compiled to
+`libmmfextract.so` by `mmf-extract/build.rs`, which also generates the Rust side
+of the one C-ABI function `src/lean.rs` calls. The Rust side keeps the command
+line and the decoders that `src/bin/`'s analysis bins and `tests/lean_parity.rs`
+use as the reference implementation. Building a new decoder therefore means:
+write it in Lean, then check it against the Rust reference in
+`tests/lean_parity.rs` (sounds byte-identical, pictures pixel-identical, the
+scripts corpus identical).
+
 **External dependencies.** `cargo build` needs only the pinned crates. The
 *sound* output additionally needs the official `flac` tool
 (`apt install flac` / `brew install flac`) because no Rust crate here
@@ -112,6 +122,11 @@ colour/byte claim that the tests do not check.
     the `thaitea/laya-vision-demo` Hugging Face space. Two constraints
     survive: **never send to NVIDIA NIM** (the session's own provider),
     and **never print an API key** — pass it through the environment only.
+* **A decoder that cannot be ported is reported, not faked.** Where a Lean
+  port does not exist yet (the 3D game's modern model path), the Lean driver
+  reports each resource as a failure naming what is missing, rather than writing
+  a different format under the expected extension.
+
 * **Payload length is ground truth.** The metadata `flags`/`attr`/`kind` bytes
   are hints only; when they disagree with the byte counts, the byte counts
   win. When a payload matches no known layout, report it as a failure — do not

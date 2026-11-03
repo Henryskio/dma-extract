@@ -164,12 +164,30 @@ fn original_format_extraction_loses_nothing() {
         if !path.exists() {
             continue;
         }
-        let out_dir = tmp.join(name);
+        // The Lean core writes to `<output>/Pictures/<container stem>`, and a
+        // stem is the file name without its extension.
+        let stem = Path::new(name).file_stem().unwrap().to_str().unwrap().to_string();
+        let out_dir = tmp.join("Pictures").join(&stem);
         let container = Container::open(&path).expect("open container");
 
-        // Exercise the real `--original` production path.
-        let report =
-            mmf_extract::cli::extract_pictures_original(&container, &out_dir).expect("extract");
+        // Exercise the real `--original` production path, which is the Lean
+        // core now. The container is opened here too, because the checks below
+        // compare the written bytes against the container's own offsets.
+        let written = mmf_extract::lean::run(&mmf_extract::lean::Request {
+            asset_dir: dir.clone(),
+            output: tmp.clone(),
+            types: vec!["pictures".to_string()],
+            original: true,
+            raw: false,
+        })
+        .expect("extract")
+        .pictures;
+        let names = original_files(&out_dir);
+        assert_eq!(names.len(), container.resource_count as usize, "{name}");
+        assert!(
+            written >= container.resource_count as usize,
+            "{name}: the Lean core reported {written} pictures in total"
+        );
 
         // Read the container file once for the byte-exact-slice checks.
         let on_disk = std::fs::read(&path).expect("read container");
@@ -177,28 +195,23 @@ fn original_format_extraction_loses_nothing() {
         // Recompression is CPU-heavy; spot-check a spread rather than all.
         let n = container.resource_count as usize;
         let step = (n / 40).max(1);
-
-        for entry in &report.resources {
-            let extracted = std::fs::read(&entry.png).expect("read extracted .dat");
-            let stored = container.payload(entry.index);
+        for (entry, extracted) in names {
+            let stored = container.payload(entry);
 
             // The stored payload is a byte-exact slice of the container file.
-            let start = container.offsets[entry.index] as usize;
-            let end = container.offsets[entry.index + 1] as usize;
+            let start = container.offsets[entry] as usize;
+            let end = container.offsets[entry + 1] as usize;
             assert_eq!(
                 stored,
                 &on_disk[start..end],
-                "{name} resource {} ('{}'): stored payload is not the container's bytes at [{start},{end})",
-                entry.index,
-                entry.name
+                "{name} resource {entry}: stored payload is not the container's bytes at [{start},{end})"
             );
 
-            if container.sizes[entry.index] == 0 {
+            if container.sizes[entry] == 0 {
                 // Stored uncompressed: the .dat is the payload, verbatim.
                 assert_eq!(
                     extracted, stored,
-                    "{name} resource {} ('{}'): uncompressed .dat differs from the stored payload",
-                    entry.index, entry.name
+                    "{name} resource {entry}: uncompressed .dat differs from the stored payload"
                 );
             } else {
                 // Stored compressed: the .dat is exactly what the container's
@@ -206,20 +219,16 @@ fn original_format_extraction_loses_nothing() {
                 let expected = lz77::decompress(stored).expect("decompress");
                 assert_eq!(
                     extracted, expected,
-                    "{name} resource {} ('{}'): .dat differs from the decompressed stored payload",
-                    entry.index, entry.name
+                    "{name} resource {entry}: .dat differs from the decompressed stored payload"
                 );
 
                 // And it round-trips 1-to-1 through our codec (spot check).
-                if entry.index % step == 0 {
+                if entry % step == 0 {
                     let round =
                         lz77::decompress(&lz77::compress(&extracted)).expect("decompress");
                     assert_eq!(
                         round, extracted,
-                        "{name} resource {} ('{}'): recompression changed {} bytes",
-                        entry.index,
-                        entry.name,
-                        extracted.len()
+                        "{name} resource {entry}: recompression changed {} bytes", extracted.len()
                     );
                 }
             }
@@ -351,6 +360,31 @@ fn size_table_matches_decompressed_sizes() {
 }
 
 /// Make a temporary directory under the job's temp area.
+
+/// The `--original` files the Lean core wrote for one container, as
+/// `(index, bytes)` pairs in index order.
+fn original_files(dir: &Path) -> Vec<(usize, Vec<u8>)> {
+    let mut out: Vec<(usize, Vec<u8>)> = Vec::new();
+    if !dir.is_dir() {
+        return out;
+    }
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .expect("read the extraction directory")
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("dat"))
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+    for path in paths {
+        let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
+        let digits = file_name.split('_').next().unwrap_or("");
+        if let Ok(index) = digits.parse::<usize>() {
+            out.push((index, std::fs::read(&path).expect("read extracted .dat")));
+        }
+    }
+    out
+}
+
 fn tempdir(tag: &str) -> PathBuf {
     let base = std::env::var("MMF_TEST_TMP")
         .unwrap_or_else(|_| std::env::temp_dir().join("mmf-extract-tests").display().to_string());
