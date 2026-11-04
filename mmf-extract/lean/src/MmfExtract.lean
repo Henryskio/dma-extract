@@ -1,5 +1,6 @@
 import MmfExtract.Dma3d
 import MmfExtract.Dma3d.Texfile
+import MmfExtract.Dma3d.Verify
 import MmfExtract.Film
 import MmfExtract.Script
 import MmfExtract.V1.Lzss

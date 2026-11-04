@@ -35,8 +35,19 @@ struct Args {
     types: Vec<String>,
 
     /// Extract into the game's original formats instead of modern ones.
-    #[arg(long)]
+    ///
+    /// This is the mode the game's own bytes are byte-exact in; the modern
+    /// formats (PNG, FLAC, glTF, the annotated corpus) are the default. The
+    /// pair is spelled both ways, because "give me the modern formats" is the
+    /// question people actually ask, and an explicit `--modern` answering it
+    /// leaves no doubt about which mode ran.
+    #[arg(long, conflicts_with = "modern")]
     original: bool,
+
+    /// Extract into modern formats. This is the default; the flag exists so
+    /// that "--original" and "--modern" can be read side by side.
+    #[arg(long)]
+    modern: bool,
 
     /// Also write the untouched, still-compressed payload of every resource.
     #[arg(long)]
@@ -57,7 +68,16 @@ fn main() -> Result<()> {
         );
     }
 
-    let summary = cli::run(&args.asset_dir, &output, &selection, args.original, args.raw)?;
+    // `--original` writes the game's own bytes; `--modern` (the default, and
+    // what `--original` conflicts with) writes the modern formats. Declaring
+    // both is a contradiction, and clap's `conflicts_with` says so.
+    let summary = cli::run(
+        &args.asset_dir,
+        &output,
+        &selection,
+        args.original,
+        args.raw,
+    )?;
     cli::print_summary(&summary);
     Ok(())
 }

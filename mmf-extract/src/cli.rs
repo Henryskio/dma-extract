@@ -13,11 +13,12 @@
 //! a request to the Lean core and reads its report back, so the parsing, the
 //! decoders and the output writers have one home.
 
+use crate::container::{Container, ContainerKind};
 use crate::lean;
 use crate::picture::Decoded;
 use crate::v1;
-use anyhow::Result;
-use std::path::Path;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 
 /// The picture decoder to use for `container`.
 
@@ -192,6 +193,17 @@ pub fn run(
         );
     }
     summary.failed = report.failed;
+    // The 3D game's modern model path is the Rust converter's: it turns a
+    // payload that carries the measured mesh chain into a glTF, a preview PNG,
+    // a `.tail` file and an `.anim.txt`. The Lean core extracts the same
+    // container's payloads byte for byte in `--original`, and reports each
+    // modern model as a failure naming what is missing, rather than writing a
+    // different format under a `.gltf` name. So this is where the halves meet:
+    // the Rust driver runs the converter on the container the Lean core just
+    // reported, using the textures the Lean core wrote beside it.
+    if !original && selection.models {
+        convert_models(asset_dir, output, &mut summary)?;
+    }
     Ok(summary)
 }
 
@@ -213,6 +225,61 @@ pub fn sanitize(name: &str, index: usize) -> String {
     } else {
         cleaned
     }
+}
+
+/// Convert the 3D game's `Models` containers to glTF, the Rust half of the
+/// split.
+///
+/// The Lean core extracts these payloads byte for byte in `--original` and
+/// reports each modern model as a failure naming what is missing, rather than
+/// writing a different format under a `.gltf` name. So the modern conversion is
+/// the Rust converter's, and this is where the halves meet: it runs on the
+/// containers the Lean core just reported, using the textures the Lean core
+/// wrote beside them.
+fn convert_models(asset_dir: &Path, output: &Path, summary: &mut Summary) -> Result<()> {
+    let mut entries: Vec<PathBuf> = match std::fs::read_dir(asset_dir) {
+        Ok(read) => read
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect(),
+        Err(_) => return Ok(()),
+    };
+    entries.sort();
+    for path in entries {
+        let container = match Container::open(&path) {
+            Ok(c) => c,
+            Err(_) => continue, // not one of ours
+        };
+        if container.kind != ContainerKind::Models {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("resource")
+            .to_string();
+        let out_dir = output.join("Models").join(&stem);
+        // The textures the Lean core wrote beside it, which the converter
+        // embeds for the models that name one.
+        let texture_dir = output.join("Textures").join(&stem);
+        let texture_dir = texture_dir.is_dir().then_some(texture_dir);
+        let report = crate::dma3d::extract_models(
+            &container,
+            &out_dir,
+            false,
+            texture_dir.as_deref(),
+        )
+        .with_context(|| format!("converting the models of {} into glTF", path.display()))?;
+        summary.models += report.written;
+        for (index, name, why) in report.failed {
+            summary.failed.push(format!(
+                "{}: 3D resource {index} '{name}': {why}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Print a human-readable summary of what was extracted.

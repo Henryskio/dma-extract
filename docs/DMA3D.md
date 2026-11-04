@@ -571,3 +571,82 @@ field in a `Textures` container
 drives (§3.2); the material link — no mesh-bearing payload names a texture
 (§3.2); the meaning of `createPropUI*`'s fields (§3.5); the film record
 layout (§6).
+
+---
+
+## 8. Extracting and converting the models
+
+This game's models and textures are extracted by the Lean core and converted by
+the Rust converter, and the split is deliberate:
+
+* **`--original`** (Lean, `lean/src/MmfExtract/Dma3d.lean`) writes every payload
+  byte for byte. It is byte-exact by construction: the file is the container's
+  own slice, so the check is a comparison, not a trust.
+* **`--modern`** (Rust, `src/dma3d.rs`, `extract_models`) turns a payload that
+  carries the measured mesh chain of §3 into a glTF, a preview PNG, a `.tail`
+  file and an `.anim.txt`; a payload with no chain is written through unchanged
+  and counted as a model that is not geometry.
+* The index page (`index.html`) is written last, from what is on disk.
+
+Two places the two halves had to be made to agree, both found by comparing their
+outputs rather than by reading the code:
+
+1. **A corrupt offsets entry used to abort the process.** The Italian disc's
+   `DMA3D.MMX` holds 38 offsets entries that name a range past the end of the
+   file, and `Container::payload` used to index `self.data[s..e]`, which is a
+   Rust panic: the whole extraction died and every other resource with it.
+   `Container::payload` now reports the range and hands back an empty payload,
+   so the resource fails its own layout check and is reported as a failure —
+   the rule `AGENTS.md` states, and the same rule
+   `MmfExtract/Container.lean`'s `Bytes.slice` already enforced.
+2. **The `--original` file name doubled the extension.**
+   `00033_od.mod.mod` came out of `out_dir.join(format!("{index:05}_{stem}.mod"))`
+   with `stem` already ending in `.mod`; the file now keeps the name the
+   container gives it, spelled once.
+
+## 9. Verifying the conversion in Lean
+
+`lean/src/MmfExtract/Dma3d/Verify.lean` reads both paths' output off disk and
+checks it in a third language, so the check does not share a parser with either
+writer:
+
+* **`--original`**: every file must equal the container's own slice, and the
+  file count must cover every resource except the ones whose payload is outside
+  the container.
+* **`--modern`**: the `buffers` section's `uri` must base64-decode, by hand, to
+  the `byteLength` the same section declares; the index buffer must hold one
+  `u16` per index the accessor counts; every index must name a vertex the
+  `POSITION` accessor counts — which is `modfile::parse_mesh`'s own rejection
+  rule, so a glTF carrying an index the payload did not have is a failing
+  glTF; and a VEC3 vertex is three floats, because the payload's fourth is the
+  constant `1.0` the writer drops rather than passes through.
+
+The synthetic container is built by hand from §3 (the script that writes it
+lives in the commit that added this section), so the conversion it drives has
+known geometry
+(`u32 C`, `u16[C]`, `u32 V`, `vertex[V]`, `u32 V`, `normal[V]`), so the
+conversion it drives has known geometry: 6 indices naming 4 vertices. The
+converter writes a glTF for it, and the Lean check accepts it and rejects both
+a tampered index and a tampered byte length — which is what makes it a check
+rather than a reader.
+
+The two checks are run by `lean/test/Test.lean`:
+
+```
+DMA3D.MMM: 460 files checked, 460 byte-exact
+DMA3D.MMX: 629 files checked, 629 byte-exact
+the Rust converter's glTF verified in Lean: 6 indices, all naming a vertex
+the same check rejects a tampered index
+the same check rejects a wrong byte length
+```
+
+## 10. What this disc's payloads do and do not carry
+
+The shipped `DMA3D.MMM` on the Italian disc holds **no payload that carries the
+measured mesh chain**: 0 of 460. That is a measurement, not a defect of the
+converter: the same run reports 463 resources written, every one of them the
+payload verbatim, because none of them decodes as a mesh and the converter's
+own rule (`modfile::parse_mesh` requires the `mod II` magic and the
+`[0,1,V,V]` signature) is what refuses them. The English disc's 144 meshes are
+what `docs/DMA3D.md` §3.2 was measured on; the synthetic container of §9 is what
+proves the conversion path on this workspace's hardware.

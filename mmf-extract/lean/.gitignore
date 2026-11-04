@@ -3,3 +3,7 @@
 /.lake/
 /build/
 /lake-manifest.json
+
+# The synthetic container `synth/mkmodel.sh` writes.
+/synth/out/
+/build/

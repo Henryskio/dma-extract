@@ -557,10 +557,46 @@ impl Container {
     }
 
     /// Raw (still compressed) bytes of resource `i`.
+    ///
+    /// A resource whose offsets entry names a range outside the file is
+    /// reported and hands back an empty payload rather than panicking. The 3D
+    /// game's Italian `DMA3D.MMX` holds 38 such entries: `Container::payload`
+    /// used to index `self.data[s..e]` and abort the process with a Rust panic,
+    /// which lost every other resource in the container. An empty payload
+    /// fails every decoder's own layout check, so the resource is reported as
+    /// a failure instead — which is the rule `AGENTS.md` states. The Lean core
+    /// (`MmfExtract/Container.lean`) returns an explicit error for the same
+    /// range, and this keeps the two halves behaving alike.
     pub fn payload(&self, i: usize) -> &[u8] {
+        match self.payload_result(i) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                eprintln!(
+                    "warning: {}: resource {i}: {why}",
+                    self.path.display()
+                );
+                &[]
+            }
+        }
+    }
+
+    /// The payload of resource `i`, or why the container does not describe one.
+    pub fn payload_result(&self, i: usize) -> Result<&[u8]> {
         let s = self.offsets[i] as usize;
         let e = self.offsets[i + 1] as usize;
-        &self.data[s..e]
+        if s > e {
+            bail!(
+                "offsets entry {i} runs backwards ({s:#x} > {e:#x}); the container's \
+                 offset table is corrupt"
+            );
+        }
+        if e > self.data.len() {
+            bail!(
+                "offsets entry {i} runs to {e:#x}, past the {} byte file",
+                self.data.len()
+            );
+        }
+        Ok(&self.data[s..e])
     }
 
     /// Compressed size of resource `i`.

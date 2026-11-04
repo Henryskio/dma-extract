@@ -131,10 +131,17 @@ def listAssets (dir : System.FilePath) : IO (Except String (Array System.FilePat
   catch e =>
     return .error s!"reading {Path.str dir}: {e}"
 
-/-- Warn about a failed resource and keep going. -/
+/-- Warn about a failed resource and keep going.
+
+The message is flattened to one line first: the report protocol this function
+fills is line-oriented, and a resource name read out of a container can hold a
+newline (the 3D game's names are garbage in places), which would tear the
+protocol and make the Rust side read a partial line as a whole one.
+-/
 def reportFailure (r : IO.Ref Report) (where_ : String) : IO Unit := do
-  r.modify fun rep => { rep with failed := rep.failed.push where_ }
-  IO.eprintln s!"warning: {where_}"
+  let flattened := String.ofList (where_.toList.map (fun c => if c == '\n' || c == '\r' then ' ' else c))
+  r.modify fun rep => { rep with failed := rep.failed.push flattened }
+  IO.eprintln s!"warning: {flattened}"
 
 /-- Extract every picture resource of a container, the modern (`--original`
 absent) or the original way.

@@ -41,14 +41,23 @@ structure Extract3DReport where
   resources : Array Extracted3D := #[]
   deriving Inhabited
 
-/-- Build a filename stem from the resource name, dropping the source extension
-so the output extension is unambiguous. -/
+/-- The output file name's stem: the resource name, sanitised.
+
+The name already ends in the game's own extension (`createAmbientLight.mod`,
+`dialogBtOk.TGA`), so `--original` writes the file under it verbatim — spelling
+the format's extension as well produced `00033_od.mod.mod`, and stripping the
+resource's produced `00033_od`. The modern paths append the extension of the
+format they write, which is why they are the only ones that choose one.
+-/
 def outputStem (container : Container) (index : Nat) : String :=
   Path.sanitize (container.name index) index
 
-/-- The `--original` path: every payload written exactly as stored. -/
-def extract (container : Container) (outDir : System.FilePath) (extension : String) :
-    IO Extract3DReport := do
+/-- The `--original` path: every payload written exactly as stored.
+
+The file keeps the name the container gives it, extension included, so nothing
+is chosen and nothing is doubled.
+-/
+def extract (container : Container) (outDir : System.FilePath) : IO Extract3DReport := do
   IO.FS.createDirAll outDir
   let mut report : Extract3DReport := {}
   for index in [0:container.resourceCount.toNat] do
@@ -57,8 +66,9 @@ def extract (container : Container) (outDir : System.FilePath) (extension : Stri
     | .error e =>
       report := { report with failed := report.failed.push (index, name, e) }
     | .ok payload =>
+      -- The payload keeps the name the container gives it, spelled once.
       let path := MmfExtract.Path.join outDir
-        (Path.padIndex index ++ "_" ++ outputStem container index ++ "." ++ extension)
+        (Path.padIndex index ++ "_" ++ outputStem container index)
       IO.FS.writeBinFile path payload
       report := { report with
         written := report.written + 1,
@@ -114,7 +124,7 @@ def extractGltf (container : Container) (_outDir : System.FilePath) :
 def extractModels (container : Container) (outDir : System.FilePath) (original : Bool) :
     IO Extract3DReport := do
   if original then
-    return ← extract container outDir "mod"
+    return ← extract container outDir
   else
     return ← extractGltf container outDir
 
@@ -123,7 +133,7 @@ def extractModels (container : Container) (outDir : System.FilePath) (original :
 def extractTextures (container : Container) (outDir : System.FilePath) (original : Bool) :
     IO Extract3DReport := do
   if original then
-    return ← extract container outDir "tex"
+    return ← extract container outDir
   else
     return ← extractPngs container outDir
 

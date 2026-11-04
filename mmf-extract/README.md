@@ -65,9 +65,20 @@ cargo build                       # builds the Lean core too
   (positional; files are identified by their `MMFW` signature, not by name).
 * `-o, --output DIR` — defaults to the current directory.
 * `-t, --types LIST` — `all` (default), `pictures`, `sounds`, `scripts`,
-  `films`.
+  `films`, `blobs`, `models`.
 * `--original` — write the game's original format instead of modern files.
+* `--modern` — the default, spelled out: write the modern formats (PNG, FLAC,
+  glTF, the annotated corpus). Conflicting with `--original` is an error.
 * `--raw` — also write the untouched compressed payload of each picture.
+
+**The 3D game's models and textures are two halves.** `--original` writes their
+payloads byte for byte by the Lean core; `--modern` converts the mesh-carrying
+ones to glTF in Rust, and the result is checked in Lean
+(`lean/src/MmfExtract/Dma3d/Verify.lean`), which reads the glTF back and holds
+it to the contract `modfile::parse_mesh` enforces: the buffer decodes, the index
+length matches, and every index names a vertex the POSITION accessor counts.
+`lean/test/run3d.sh` runs the whole path, and `docs/DMA3D.md` §8-§9 records the
+two places the halves had to be made to agree.
 
 Tests need the assets; they skip themselves otherwise:
 

@@ -3,6 +3,7 @@ import MmfExtract.Container
 import MmfExtract.Lz77
 import MmfExtract.Sound
 import MmfExtract.Dma3d.Texfile
+import MmfExtract.Dma3d.Verify
 
 
 /-!
@@ -185,7 +186,81 @@ def checkTextures : IO Bool := do
     | .error _ => pure ()
   return ok
 
+/-- The 3D game's `--original` extraction, verified against the container.
+
+The container is carved from the disc image by hand, so the check takes both
+paths: the folder holding the containers and the folder the extractor wrote
+into.
+-/
+def checkOriginal3D (assetDir outDir : String) : IO Bool := do
+  let mut ok := true
+  let entries ← System.FilePath.readDir (System.FilePath.mk assetDir)
+  for entry in entries do
+    let name := entry.fileName
+    let stem :=
+      match (name.splitOn ".").reverse with
+      | _ :: rest => String.intercalate "." (rest.reverse)
+      | [] => name
+    let opened ← Container.read (System.FilePath.mk (Path.str entry.path))
+    match opened with
+    | .error e => IO.eprintln s!"{name}: {e}"; ok := false
+    | .ok container =>
+      if container.kind != ContainerKind.models && container.kind != ContainerKind.textures then
+        continue
+      let dir := System.FilePath.mk (outDir ++ "/" ++ (match container.kind with
+        | ContainerKind.models => "Models"
+        | _ => "Textures") ++ "/" ++ stem)
+      let result ← Dma3d.Verify.checkOriginal container dir
+      IO.println s!"{name}: {result.checked} files checked, {result.exact} byte-exact"
+      if !result.mismatched.isEmpty then
+        IO.eprintln s!"{name}: {result.mismatched.size} files differ from the container"
+        ok := false
+      -- Files that were not written: only the ones whose payload could not be
+      -- read, because the extractor reported those instead of writing bytes
+      -- the container does not hold.
+      let unwritten := result.missing
+      IO.println s!"{name}: {unwritten.size} resources have no file (their payloads are outside the container)"
+  return ok
+
+/-- The Rust converter's glTF, verified against the mesh contract in Lean.
+
+The synthetic container under `synth/` is built by hand from the documented
+chain (`u32 C`, `u16[C]`, `u32 V`, `vertex[V]`, `u32 V`, `normal[V]`), so the
+conversion it drives has known geometry: 6 indices naming 4 vertices.
+-/
+def checkModern3D : IO Bool := do
+  let read := fun (path : System.FilePath) => do
+    try
+      let data ← IO.FS.readBinFile path
+      pure (some data)
+    catch _ =>
+      pure none
+  match (← read (System.FilePath.mk "/tmp/synthfinal/Models/DMA3D/00000_syntheticTest.mod.gltf")) with
+  | none =>
+    IO.eprintln "no modern output: extract on the synthetic 3D container first"
+    return false
+  | some bytes =>
+    let text := MmfExtract.Bytes.decodeLossy bytes
+    match (Dma3d.Verify.checkGltf text : Except String Nat) with
+    | .error e => IO.eprintln s!"the glTF was rejected: {e}"; return false
+    | .ok indexCount =>
+      IO.println s!"the Rust converter's glTF verified in Lean: {indexCount} indices, all naming a vertex"
+      -- A tampered index must be rejected, or the check proves nothing: the
+      -- second `u16` of the index buffer becomes a vertex the count lacks.
+      let bad := text.replace "AAABAAIAAw" "AAABAAkAAw"
+      match (Dma3d.Verify.checkGltf bad : Except String Nat) with
+      | .error _ => IO.println "the same check rejects a tampered index"
+      | .ok _ => IO.eprintln "the check accepted a tampered index"; return false
+      -- So must a byte length that does not match the decoded buffer.
+      let badLen := text.replace "108" "96"
+      match (Dma3d.Verify.checkGltf badLen : Except String Nat) with
+      | .error _ => IO.println "the same check rejects a wrong byte length"
+      | .ok _ => IO.eprintln "the check accepted a wrong byte length"; return false
+      return true
+
+
 def checkContainers (dir : String) : IO Bool := do
+
   let d ← System.FilePath.readDir (System.FilePath.mk dir)
   let mut ok := true
   for entry in d do
@@ -205,5 +280,7 @@ def main (_args : List String) : IO UInt32 := do
   if !(← checkTextures) then ok := false
   if !(← checkDpcm) then ok := false
   if !(← checkDifferentialSounds) then ok := false
+  if !(← checkOriginal3D "/workspace/.tmp/dma3d/assets" "/tmp/d3dout") then ok := false
+  if !(← checkModern3D) then ok := false
   if !(← checkContainers "/RawAssets") then ok := false
   if ok then IO.println "all checks passed"; return 0 else return 1

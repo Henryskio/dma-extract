@@ -165,7 +165,11 @@ fn extract(container: &Container, out_dir: &Path, extension: &str) -> Result<Ext
         let name = container.name(index);
         let payload = container.payload(index);
         let stem = output_stem(container, index);
-        let path = out_dir.join(format!("{index:05}_{stem}.{extension}"));
+        // The resource name already carries the game's own extension
+        // (`createAmbientLight.mod`, `dialogBtOk.TGA`), so appending the
+        // format's extension doubled it: `00033_od.mod.mod`. The payload keeps
+        // the name the container gives it, spelled once.
+        let path = out_dir.join(format!("{index:05}_{stem}"));
 
         let written =
             std::fs::write(&path, payload).with_context(|| format!("writing {}", path.display()));
@@ -587,6 +591,13 @@ fn list_dir(dir: &Path, extension: &str) -> Vec<(usize, String)> {
 
 /// Build a filename stem from the resource name, dropping the source
 /// extension so the output extension is unambiguous.
+/// The output file name's stem: the resource name, sanitised.
+///
+/// It already ends in the game's own extension, which is why the `--original`
+/// path does not append one — appending the format's extension produced
+/// `00033_od.mod.mod`, a doubled extension the container never spells. The
+/// modern paths give the file the extension of the format they write, so they
+/// are the only ones that choose one.
 fn output_stem(container: &Container, index: usize) -> String {
     sanitize(container.name(index), index)
 }
