@@ -74,6 +74,55 @@ def parseRequest (request : String) : Except String MmfExtract.Extract.Options :
     selection, original, raw
   }
 
+/-- A request that cannot be parsed is reported rather than crashing. -/
+private def parseIndexRequest (request : String) :
+    Except String (System.FilePath × System.FilePath × System.FilePath) := do
+  let mut base : Option String := none
+  let mut textureDir : Option String := none
+  let mut modelDir : Option String := none
+  for row in request.splitOn "\n" do
+    if row.isEmpty then
+      continue
+    let parts := row.splitOn "\t"
+    let key := parts.getD 0 ""
+    let value := String.intercalate "\t" (parts.drop 1)
+    match key with
+    | "base" => base := some value
+    | "texture_dir" => textureDir := some value
+    | "model_dir" => modelDir := some value
+    | other => throw s!"unknown index request key '{other}'"
+  let some b := base | throw "index request has no base"
+  let some t := textureDir | throw "index request has no texture_dir"
+  let some m := modelDir | throw "index request has no model_dir"
+  return (System.FilePath.mk b, System.FilePath.mk t, System.FilePath.mk m)
+
+/-- The 3D game's index page, written on its own.
+
+`Dma3d.writeIndex` is a *second* entry point rather than a Rust copy of the
+page's HTML because the page is one document in one language, and the split
+between the halves does not move it: it lists what is on disk, so it is written
+once by whichever half wrote the last of the files it lists.
+
+* `--original` has the Lean core write it at the end of its run, because the
+  Lean core is then the only writer. (`Extract.run` does this itself.)
+* `--modern` has the Rust driver write it after the converter, because the
+  converter adds the glTFs after the Lean core has returned.
+
+The request is line-oriented, three `key` TAB `path` rows: `base` (the folder
+that holds `index.html`), `texture_dir` and `model_dir`.
+-/
+@[export mmf_index]
+unsafe def index (request : String) : String :=
+  match parseIndexRequest request with
+  | .error e => "error\t" ++ e ++ "\n"
+  | .ok (base, textureDir, modelDir) =>
+    match unsafeIO (Dma3d.writeIndex base textureDir modelDir) with
+    | .error e => "error\t" ++ toString e ++ "\n"
+    | .ok result =>
+      match result with
+      | .error e => "error\t" ++ e ++ "\n"
+      | .ok count => "ok\t" ++ toString count ++ "\n"
+
 /-- The request-and-report boundary.
 
 Returns the rendered report. A request that cannot be parsed is reported as one

@@ -192,17 +192,70 @@ pub fn run(
             summary.total()
         );
     }
-    summary.failed = report.failed;
-    // The 3D game's modern model path is the Rust converter's: it turns a
-    // payload that carries the measured mesh chain into a glTF, a preview PNG,
-    // a `.tail` file and an `.anim.txt`. The Lean core extracts the same
-    // container's payloads byte for byte in `--original`, and reports each
-    // modern model as a failure naming what is missing, rather than writing a
-    // different format under a `.gltf` name. So this is where the halves meet:
-    // the Rust driver runs the converter on the container the Lean core just
-    // reported, using the textures the Lean core wrote beside it.
     if !original && selection.models {
-        convert_models(asset_dir, output, &mut summary)?;
+        // The 3D game's modern model path is the Rust converter's: it turns a
+        // payload that carries the measured mesh chain into a glTF, a preview
+        // PNG, a `.tail` file and an `.anim.txt`. The Lean core writes the same
+        // payloads byte for byte in `--original`, and in the modern modes it
+        // reports each model as a failure naming what is missing, rather than
+        // writing a different format under a `.gltf` name.
+        //
+        // So here the halves meet: the Rust driver runs the converter on the
+        // containers the Lean core just reported, using the textures the Lean
+        // core wrote beside them.
+        //
+        // How the two reports compose is measured, not assumed. The Lean core
+        // puts *both* 3D kinds into one count: `Extract.lean` adds the textures
+        // it wrote to `models` as well as whatever the models container wrote,
+        // so on the Italian disc it reports `models = 3` (the three textures
+        // that parse) and 460 failures for the models it did not convert. The
+        // converter is the only writer of modern models, so its written count is
+        // added on top of the textures', and the Lean core's model failures are
+        // dropped: a payload the converter went on to write must not also be
+        // counted as a failure, and the converter's own failures replace them.
+        //
+        // The textures' failures are kept. The Lean core converted those, so its
+        // report is the only one that knows why they failed.
+        summary.failed = report.failed;
+        let converted = convert_models(asset_dir, output)?;
+        summary.models += converted.converted;
+        // A failure naming a container the converter handled is the Lean core's
+        // report for a model it did not convert, which the converter replaced:
+        // on the Italian disc those are 460 "not ported to Lean yet" lines for
+        // payloads the converter went on to write. Keyed on the containers the
+        // converter *handled* rather than on the ones it failed on, because a
+        // container whose every payload converted raises no failure to key on.
+        // The separator is part of the prefix, so a container whose path is a
+        // prefix of another's cannot over-match: the Lean core spells a failure
+        // as `<container>: <the failure>`.
+        let converted_paths: Vec<String> = converted
+            .handled
+            .iter()
+            .map(|container| format!("{}: ", container.display()))
+            .collect();
+        summary
+            .failed
+            .retain(|message| !converted_paths.iter().any(|c| message.starts_with(c)));
+        for (container, index, name, why) in &converted.failed {
+            summary.failed.push(format!(
+                "{}: 3D resource {index} '{name}': {why}",
+                container.display()
+            ));
+        }
+
+        // The 3D index page, written last because it lists what is on disk. In
+        // `--original` the Lean core writes it at the end of its own run, since
+        // it is then the only writer; here the converter has just added the
+        // glTFs, so it is written through the same Lean code at this point
+        // instead. One page, one implementation, whichever half wrote the last
+        // file it lists.
+        for (texture_dir, model_dir) in &converted.index_targets {
+            crate::lean::write_3d_index(output, texture_dir, model_dir).with_context(|| {
+                format!("writing the 3D index page for {}", model_dir.display())
+            })?;
+        }
+    } else {
+        summary.failed = report.failed;
     }
     Ok(summary)
 }
@@ -227,23 +280,44 @@ pub fn sanitize(name: &str, index: usize) -> String {
     }
 }
 
-/// Convert the 3D game's `Models` containers to glTF, the Rust half of the
-/// split.
+/// Convert the 3D game's `Models` containers to glTF, and report what happened.
 ///
-/// The Lean core extracts these payloads byte for byte in `--original` and
-/// reports each modern model as a failure naming what is missing, rather than
-/// writing a different format under a `.gltf` name. So the modern conversion is
-/// the Rust converter's, and this is where the halves meet: it runs on the
-/// containers the Lean core just reported, using the textures the Lean core
-/// wrote beside them.
-fn convert_models(asset_dir: &Path, output: &Path, summary: &mut Summary) -> Result<()> {
+/// Returns the converted-payload count and the resources that could not be
+/// converted, each tagged with the container it came from so the caller can
+/// tell a model failure from a texture one. The Lean core reports each modern
+/// model as a failure naming what is missing; this replaces those reports with
+/// the converter's own, which is the program that actually ran.
+/// What one `--modern` run of the 3D converter did.
+struct Converted3D {
+    /// Payloads written, counting a payload written through as one model.
+    converted: usize,
+    /// Resources that could not be converted, tagged with their container.
+    failed: Vec<(PathBuf, usize, String, String)>,
+    /// Each `(texture_dir, model_dir)` pair whose index page still needs
+    /// writing, because the converter added the objects the page lists.
+    index_targets: Vec<(PathBuf, PathBuf)>,
+    /// Every container the converter handled, so the driver can tell a model
+    /// failure of the converter's from a texture failure of the Lean core's.
+    /// A container the converter wrote every payload of has no entry in
+    /// `failed`, and it still needs naming: its resources were converted even
+    /// though none of them failed.
+    handled: Vec<PathBuf>,
+}
+
+fn convert_models(asset_dir: &Path, output: &Path) -> Result<Converted3D> {
+    let mut result = Converted3D {
+        converted: 0,
+        failed: Vec::new(),
+        index_targets: Vec::new(),
+        handled: Vec::new(),
+    };
     let mut entries: Vec<PathBuf> = match std::fs::read_dir(asset_dir) {
         Ok(read) => read
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.is_file())
             .collect(),
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(result),
     };
     entries.sort();
     for path in entries {
@@ -271,15 +345,18 @@ fn convert_models(asset_dir: &Path, output: &Path, summary: &mut Summary) -> Res
             texture_dir.as_deref(),
         )
         .with_context(|| format!("converting the models of {} into glTF", path.display()))?;
-        summary.models += report.written;
+        result.converted += report.written;
         for (index, name, why) in report.failed {
-            summary.failed.push(format!(
-                "{}: 3D resource {index} '{name}': {why}",
-                path.display()
-            ));
+            result.failed.push((path.clone(), index, name, why));
+        }
+        // The index page lists both halves' output, so it is written only when
+        // there is a textures folder to list beside the models this just added.
+        result.handled.push(path);
+        if let Some(textures) = texture_dir {
+            result.index_targets.push((textures, out_dir));
         }
     }
-    Ok(())
+    Ok(result)
 }
 
 /// Print a human-readable summary of what was extracted.

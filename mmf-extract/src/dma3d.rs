@@ -133,7 +133,7 @@ pub fn extract_models(
     texture_dir: Option<&Path>,
 ) -> Result<Extract3DReport> {
     if original {
-        return extract(container, out_dir, "mod");
+        return extract(container, out_dir);
     }
     extract_gltf(container, out_dir, texture_dir)
 }
@@ -151,13 +151,16 @@ pub fn extract_textures(
     original: bool,
 ) -> Result<Extract3DReport> {
     if original {
-        return extract(container, out_dir, "tex");
+        return extract(container, out_dir);
     }
     extract_pngs(container, out_dir)
 }
 
 /// The `--original` path: every payload written exactly as stored.
-fn extract(container: &Container, out_dir: &Path, extension: &str) -> Result<Extract3DReport> {
+///
+/// No extension is chosen: the resource name carries the game's own, which is
+/// why this is the one 3D writer that does not name a format.
+fn extract(container: &Container, out_dir: &Path) -> Result<Extract3DReport> {
     std::fs::create_dir_all(out_dir)?;
     let mut report = Extract3DReport::default();
 
@@ -165,10 +168,6 @@ fn extract(container: &Container, out_dir: &Path, extension: &str) -> Result<Ext
         let name = container.name(index);
         let payload = container.payload(index);
         let stem = output_stem(container, index);
-        // The resource name already carries the game's own extension
-        // (`createAmbientLight.mod`, `dialogBtOk.TGA`), so appending the
-        // format's extension doubled it: `00033_od.mod.mod`. The payload keeps
-        // the name the container gives it, spelled once.
         let path = out_dir.join(format!("{index:05}_{stem}"));
 
         let written =
@@ -443,154 +442,6 @@ fn texture_names_in(payload: &[u8]) -> Vec<String> {
     names
 }
 
-/// Write the index page that makes the 3D output browsable.
-///
-/// The modern mode exists for people who have never opened a 3D program, and a
-/// folder of 705 `.png`s and 144 `.gltf`s is not browsable on its own: nothing
-/// connects a texture to the object it belongs to, and nothing says how to open
-/// a glTF. This page is one file that does both, and it is deliberately
-/// dependency-free — no script, no stylesheet, no network — so it works by
-/// double-clicking it from a local folder, which is how a desktop user will
-/// actually open it.
-///
-/// `texture_dir` and `model_dir` hold the PNGs written by [`extract_textures`]
-/// and the glTFs plus previews written by [`extract_models`]. The index goes at
-/// `base`, beside both, and refers to them by a relative path.
-pub fn write_index(base: &Path, texture_dir: &Path, model_dir: &Path) -> Result<usize> {
-    let mut files = 0usize;
-
-    // List the two directories, so the page is built from what was written
-    // rather than from what the container claims it holds.
-    let textures = list_dir(texture_dir, "png");
-    let models = list_dir(model_dir, "gltf");
-    let previews = list_dir(model_dir, "preview.png");
-
-    let relative_to = |dir: &Path| -> String {
-        dir.strip_prefix(base)
-            .unwrap_or(dir)
-            .to_string_lossy()
-            .replace('\\', "/")
-    };
-    let texture_prefix = relative_to(texture_dir);
-    let model_prefix = relative_to(model_dir);
-
-    let mut page = String::with_capacity(64 * 1024);
-    page.push_str(INDEX_HEAD);
-    page.push_str(&format!(
-        "<h2>Objects <span class=\"count\">{}</span></h2>\n",
-        models.len()
-    ));
-    page.push_str(
-        "<p>Every object below is a rendered picture of the model itself, made from \
-         the model's own vertices. The file next to it is a <code>.gltf</code>, \
-         which is the model. <a href=\"#how\">How to open one</a>.</p>\n",
-    );
-    page.push_str("<div class=\"grid\">\n");
-    for (i, (index, name)) in models.iter().enumerate() {
-        let preview = previews
-            .iter()
-            .find(|(j, _)| j == index)
-            .map(|(_, p)| p.clone())
-            .unwrap_or_default();
-        page.push_str(&format!(
-            "<figure>\
-             <a href=\"{model_prefix}/{name}\" title=\"Open {index:05}\" >\
-             <img src=\"{model_prefix}/{preview}\" alt=\"{index:05}\" loading=\"lazy\">\
-             </a><figcaption>{index:05}</figcaption></figure>\n"
-        ));
-        let _ = i;
-        files += 1;
-    }
-    page.push_str("</div>\n");
-
-    page.push_str(&format!(
-        "<h2>Textures <span class=\"count\">{}</span></h2>\n",
-        textures.len()
-    ));
-    page.push_str(
-        "<p>The game stores each texture as a palette and a grid of one-byte \
-         indices. They are expanded to ordinary PNGs here.</p>\n",
-    );
-    page.push_str("<div class=\"grid\">\n");
-    for (index, name) in &textures {
-        page.push_str(&format!(
-            "<figure>\
-             <a href=\"{texture_prefix}/{name}\" title=\"Open {index:05}\" >\
-             <img src=\"{texture_prefix}/{name}\" alt=\"{index:05}\" loading=\"lazy\">\
-             </a><figcaption>{index:05}</figcaption></figure>\n"
-        ));
-        files += 1;
-    }
-    page.push_str("</div>\n");
-    page.push_str(INDEX_TAIL);
-
-    let path = base.join("index.html");
-    std::fs::write(&path, page).with_context(|| format!("writing {}", path.display()))?;
-    Ok(files)
-}
-
-/// The page's head: no script, no stylesheet, no network.
-const INDEX_HEAD: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<meta charset="utf-8">
-<title>3D assets</title>
-<style>
- body { font: 15px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 76rem; padding: 2rem 1rem; background: #16181d; color: #e6e6e6; }
- h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
- h2 { font-size: 1.2rem; margin: 2.5rem 0 .25rem; border-top: 1px solid #2c3038; padding-top: 1.5rem; }
- .count { color: #8b93a3; font-weight: normal; font-size: .9rem; }
- .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: .75rem; margin: 1rem 0; }
- figure { margin: 0; }
- img { width: 100%; height: auto; background: #0b0d10; border: 1px solid #2c3038; border-radius: 4px; display: block; }
- figcaption { font-size: .7rem; color: #8b93a3; text-align: center; margin-top: .2rem; }
- #how { background: #1b1f26; border: 1px solid #2c3038; border-radius: 6px; padding: 1rem 1.25rem; margin: 2rem 0 0; }
- #how h2 { border: 0; margin: 0 0 .5rem; padding: 0; font-size: 1rem; }
- #how code { background: #0b0d10; padding: .1rem .3rem; border-radius: 3px; }
-</style>
-<h1>3D assets</h1>
-<p>Pictures of everything this game shipped, recovered from its own containers.</p>
-"#;
-
-/// The page's tail: what a reader does with a glTF they have just been shown.
-const INDEX_TAIL: &str = r#"
-<div id="how">
-<h2>How to open a <code>.gltf</code></h2>
-<ul>
- <li><b>In a browser, no install:</b> drag the file onto
-     <code>https://gltf-viewer.donmccurdy.com</code>. Nothing is uploaded.</li>
- <li><b>In Blender:</b> <code>File &rarr; Import &rarr; glTF 2.0</code>.</li>
- <li><b>On Windows 10/11:</b> open it in the <i>3D Viewer</i> app.</li>
- <li>Each <code>.gltf</code> has a <code>.tail</code> file beside it holding the
-     bytes that are still undecoded (the animation and the texture
-     coordinates), so nothing is thrown away.</li>
-</ul>
-</div>
-"#;
-
-/// List the files of `dir` whose names match `<index>_<rest>`, returning the
-/// index and the full file name.
-fn list_dir(dir: &Path, extension: &str) -> Vec<(usize, String)> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(extension) {
-            continue;
-        }
-        // The output names are `<index:05>_<rest>.<ext>`, so the leading digits
-        // are the container's resource index and the sort order is the game's.
-        let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
-        let index = digits.parse::<usize>().unwrap_or(usize::MAX);
-        out.push((index, name));
-    }
-    out.sort();
-    out
-}
-
-/// Build a filename stem from the resource name, dropping the source
-/// extension so the output extension is unambiguous.
 /// The output file name's stem: the resource name, sanitised.
 ///
 /// It already ends in the game's own extension, which is why the `--original`

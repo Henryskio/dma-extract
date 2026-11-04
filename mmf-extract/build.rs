@@ -48,6 +48,12 @@ fn main() {
     if !symbols.iter().any(|s| *s == "mmf_extract") {
         panic!("no `mmf_extract` symbol in {}", lib.display());
     }
+    // The 3D index page, so the driver can write it after the Rust converter has
+    // added the glTFs. The page is written in Lean for either mode, which is why
+    // it is a second entry point rather than a Rust copy of the HTML.
+    if !symbols.iter().any(|s| *s == "mmf_index") {
+        panic!("no `mmf_index` symbol in {}", lib.display());
+    }
 
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let bindings = out.join("lean_core.rs");
@@ -61,6 +67,9 @@ fn main() {
 #[link(name = "mmfextract")]
 unsafe extern "C" {{
     pub fn mmf_extract(request: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    // The 3D index page: `base` TAB `texture_dir` TAB `model_dir` in, the
+    // number of figures written out.
+    pub fn mmf_index(request: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
     pub fn {initializer}(builtin: u8) -> *mut core::ffi::c_void;
 }}
 

@@ -463,10 +463,12 @@ The modern mode decodes:
   three-quarter eye so a flat floor is not drawn edge-on. It is a preview, not
   a renderer — it exists so a person who has never opened a 3D program can see
   what an object is;
-* `dma3d::write_index` writes one **`index.html`** at the output root: 705
-  textures and 144 objects, each as a picture, each linked to its file, with a
-  short how-to-open-a-gltf note. No script, no stylesheet, no network, so it
-  opens by being double-clicked from a local folder.
+* one **`index.html`** at the output root: the textures and the objects, each as
+  a picture, each linked to its file, with a short how-to-open-a-gltf note. No
+  script, no stylesheet, no network, so it opens by being double-clicked from a
+  local folder. It is written by `MmfExtract/Dma3d.lean`'s `writeIndex` — the
+  only implementation there is — and reached from the Rust driver through the
+  `@[export mmf_index]` entry point of `MmfExtract/FFI.lean`, see §8.4.
 
 ### 5.1 The verification contract
 
@@ -586,23 +588,54 @@ the Rust converter, and the split is deliberate:
   carries the measured mesh chain of §3 into a glTF, a preview PNG, a `.tail`
   file and an `.anim.txt`; a payload with no chain is written through unchanged
   and counted as a model that is not geometry.
-* The index page (`index.html`) is written last, from what is on disk.
 
-Two places the two halves had to be made to agree, both found by comparing their
-outputs rather than by reading the code:
+Four things the two halves had to be made to agree on, every one found by
+comparing their outputs rather than by reading the code.
 
-1. **A corrupt offsets entry used to abort the process.** The Italian disc's
-   `DMA3D.MMX` holds 38 offsets entries that name a range past the end of the
-   file, and `Container::payload` used to index `self.data[s..e]`, which is a
-   Rust panic: the whole extraction died and every other resource with it.
-   `Container::payload` now reports the range and hands back an empty payload,
-   so the resource fails its own layout check and is reported as a failure —
-   the rule `AGENTS.md` states, and the same rule
-   `MmfExtract/Container.lean`'s `Bytes.slice` already enforced.
-2. **The `--original` file name doubled the extension.**
-   `00033_od.mod.mod` came out of `out_dir.join(format!("{index:05}_{stem}.mod"))`
-   with `stem` already ending in `.mod`; the file now keeps the name the
-   container gives it, spelled once.
+**8.1 A corrupt offsets entry used to abort the process.** **76 of the Italian
+disc's `DMA3D.MMX` 705 resources** have an offsets entry naming a range the file
+does not hold, and they break in two ways: **38 entries run backwards**
+(`start > end`) and **74 run past the end of the file**, with **36 doing both**.
+The models container `DMA3D.MMM` has none. `Container::payload` used to index
+`self.data[s..e]`, which for those is a Rust panic: the whole extraction died
+and every other resource in the container with it. It now reports the range and
+hands back an empty payload, so the resource fails its own layout check and is
+counted as a failure — the rule `AGENTS.md` states, and the same rule
+`MmfExtract/Container.lean`'s `Bytes.slice` already enforced.
+`tests/dma3d.rs::a_corrupt_offsets_entry_is_reported_not_panicked`
+walks both containers and holds both halves to it.
+
+**8.2 The `--original` file name doubled the extension.** `00033_od.mod.mod`
+came out of a path spelled `format!("{index:05}_{stem}.mod")` with `stem`
+already ending in `.mod`. The file now keeps the name the container gives it,
+spelled once, and the writer that had an unused `extension` parameter lost it.
+
+**8.3 The two counts, which compose rather than add.** The Lean core puts *both*
+3D kinds into one number: `MmfExtract/Extract.lean` adds what it wrote for the
+textures to the same `models` field as what it wrote for the models. So a modern
+run reports `463` on the Italian disc, which is the **460 payloads the Rust
+converter wrote** plus the **3 textures the Lean core decoded**, and reports
+**702 failures** — all textures. The Lean core's own 460 model failures ("not
+ported to Lean yet") are dropped, because the converter is the program that ran
+and it wrote those payloads; they appeared on stderr but not in the report.
+Adding it up: 463 written + 702 failed = 1165, which is exactly the two
+containers' 460 + 705.
+
+**8.4 The index page has one implementation, and it is in Lean.** The page used
+to exist twice — once in `src/dma3d.rs` (dead by then, nothing called it) and
+once in `MmfExtract/Dma3d.lean`. The Rust copy is deleted; the page is written
+through the second C entry point,
+`MmfExtract/FFI.lean`'s `@[export mmf_index]`, so the Rust driver calls it at
+the one moment that is correct: after the converter has added the glTFs.
+
+It is written **only in the modern modes**, and that too is measured. Its
+figures are `<img>` tags, so only a file a browser can draw belongs on it; a
+first attempt listed every numbered file regardless of extension, and the
+`--original` page it produced showed 460 objects and 629 textures and drew not
+one of them, because a `.mod` payload is the game's own binary rather than a
+picture.
+`--original` therefore writes no page, and in the modern mode the page lists the
+glTFs and previews that exist: on the Italian disc, 0 objects and 3 textures.
 
 ## 9. Verifying the conversion in Lean
 
@@ -621,23 +654,32 @@ writer:
   glTF; and a VEC3 vertex is three floats, because the payload's fourth is the
   constant `1.0` the writer drops rather than passes through.
 
-The synthetic container is built by hand from §3 (the script that writes it
-lives in the commit that added this section), so the conversion it drives has
-known geometry
-(`u32 C`, `u16[C]`, `u32 V`, `vertex[V]`, `u32 V`, `normal[V]`), so the
-conversion it drives has known geometry: 6 indices naming 4 vertices. The
+The synthetic container is built by hand from §3 by `lean/synth/mkmodel.sh`, so
+the conversion it drives has known geometry — `u32 C`, `u16[C]`, `u32 V`,
+`vertex[V]`, `u32 V`, `normal[V]`, with 6 indices naming 4 vertices. The
 converter writes a glTF for it, and the Lean check accepts it and rejects both
 a tampered index and a tampered byte length — which is what makes it a check
-rather than a reader.
+rather than a reader. That run also reports one failure, and it is honest: the
+synthetic mesh has every vertex at `z == 1.0`, so its triangles are coplanar
+with the eye and the rasteriser covers no pixels, which the converter says
+rather than writing a blank preview. The glTF is still written and still
+verified, which is the point of the exercise.
 
-The two checks are run by `lean/test/Test.lean`:
+Both checks are run by `lean/test/Test.lean`, and `lean/test/run3d.sh` runs the
+whole path in order: carve the containers (`test/carve3d.py`), extract with
+`--original`, check, build the synthetic container, convert with `--modern`,
+check. A check whose prerequisite has not been produced yet reports itself as a
+skip rather than a failure, so the script can be run at either point.
 
 ```
 DMA3D.MMM: 460 files checked, 460 byte-exact
+DMA3D.MMM: 0 resources have no file (their payloads are outside the container)
 DMA3D.MMX: 629 files checked, 629 byte-exact
+DMA3D.MMX: 76 resources have no file (their payloads are outside the container)
 the Rust converter's glTF verified in Lean: 6 indices, all naming a vertex
 the same check rejects a tampered index
 the same check rejects a wrong byte length
+all checks passed
 ```
 
 ## 10. What this disc's payloads do and do not carry

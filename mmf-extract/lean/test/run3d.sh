@@ -26,7 +26,7 @@ if [ ! -f "$dma/DMA3D.MMM" ]; then
 fi
 
 # ---- 2. `--original`, in Lean ----
-outdir="$proj/build/3d-original"
+outdir="/tmp/dma3d-original"
 rm -rf "$outdir"
 "$bin" "$dma" --output "$outdir" --types models,textures --original
 
@@ -36,7 +36,7 @@ LEAN_PATH="$proj/.lake/build/lib/lean" lean --run "$here/Test.lean"
 # ---- 4. `--modern`, in Rust, on the synthetic container ----
 synthdir="$proj/synth/out"
 [ -f "$synthdir/DMA3D.MMM" ] || sh "$proj/synth/mkmodel.sh" "$synthdir"
-modern="$proj/build/3d-modern"
+modern="/tmp/dma3d-modern"
 rm -rf "$modern"
 "$bin" "$synthdir" --output "$modern" --types models
 

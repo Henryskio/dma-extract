@@ -378,15 +378,36 @@ and that naming stays per `AGENTS.md`. Its own document is
   a zero-based `u16[V]` index list, `vec3` positions with `w == 1.0`, and a
   unit-length normal array with `w == 0.0`. The counts are not in the header,
   so the chain is located structurally.
-* **Modern output**: 705 PNG textures, 144 self-contained glTF 2.0 models,
-  316 payloads written through unchanged, a `.tail` file per glTF holding the
-  590,532 bytes the mesh decoder does not read, a 256×256 rasterised preview
-  per mesh (`src/dma3d/render.rs`), and one dependency-free `index.html`
-  making the whole set browsable. Verification is by reading the output back:
-  every PNG's pixels against `texfile::parse`, every glTF's indices/positions/
-  normals against `modfile::parse_mesh` (`gltf::read_gltf`, a minimal JSON
-  reader — `serde_json` is not reachable offline). Every count is pinned in
-  `tests/dma3d_numbers.rs`.
+* **Modern output** (English disc): 705 PNG textures, 144 self-contained
+  glTF 2.0 models, 316 payloads written through unchanged, a `.tail` file per
+  glTF holding the 590,532 bytes the mesh decoder does not read, a 256×256
+  rasterised preview per mesh (`src/dma3d/render.rs`), and one dependency-free
+  `index.html` making the whole set browsable. Verification is by reading the
+  output back in Rust — every PNG's pixels against `texfile::parse`, every
+  glTF's indices/positions/normals against `modfile::parse_mesh`
+  (`gltf::read_gltf`, a minimal JSON reader, since `serde_json` is not reachable
+  offline) — and again in Lean by `lean/src/MmfExtract/Dma3d/Verify.lean`, which
+  checks the converter's glTF against `modfile::parse_mesh`'s own rejection rule
+  and rejects a tampered index and a tampered buffer length. Every count is
+  pinned in `tests/dma3d_numbers.rs`. `lean/test/run3d.sh` runs the whole path,
+  from carving the containers out of the disc image to the verified glTF.
+* **The Italian disc is the one carved in this workspace**, and it differs from
+  the English one in three measured ways (`docs/DMA3D.md` §8, §10). Its
+  `DMA3D.MMX` holds **76 offsets entries outside the file** — 38 running
+  backwards, 74 past the end, 36 both — which used to abort the extraction with
+  a Rust panic (`Container::payload` indexed `self.data[s..e]`); they are now
+  reported as failures, by both halves. Its 460 model payloads carry **no mesh
+  chain**, so the converter writes all 460 through and produces no glTF, and
+  only 3 of its 705 textures decode. So the modern path is proven on the
+  synthetic container `lean/synth/mkmodel.sh` builds from `docs/DMA3D.md` §3,
+  whose geometry is known: 6 indices naming 4 vertices.
+* **The 3D index page is one implementation, in Lean**
+  (`MmfExtract/Dma3d.lean`'s `writeIndex`), reached from the driver through the
+  second C entry point `@[export mmf_index]` of `MmfExtract/FFI.lean`; the dead
+  Rust copy in `src/dma3d.rs` is deleted. It is written only in the modern
+  modes, because its figures are `<img>` tags and `--original` writes nothing a
+  browser can draw — listing every file by name put 1,089 payloads on that page
+  and drew none of them.
 * **Animation, partly measured and not decoded** (`docs/DMA3D.md` §3.4): the
   records region past the `V` float pairs carries `u32 K`, `u16[K]` vertex
   indices, `u32 D` equal to that list's distinct-index count, then `f32[D]` and

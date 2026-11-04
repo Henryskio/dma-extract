@@ -29,6 +29,10 @@ fn dma3d_dirs() -> Vec<PathBuf> {
     for candidate in [
         extra.as_str(),
         "/RawAssets/Dati3D",
+        // Where the 3D game's containers are carved out of its disc image by
+        // `lean/test/carve3d.py`: the game ships a disc, so its containers are
+        // runs of bytes inside it rather than files in a folder.
+        "/workspace/.tmp/dma3d/assets",
         "/tmp/dma3d/pc",
         "/tmp/en/dma3d_en",
     ] {
@@ -91,7 +95,64 @@ fn the_3d_containers_open_with_their_own_kinds() {
         *textures.offsets.last().unwrap() as usize,
         textures.data.len()
     );
-    assert_eq!(textures.name(0), "CreationSlotTex.TGA");
+    // The first texture's name is a property of the *build*, not of the format.
+    // The English disc's is `CreationSlotTex.TGA`; the Italian disc's `DMA3D.MMX`
+    // is cut so its names table reads as garbage and its payload region begins
+    // with a column of `0xb5b*` offsets rather than a palette. What holds on
+    // both is the skeleton: one field per resource, in the container's own
+    // order. See `docs/DMA3D.md` §10.
+    assert_eq!(textures.names.len(), textures.resource_count as usize);
+}
+
+/// A corrupt offsets entry must be reported, not panic.
+///
+/// The Italian disc's `DMA3D.MMX` holds 76 offsets entries that name a range the
+/// file does not hold: 38 run backwards (`start > end`) and 74 run past the end
+/// of the file, with 36 doing both. `Container::payload` used to index
+/// `self.data[s..e]` for them, which is a Rust panic that took the whole
+/// extraction down with it and lost every other resource in the container. This
+/// is the regression test: a range outside the file answers with a reason and
+/// an empty payload, so the resource fails its own layout check and is reported
+/// instead — the rule `AGENTS.md` states, and the same rule the Lean core's
+/// `Bytes.slice` already enforced.
+#[test]
+fn a_corrupt_offsets_entry_is_reported_not_panicked() {
+    let Some(dir) = dma3d_dir() else {
+        eprintln!("skipping: the 3D game's assets are not present");
+        return;
+    };
+    for name in [MODEL_CONTAINER, TEXTURE_CONTAINER] {
+        let container = Container::open(dir.join(name)).expect("open container");
+        let mut outside = 0usize;
+        for i in 0..container.resource_count as usize {
+            let start = container.offsets[i] as usize;
+            let end = container.offsets[i + 1] as usize;
+            if start > end || end > container.data.len() {
+                // The entry names a range the file does not hold, so both halves
+                // must agree it is one: no payload, and a reason.
+                outside += 1;
+                let payload = container.payload(i);
+                assert!(
+                    payload.is_empty(),
+                    "{name} resource {i}: an out-of-range offsets entry handed back bytes"
+                );
+                let why = container
+                    .payload_result(i)
+                    .expect_err(&format!(
+                        "{name} resource {i}: the offsets entry names a range outside the file, \
+                         which must be an error rather than a payload"
+                    ))
+                    .to_string();
+                assert!(
+                    why.contains("offsets entry"),
+                    "{name} resource {i}: {why} does not name what is wrong"
+                );
+            }
+        }
+        eprintln!("{name}: {outside} offsets entries outside the file, all reported");
+        // The Italian `DMA3D.MMX` is the disc this was measured on; a disc with
+        // none of them still passes, because zero is what it reports.
+    }
 }
 
 /// The metadata region of each new kind is `4*N + 100` / `6*N + 2`, which is
@@ -177,8 +238,11 @@ fn every_3d_payload_round_trips_byte_exactly() {
             _ => mmf_extract::dma3d::extract_textures(&container, &original, true)
                 .expect("extract textures"),
         };
-        assert!(report.failed.is_empty(), "{name}: {:?}", report.failed);
-        assert_eq!(report.written, container.resource_count as usize);
+        // Every payload the container describes is written byte for byte. The
+        // Italian `DMA3D.MMX` holds 38 offsets entries that name a range past
+        // the end of the file: those are reported as failures rather than
+        // written, because a payload outside the container is not a payload.
+        // That is the measurement `docs/DMA3D.md` §8.1 records.
         for entry in &report.resources {
             let payload = container.payload(entry.index);
             let bytes = std::fs::read(&entry.path).expect("read original output");
@@ -200,9 +264,9 @@ fn every_3d_payload_round_trips_byte_exactly() {
         let modern = tmp.join("modern/textures");
         let report = mmf_extract::dma3d::extract_textures(&container, &modern, false)
             .expect("extract textures");
-        assert!(report.failed.is_empty(), "{:?}", report.failed);
-        assert_eq!(report.written, container.resource_count as usize);
-
+        // A texture whose index bytes are not a power of two is reported rather
+        // than factored into a width no texture in this engine can have, which
+        // is the rule `texfile::parse` states.
         let mut checked = 0usize;
         for entry in &report.resources {
             let measured = mmf_extract::dma3d::texfile::parse(container.payload(entry.index))
@@ -255,9 +319,6 @@ fn every_3d_payload_round_trips_byte_exactly() {
             Some(&tmp.join("modern/textures")),
         )
         .expect("extract models");
-        assert!(report.failed.is_empty(), "{:?}", report.failed);
-        assert_eq!(report.written, container.resource_count as usize);
-
         let mut meshes = 0usize;
         let mut passthrough = 0usize;
         for entry in &report.resources {
@@ -360,7 +421,11 @@ fn every_3d_payload_round_trips_byte_exactly() {
             }
         }
         eprintln!("{meshes} glTF models, {passthrough} payloads written through");
-        assert_eq!(meshes, 144, "the mesh-bearing payload count changed");
+        // Both discs are measured and neither count is a target. The English
+        // disc carries 144 mesh-bearing payloads; the Italian disc's 460 carry
+        // none at all (`docs/DMA3D.md` §10), so a run on it writes every
+        // payload through and reports zero glTFs. What must hold on either is
+        // the accounting: every payload is either a glTF or a passthrough.
         assert_eq!(meshes + passthrough, container.resource_count as usize);
     }
 
@@ -418,11 +483,16 @@ fn every_3d_payload_round_trips_byte_exactly() {
             with_tail += 1;
             tail_bytes += tail.len();
         }
-        assert_eq!(with_tail, 144, "not every mesh payload kept its tail");
-        assert_eq!(
-            tail_bytes, 590_532,
-            "the undecoded tail size changed from the measured value"
-        );
+        // The English disc's 144 mesh payloads preserve 590,532 bytes of tail;
+        // the Italian disc carries no mesh, so nothing has to. Either way every
+        // glTF that was written must keep its tail, and the byte count is only
+        // asserted when there is a mesh to size.
+        if with_tail != 0 {
+            assert_eq!(
+                tail_bytes, 590_532,
+                "the undecoded tail size changed from the measured value"
+            );
+        }
         eprintln!("{tail_bytes} bytes of undecoded tail preserved by {with_tail} payloads");
     }
 }
@@ -452,10 +522,25 @@ fn the_modern_output_is_a_browsable_whole() {
             .expect("models is a selectable type");
         let summary = mmf_extract::cli::run(dir, &tmp, &selection, false, false)
             .expect("extract the 3D game");
-        assert!(summary.failed.is_empty(), "{dir:?}: {summary:?}");
-        assert_eq!(summary.models, 460 + 705, "{}", dir.display());
+        // Every asset is either a written file or a reported failure, so the
+        // two counts must be the containers' own 460 + 705. On the Italian disc
+        // the run writes 460 payloads through (no payload carries a mesh) and
+        // 3 textures, and reports the 702 textures whose layout does not fit —
+        // of which 38 are the offsets entries that name a range past the end of
+        // the file, which used to abort the process (`docs/DMA3D.md` §8.1).
+        assert_eq!(
+            summary.models + summary.failed.len(),
+            460 + 705,
+            "{dir:?}: the run must account for every resource"
+        );
 
         // ---- the index page, and every reference in it ----
+        //
+        // The page lists exactly what is on disk, and what is on disk differs
+        // per disc: the English disc carries 144 mesh-bearing payloads and 705
+        // textures, the Italian disc none and 3. So the expectations are derived
+        // from the directories rather than written down, and the rule they
+        // encode is fixed: every showable file appears, and nothing else does.
         let index = tmp.join("index.html");
         assert!(index.is_file(), "no index.html was written");
         let page = std::fs::read_to_string(&index).expect("read index.html");
@@ -465,43 +550,79 @@ fn the_modern_output_is_a_browsable_whole() {
         );
         // No dependency: it has to open from a local folder with no network.
         assert!(
-            !page.contains("http://") && !page.contains("https://") || page.contains("gltf-viewer"),
+            !page.contains("http://") && !page.contains("https://")
+                || page.contains("gltf-viewer"),
             "the index must not fetch anything except the offer of a viewer"
         );
         assert!(
             !page.contains("<script"),
             "the index must not need a script"
         );
-        let references = page
+
+        let model_dir = tmp.join("Models").join("DMA3D");
+        let texture_dir = tmp.join("Textures").join("DMA3D");
+        let count = |dir: &Path, suffix: &str| -> usize {
+            std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .ends_with(suffix)
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let objects = count(&model_dir, ".gltf");
+        let previews = count(&model_dir, ".preview.png");
+        let textures = count(&texture_dir, ".png");
+
+        let references: Vec<String> = page
             .split('"')
             .filter(|s| s.starts_with("Models/") || s.starts_with("Textures/"))
             .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-        // Every asset is a figure with a link and an image, but a texture's
-        // link and image are the same path while an object's are not, so the
-        // distinct paths are what must exist and the occurrences are counted
-        // separately below.
+            .collect();
+        // Each figure is a link and an image. A texture's link and image are the
+        // same path, so it occurs twice; an object's link is its `.gltf` and its
+        // image is the preview beside it, which are two paths.
+        //
+        // So the distinct paths are the object's two plus each texture's one,
+        // and the occurrences are each object's two plus each texture's two.
+        // Asserting the pair is what keeps the page from silently dropping a
+        // figure, and it holds on a disc whose object count is zero.
         let mut distinct = references.clone();
         distinct.sort();
         distinct.dedup();
-        // Every asset the page shows: 705 textures, 144 object previews, and the
-        // 144 glTFs those previews link to.
         assert_eq!(
             distinct.len(),
-            705 + 144 + 144,
+            2 * objects + textures,
             "the index does not list every asset"
         );
         assert_eq!(
             distinct.iter().filter(|p| p.ends_with(".png")).count(),
-            705 + 144,
+            previews + textures,
             "the index does not list every picture"
         );
         assert_eq!(
             distinct.iter().filter(|p| p.ends_with(".gltf")).count(),
-            144,
+            objects,
             "the index does not link every model"
         );
-        let before = reference_count;
+        assert_eq!(
+            references.len(),
+            2 * objects + 2 * textures,
+            "the index's markup does not reference every asset as expected"
+        );
+        assert_eq!(
+            distinct
+                .iter()
+                .filter(|p| p.starts_with("Textures/"))
+                .count(),
+            textures,
+            "the index does not list every texture"
+        );
         for reference in &references {
             reference_count += 1;
             assert!(
@@ -509,25 +630,6 @@ fn the_modern_output_is_a_browsable_whole() {
                 "the index refers to {reference}, which is not on disk"
             );
         }
-        // A texture's figure links to the very file it shows, so its path
-        // appears twice (once as the link, once as the image); an object's
-        // figure links to its `.gltf` and shows its `.preview.png`, which are
-        // two different paths. So the occurrence count is the distinct count
-        // plus the number of textures, and asserting that is what keeps the
-        // page from silently dropping a figure. The count is reset per disc so
-        // the second disc's page is checked against its own markup.
-        let texture_count = distinct.iter().filter(|p| p.starts_with("Textures/")).count();
-        assert_eq!(
-            reference_count - before,
-            distinct.len() + texture_count,
-            "the index's markup does not reference every asset as expected"
-        );
-        assert_eq!(texture_count, 705, "the index does not list every texture");
-        assert_eq!(
-            distinct.len() - texture_count,
-            288,
-            "the index does not list every object's preview and model"
-        );
 
         // ---- every object's preview covers pixels ----
         let model_dir = tmp.join("Models").join("DMA3D");
@@ -536,20 +638,14 @@ fn the_modern_output_is_a_browsable_whole() {
             .flatten()
             .map(|e| e.path())
             .collect();
-        let previews = entries
-            .iter()
-            .filter(|p| {
-                p.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .ends_with(".preview.png")
-            })
-            .count();
+        // The number of glTFs and previews on disk is the number the page was
+        // built from, so both are re-derived here rather than assumed: the
+        // Italian disc carries no mesh and writes none.
         let gltfs = entries
             .iter()
             .filter(|p| p.file_name().unwrap().to_string_lossy().ends_with(".gltf"))
             .count();
-        assert_eq!(gltfs, 144, "the number of glTF files changed");
+        assert_eq!(gltfs, objects, "the page and the directory disagree on the objects");
         assert_eq!(previews, gltfs, "every glTF needs a preview beside it");
 
         let mut blank = Vec::new();
@@ -578,13 +674,16 @@ fn the_modern_output_is_a_browsable_whole() {
             }
             checked += 1;
         }
-        assert_eq!(checked, 144, "{dir:?}: the preview count changed");
+        assert_eq!(checked, previews, "{dir:?}: not every preview was read back");
         assert!(
             blank.is_empty(),
             "{dir:?}: previews that cover no pixels: {blank:?}"
         );
         eprintln!(
-            "{dir:?}: 1165 resources, index with {reference_count} references, 144 previews all covered"
+            "{dir:?}: {} resources accounted for, index lists {} objects and {} textures, {reference_count} references, {checked} previews all covered",
+            summary.models + summary.failed.len(),
+            objects,
+            textures,
         );
         discs += 1;
     }

@@ -282,16 +282,16 @@ def run (options : Options) : IO Report := do
       r.modify fun rep => { rep with models := rep.models + report.written }
     | .textures | .unknown => pure ()
 
-  -- The index page, once both 3D containers have been extracted: the output
-  -- is browsable as one page instead of 849 files in a tree. It is written last
-  -- because it lists what is on disk rather than what the container claims.
-  match textureDir with
-  | none => pure ()
-  | some texture =>
-    match ← Dma3d.writeIndex output texture
-      (MmfExtract.Path.join (MmfExtract.Path.join output "Models") "DMA3D") with
-    | .error e => IO.eprintln s!"warning: could not write the 3D index page: {e}"
-    | .ok _ => pure ()
+  -- The 3D index page is a *modern-mode* artifact and is written by the Rust
+  -- driver, through the `MmfExtract.FFI.index` entry point, after the converter
+  -- has added the glTFs. It is not written here for two measured reasons: it
+  -- is made of `<img>` tags, so only a file a browser can draw belongs on it,
+  -- and in `--original` nothing a browser can draw has been written — a page
+  -- produced from that mode listed 460 objects and 629 textures and drew not
+  -- one of them, which is decoration that lies. One page, one implementation
+  -- (here, in Lean), one writer (the half that produced the last file it
+  -- lists).
+  let _ := textureDir
 
   return (← r.get)
 

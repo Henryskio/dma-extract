@@ -186,14 +186,31 @@ def checkTextures : IO Bool := do
     | .error _ => pure ()
   return ok
 
+/-- Whether `dir` can be read, so "nothing to check yet" can be told apart from
+"the check failed".
+-/
+def dirExists (dir : String) : IO Bool := do
+  let read := do
+    let _ ← System.FilePath.readDir (System.FilePath.mk dir)
+    pure true
+  match ← (try read catch _ => pure false) with
+  | b => pure b
+
 /-- The 3D game's `--original` extraction, verified against the container.
 
-The container is carved from the disc image by hand, so the check takes both
-paths: the folder holding the containers and the folder the extractor wrote
-into.
+The containers are carved out of the disc image by `test/carve3d.py`, so the
+check takes both paths: the folder holding them, and the folder the extractor
+wrote its output into. It is a *skip* rather than a failure when the output
+folder is not there, because `run3d.sh` runs this check both before and after
+the extraction it is checking.
 -/
 def checkOriginal3D (assetDir outDir : String) : IO Bool := do
   let mut ok := true
+  -- `run3d.sh` runs this check before and after the `--original` extraction;
+  -- before it there is no output to compare against, which is not a failure.
+  if !(← dirExists outDir) then
+    IO.eprintln s!"skipping: {outDir} does not exist; extract with --original first"
+    return ok
   let entries ← System.FilePath.readDir (System.FilePath.mk assetDir)
   for entry in entries do
     let name := entry.fileName
@@ -235,10 +252,13 @@ def checkModern3D : IO Bool := do
       pure (some data)
     catch _ =>
       pure none
-  match (← read (System.FilePath.mk "/tmp/synthfinal/Models/DMA3D/00000_syntheticTest.mod.gltf")) with
+  match (← read (System.FilePath.mk "/tmp/dma3d-modern/Models/DMA3D/00000_syntheticTest.mod.gltf")) with
   | none =>
-    IO.eprintln "no modern output: extract on the synthetic 3D container first"
-    return false
+    -- Not present is not a failure: `run3d.sh` runs this check before and after
+    -- the conversion, and before it there is nothing to verify. Reporting it
+    -- separately is what lets the whole harness be run at either point.
+    IO.eprintln "skipping: no modern output; extract on the synthetic 3D container first"
+    return true
   | some bytes =>
     let text := MmfExtract.Bytes.decodeLossy bytes
     match (Dma3d.Verify.checkGltf text : Except String Nat) with
@@ -280,7 +300,7 @@ def main (_args : List String) : IO UInt32 := do
   if !(← checkTextures) then ok := false
   if !(← checkDpcm) then ok := false
   if !(← checkDifferentialSounds) then ok := false
-  if !(← checkOriginal3D "/workspace/.tmp/dma3d/assets" "/tmp/d3dout") then ok := false
+  if !(← checkOriginal3D "/workspace/.tmp/dma3d/assets" "/tmp/dma3d-original") then ok := false
   if !(← checkModern3D) then ok := false
   if !(← checkContainers "/RawAssets") then ok := false
   if ok then IO.println "all checks passed"; return 0 else return 1

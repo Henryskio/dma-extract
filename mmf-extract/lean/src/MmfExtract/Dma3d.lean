@@ -183,6 +183,11 @@ index and the full file name.
 
 The output names are `<index:05>_<rest>.<ext>`, so the leading digits are the
 container's resource index and the sort order is the game's.
+
+The extension is the filter because the page's figures are `<img>` tags: only a
+file a browser can draw belongs on it. Listing every numbered file instead put
+the `--original` payloads — a `.mod` is 460 bytes of the game's own binary, not
+an image — into that markup, so the page showed a grid of broken pictures.
 -/
 def listDir (dir : System.FilePath) (extension : String) : IO (Array (Nat × String)) := do
   let mut out : Array (Nat × String) := #[]
@@ -219,10 +224,6 @@ def writeIndex (base : System.FilePath) (textureDir modelDir : System.FilePath) 
   try
     let textures ← listDir textureDir "png"
     let models ← listDir modelDir "gltf"
-    -- The previews are listed for the same reason the Rust extractor lists
-    -- them: so the page is built from what is on disk. A model without one
-    -- still gets a figure, its image being absent rather than the model.
-    let _previews ← listDir modelDir "preview.png"
 
     let texturePrefix := relativeTo base textureDir
     let modelPrefix := relativeTo base modelDir

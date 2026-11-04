@@ -22,6 +22,7 @@
 //! plus one `fail\t…` line per failure.
 
 use anyhow::{bail, Context, Result};
+use std::path::Path;
 
 include!(concat!(env!("OUT_DIR"), "/lean_core.rs"));
 
@@ -149,6 +150,56 @@ pub fn run(request: &Request) -> Result<Report> {
     };
 
     parse_report(&reply).context("parsing the Lean core's report")
+}
+
+/// Write the 3D game's index page through the Lean core.
+///
+/// The page is HTML the Lean core writes, and it is called after the Rust
+/// converter in the modern modes because the converter is the half that adds the
+/// glTFs the page lists. In `--original` the Lean core writes the page itself at
+/// the end of its run, so this is not called; either way the page has exactly
+/// one writer in one language.
+///
+/// Returns the number of figures the page lists.
+pub fn write_3d_index(base: &Path, texture_dir: &Path, model_dir: &Path) -> Result<usize> {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    INIT.call_once(|| unsafe {
+        lean_initialize_runtime_module();
+        let initialised = initialize_lean_core();
+        if io_result_is_error(initialised) {
+            lean_io_result_show_error(initialised);
+            panic!("the Lean extraction core could not be initialised");
+        }
+    });
+    let _serialised = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let text = format!(
+        "base\t{}\ntexture_dir\t{}\nmodel_dir\t{}\n",
+        base.display(),
+        texture_dir.display(),
+        model_dir.display(),
+    );
+    let request = std::ffi::CString::new(text).context("the index request holds a NUL byte")?;
+    let reply = unsafe {
+        let argument = lean_mk_string(request.as_ptr());
+        if argument.is_null() {
+            bail!("the Lean runtime could not build the index request string");
+        }
+        let result = mmf_index(argument);
+        if result.is_null() {
+            bail!("the Lean extraction core returned nothing");
+        }
+        lean_string(result)?
+    };
+    let (key, value) = reply.split_once('\t').unwrap_or((reply.as_str(), ""));
+    match key.trim_end() {
+        "ok" => value.trim_end().parse().with_context(|| {
+            format!("the index page's figure count ('{value}') is not a number")
+        }),
+        "error" => bail!("writing the 3D index page: {value}"),
+        other => bail!("unknown index reply '{other}'"),
+    }
 }
 
 /// Turn the report text back into the numbers and the failure list.
