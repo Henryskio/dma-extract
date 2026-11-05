@@ -142,6 +142,10 @@ pub struct Summary {
     pub blobs: usize,
     /// The 3D game's models and textures, counted together.
     pub models: usize,
+    /// Textures written whose palette/index split the payload does not pin, so
+    /// the palette that was read is the smallest admissible one rather than a
+    /// measurement (`docs/DMA3D.md` §11).
+    pub ambiguous: usize,
     pub failed: Vec<String>,
 }
 
@@ -180,6 +184,7 @@ pub fn run(
         scripts: report.scripts,
         blobs: report.blobs,
         models: report.models,
+        ambiguous: report.ambiguous,
         failed: Vec::new(),
     };
     if report.total != 0 && report.total != summary.total() {
@@ -379,6 +384,12 @@ pub fn print_summary(summary: &Summary) {
     }
     if summary.models > 0 {
         eprintln!("  models:   {}", summary.models);
+    }
+    if summary.ambiguous > 0 {
+        eprintln!(
+            "  ambiguous: {} (palette size not pinned by the payload; the smallest was read)",
+            summary.ambiguous
+        );
     }
     eprintln!("  total:    {}", summary.total());
     if !summary.failed.is_empty() {

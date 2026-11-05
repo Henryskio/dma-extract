@@ -89,18 +89,25 @@ fn the_3d_containers_open_with_their_own_kinds() {
     let textures = Container::open(dir.join(TEXTURE_CONTAINER)).expect("open Textures");
     assert_eq!(textures.kind, ContainerKind::Textures);
     assert_eq!(textures.version, 3);
-    assert_eq!(textures.resource_count, 705);
-    assert_eq!(textures.offsets.len(), 706);
+    // The count is the one the offset table holds, not the one the header
+    // declares. The Italian `DMA3D.MMX`'s header says 705 while its table holds
+    // 782 entries, and reading only 706 of them truncated the container to
+    // 3,230,042 of its 4,019,622 bytes — which is why 704 of its 705 textures
+    // used to fail to decode. `Container::walk_count` walks the table out, and
+    // the disagreement is kept in `declared_count` rather than hidden
+    // (`docs/DMA3D.md` §11).
+    assert_eq!(textures.resource_count, 781);
+    assert_eq!(textures.declared_count, 705);
+    assert_eq!(textures.offsets.len(), 782);
     assert_eq!(
         *textures.offsets.last().unwrap() as usize,
-        textures.data.len()
+        textures.data.len(),
+        "the walked count must make the last offset the container's own length"
     );
-    // The first texture's name is a property of the *build*, not of the format.
-    // The English disc's is `CreationSlotTex.TGA`; the Italian disc's `DMA3D.MMX`
-    // is cut so its names table reads as garbage and its payload region begins
-    // with a column of `0xb5b*` offsets rather than a palette. What holds on
-    // both is the skeleton: one field per resource, in the container's own
-    // order. See `docs/DMA3D.md` §10.
+    // The names table follows the walked count, so the first name is the real
+    // one; reading the header's count instead put the names 304 bytes early and
+    // produced garbage for the first 38 slots.
+    assert_eq!(textures.name(0), "CreationSlotTex.TGA");
     assert_eq!(textures.names.len(), textures.resource_count as usize);
 }
 
@@ -164,43 +171,97 @@ fn the_metadata_regions_are_measured() {
         return;
     };
 
-    for (name, n_expected, region_of) in [
-        (
-            MODEL_CONTAINER,
-            460usize,
-            mmf_extract::dma3d::models_meta_len as fn(usize) -> usize,
-        ),
-        (
-            TEXTURE_CONTAINER,
-            705usize,
-            mmf_extract::dma3d::textures_meta_len as fn(usize) -> usize,
-        ),
-    ] {
-        let data = std::fs::read(dir.join(name)).expect("read container");
+    // The `Models` container is the control: its header's count, its offset
+    // table's extent and its names table all agree, so the region between the
+    // names and the first payload is exactly `4*N + 100` for the N the header
+    // declares. This is what `docs/DMA3D.md` §2.1 measured on the English disc.
+    {
+        let data = std::fs::read(dir.join(MODEL_CONTAINER)).expect("read models");
         let n = u16::from_be_bytes([data[0x22], data[0x23]]) as usize;
-        assert_eq!(n, n_expected, "{name}: resource count");
-
-        let off_base = 0x24usize;
+        assert_eq!(n, 460, "{MODEL_CONTAINER}: resource count");
         let first = u32::from_be_bytes([
-            data[off_base],
-            data[off_base + 1],
-            data[off_base + 2],
-            data[off_base + 3],
+            data[0x24],
+            data[0x25],
+            data[0x26],
+            data[0x27],
         ]) as usize;
-        let last = u32::from_be_bytes([
-            data[off_base + 4 * n],
-            data[off_base + 4 * n + 1],
-            data[off_base + 4 * n + 2],
-            data[off_base + 4 * n + 3],
-        ]) as usize;
-        assert_eq!(last, data.len(), "{name}: the offset table must end at EOF");
-
-        let names_end = off_base + 4 * (n + 1) + 2;
-        let region = first - (names_end + 32 * n);
-        let want = region_of(n);
+        let at = 0x24 + 4 * n;
         assert_eq!(
-            region, want,
-            "{name}: metadata region is {region} bytes, expected {want}"
+            u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize,
+            data.len(),
+            "{MODEL_CONTAINER}: the offset table must end at EOF"
+        );
+        let names_end = 0x24 + 4 * (n + 1) + 2 + 32 * n;
+        let region = first - names_end;
+        assert_eq!(region, mmf_extract::dma3d::models_meta_len(n));
+    }
+
+    // The `Textures` container is where the two readings part, and the shipped
+    // bytes do not decide between them (`docs/DMA3D.md` §11):
+    //
+    // * read at the header's 705, the names end at 2862 and the region to the
+    //   first payload is `29654 - 2862 - 32*705` = 4232, which is exactly
+    //   `6*705 + 2` -- but the names at 2862 are garbage; the real ones start at
+    //   3166, 304 bytes later;
+    // * walked to the 782 entries the table actually holds, the names start at
+    //   3166 and end at 28158, and a `6*781 + 2` region would have to reach 32846,
+    //   1192 bytes past the payload base at 29654.
+    //
+    // So the region length and the names' position cannot both be right, and the
+    // payload base -- which is what the decode reads -- does not depend on the
+    // choice. Both readings are asserted, and the disagreement is recorded, so
+    // the test fails if either stops matching the shipped bytes.
+    {
+        let data = std::fs::read(dir.join(TEXTURE_CONTAINER)).expect("read textures");
+        let declared = u16::from_be_bytes([data[0x22], data[0x23]]) as usize;
+        let walked = Container::open(dir.join(TEXTURE_CONTAINER))
+            .expect("open textures")
+            .resource_count as usize;
+        assert_eq!(declared, 705, "the header's declared count");
+        assert_eq!(walked, 781, "the walked count");
+        let at = 0x24 + 4 * walked;
+        assert_eq!(
+            u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize,
+            data.len(),
+            "the walked count must make the container's own length"
+        );
+        let first = u32::from_be_bytes([
+            data[0x24],
+            data[0x25],
+            data[0x26],
+            data[0x27],
+        ]) as usize;
+
+        // Reading one: the documented region, at the header's count.
+        let names_at_declared = 0x24 + 4 * (declared + 1) + 2;
+        let region_at_declared = first - (names_at_declared + 32 * declared);
+        assert_eq!(
+            region_at_declared,
+            mmf_extract::dma3d::textures_meta_len(declared),
+            "the documented region holds at the header's count"
+        );
+
+        // Reading two: the names where they actually are.
+        let names_at_walked = 0x24 + 4 * (walked + 1) + 2;
+        assert_eq!(names_at_walked, 3166, "the walked count puts the names at 3166");
+        let name = |at: usize| {
+            let end = data[at..at + 24].iter().position(|&b| b == 0).unwrap_or(24);
+            String::from_utf8_lossy(&data[at..at + end]).to_string()
+        };
+        assert_eq!(name(names_at_walked), "CreationSlotTex.TGA");
+        assert_eq!(name(names_at_walked + 32), "CreationTex.TGA");
+
+        // And the region under the walked count does not fit, which is what the
+        // container parser records instead of failing.
+        let region_at_walked = 6 * walked + 2;
+        assert!(
+            names_at_walked + 32 * walked + region_at_walked > first,
+            "the walked reading's region must overrun the payload base"
+        );
+        let container = Container::open(dir.join(TEXTURE_CONTAINER)).expect("open textures");
+        assert!(
+            container.metadata_reason.is_some(),
+            "the container must record why its metadata region was not read"
         );
     }
 }
@@ -523,14 +584,15 @@ fn the_modern_output_is_a_browsable_whole() {
         let summary = mmf_extract::cli::run(dir, &tmp, &selection, false, false)
             .expect("extract the 3D game");
         // Every asset is either a written file or a reported failure, so the
-        // two counts must be the containers' own 460 + 705. On the Italian disc
-        // the run writes 460 payloads through (no payload carries a mesh) and
-        // 3 textures, and reports the 702 textures whose layout does not fit —
-        // of which 38 are the offsets entries that name a range past the end of
-        // the file, which used to abort the process (`docs/DMA3D.md` §8.1).
+        // two counts must be the containers' own: 460 models plus the 781
+        // textures the `DMA3D.MMX` offset table really holds. On the Italian
+        // disc the run writes the 460 model payloads through (no payload carries
+        // a mesh) and the textures whose layout fits, and reports the rest —
+        // among them the 76 offsets entries that name a range the file does not
+        // hold, which used to abort the process (`docs/DMA3D.md` §8.1, §11).
         assert_eq!(
             summary.models + summary.failed.len(),
-            460 + 705,
+            460 + 781,
             "{dir:?}: the run must account for every resource"
         );
 

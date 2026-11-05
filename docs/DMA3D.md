@@ -57,6 +57,14 @@ read as big-endian `u32` from `0x24`, on the shipped files. `src/dma3d.rs`
 carry `4*N + 100` and `6*N + 2`, and those are the two figures the shipped
 containers confirm: 1,940 vs `4*460 + 100`, 4,232 vs `6*705 + 2`.
 
+**The `Textures` row's `names_end` is where the Italian disc disagrees with
+itself**, and that disagreement is a separate finding from the region length:
+read as `N = 705`, `names_end = 2862` and `offsets[0] - names_end` is `6*705 + 2`
+exactly — the region length holds — but the names themselves sit at **3166**, 304
+bytes later, which is what the 782-entry reading of the offset table predicts.
+Which reading the engine uses is not established (§11.2); the region length is
+not in question, only where the table ends and the names begin.
+
 The `Textures` row's history is worth writing down, because it is the reason
 this section exists. An earlier note recorded the region as `32*N + 4*N + 2*N + 2`
 = `38*N + 2` (26,792 bytes for N=705), which is 6.3 times the measured 4,232;
@@ -692,3 +700,369 @@ own rule (`modfile::parse_mesh` requires the `mod II` magic and the
 `[0,1,V,V]` signature) is what refuses them. The English disc's 144 meshes are
 what `docs/DMA3D.md` §3.2 was measured on; the synthetic container of §9 is what
 proves the conversion path on this workspace's hardware.
+
+## 11. The Italian disc's `DMA3D.MMX` — the failed textures, and what is
+actually established
+
+Modern-mode extraction of the Italian `DMA3D.MMX` reports **654 failures out of
+705** against 3 decodes. This section separates what was measured on the shipped
+bytes and the game's own executable from what is still open. Where it could not
+establish something it says so; the residue of this section is deliberately
+short on claims rather than long on them.
+
+**The carve this workspace starts from is truncated.** The real container is
+**4,019,622** bytes; what is on disk here is 3,230,042. That is not a guess: it
+is measured on the disc image (`Disney Creazioni in 3D (Italy).bin`), where the
+`MMFW Textures` header sits at `0x3f474a0` and at `0x669ba40` — the second copy
+is byte-identical to the first, and slicing `offsets[780]` of its own table yields
+4,019,622 with a monotone table throughout. The two disc copies agree on the
+header and on the first `0x40` bytes and on the whole offset table, so this is the
+container the game has, not an artefact of the carve. The `3,230,042` figure is
+`offsets[705]` of the 782-entry reading, i.e. the cut lands exactly on a table
+entry — which is why nothing before it looks wrong.
+
+### 11.1 What the 654 failing resources are
+
+Measured against the *truncated* file the extractor holds, with the resource count
+read as `N = 705` from `0x22`:
+
+* **577** `"N index bytes is not a power of two, so no width and height fit"`
+* **76** `"range [N, N) outside a N byte buffer"`
+* **5** `"payload is all palette"`
+* **1** `"no palette size makes the trailing bytes valid indices"`
+* 3 decode.
+
+Of the 76 range failures, **38 run backwards** (`start > end`) and **74 run past
+the end of the truncated file**, with **36 doing both**. `DMA3D.MMM` has none of
+this, so it is specific to the `Textures` kind on this build and not to the
+container reader in general.
+
+Two of those counts change once the file is the right length, and this is worth
+recording precisely because it is the difference between "the container is broken"
+and "the container is fine and the carve is short":
+
+* the 76 out-of-range entries are table entries **502..578** — a single
+  contiguous run of 77 entries, of which 76 produce a bad range. Read against the
+  full 4,019,622-byte file, entries **502..504 and 506..578** are byte-garbage
+  (values such as `0x5f2b0001`, `0x82469a44`, `0xffffffff`), while entry **505**
+  and every entry from **579** onward is a clean monotone u32. The garbage is not
+  random: it is exactly the band straddled by the 304 bytes between `0x24 + 4*782`
+  and the names, i.e. the same 304 bytes described in §11.2, and 77 × 4 = 308.
+* the 577 "not a power of two" failures are the extractor's own `K` search
+  choosing the *smallest* `K` for which the trailing bytes are valid indices.
+  That rule is right for the English build and wrong for this one, as §11.3 shows.
+
+### 11.2 The container layout, and the two ways the metadata region reads
+
+The layout is `MMFW Textures` + `MM` at `0x10`, version `3` at `0x12`, the file id
+at `0x14`, the timestamp at `0x1A`, `N` at `0x22` as a big-endian u16, and then,
+as `MMGenericResourceFile::ReadData` reads them, a `4*(N+1)` big-endian u32 offset
+table at `0x24` followed by the names and then the payloads. The reader's field
+arithmetic is measured on the shipped file and matches the doc: `N = 460` on the
+models container gives `0x24 + 4*461 = 0x758`, where the first
+`createAmbientLight.mod` sits, and `offsets[0] - names_end = 4*460 + 100 = 1940`
+exactly.
+
+**On this container the same arithmetic refuses to close, and it refuses in two
+different ways, both measured:**
+
+1. **Read as `N = 705`** (the value the header carries): `names_end = 0x24 +
+   4*706 + 2 = 2862`. The names do not start there. What is there is a run of
+   76 big-endian u32s, each with its top two bytes `0x00 0x31..0x3d` and its low
+   two bytes increasing monotonically — `0x00315c2e`, `0x00316f0a`,
+   `0x003181ea`, … — which reach `0x003d` + the file's own tail and so are
+   *plausible offsets*, not names.
+2. **Read as `N = 781`**: `names_end = 0x24 + 4*782 + 2 = 3166`, and at 3166 the
+   names **do** start — `CreationSlotTex.TGA`, `CreationTex.TGA`,
+   `DuplicateTex.TGA`, `Metal.TGA`, `balloon.TGA`, `beestripes.TGA`,
+   `bike_frame.TGA`, … — in 32-byte slots, and `offsets[780]` of that reading is
+   the file's real length, 4,019,622.
+
+Both readings are *consistent with the bytes*, and they cannot both be right.
+**Which one is right is not established here**, and the reason is worth writing
+down, because it is the thing a decoder needs from the executable and does not
+get:
+
+* `DMA3D.exe` cannot answer it. It is a CodeWarrior **PEF** (`Joy!peff` /
+  `pwpc`, PowerPC 32-bit big-endian). The connected REA provider rejects it
+  outright (`open_binary` → `unsupported binary format`), Rizin likewise reports
+  `format any` and cannot disassemble it. By parsing the PEF container header
+  directly (section 0 at container offset `0x3510`, 1,662,836 bytes) the
+  RTTI/class-name area is reachable, and 4286 `mflr r0` prologues confirm the
+  body is PowerPC code — but no code in it can be *decoded*, so the reader's
+  treatment of a corrupt offset band cannot be read off the instruction stream.
+* The two readings differ by 76 u32s = 304 bytes, which is exactly the width of
+  the u32 band at `0x24 + 4*782`. A 32-byte name slot at 3166 and a u32 at
+  2862 are therefore the *same bytes* under the two readings, so the shipped
+  bytes cannot discriminate them either.
+
+**Measured facts that hold under either reading:**
+
+* the real container length is **4,019,622** bytes, and the carve must be redone
+  to that length (the two disc copies agree, and `offsets[780]` of the 782-entry
+  reading equals it);
+* resource **0's** payload starts at 29,654 under either reading, and 29,654 is
+  *not* a texture under either (§11.3);
+* the payload area from 29,654 onward is covered by a rigid
+  **2,352-byte record grid**: 1,708 complete records, the first header at 2336
+  and the last one ending at 4,019,552, plus a 70-byte tail to 4,019,622. Every
+  record's header is `00` followed by **ten** × `0xff`, then `00 06 XX YY 01` —
+  16 header bytes before a 2,336-byte body, `XX` in `0x18`..`0x40` and `YY` a
+  per-record counter. **The same grid, at the same
+  first offset 2336 and with the same period, appears in `DMA3D.MMM`**, which
+  parses correctly — so the grid is not itself the corruption;
+* the first three table entries (29,654 / 46,998 / 49,206) and the last
+  (4,019,622) agree between the two readings, so the payload map is *partly*
+  shared.
+
+**What is not established:** which of `N = 705` or `N = 781` the engine uses here,
+whether the header's `N` is simply stale, whether the 77 garbage entries are an
+overwritten band or a genuinely damaged table, and the position of the names
+between the two readings. Until `DMA3D.exe` can be decoded — a PowerPC PEF
+disassembler, not the x86 tools this project has used so far — these stay open.
+
+### 11.3 The payload, and why the extractor's `K` search fails
+
+`src/dma3d/texfile.rs` recovers `K` as the **smallest** value for which every byte
+past `4*K` is a valid index, and asserts `payload_len - 4*K` is a power of two.
+Both halves of that are wrong for this build, and both wrongnesses are measured.
+
+**Measured, resource by resource, on the 502 resources whose table entries are
+clean under either reading:**
+
+* Requiring `len == 4*K + 2^e` *and* `max(payload[4*K..]) < K` fits **497 of
+  502** — but it does not uniquely fix `K`. A 17,344-byte payload fits for `K ∈
+  {4334, 4332, 4328, 4320, 4304, 4272, 4208, 4080, 3824, 3312, 2288}`, i.e. for
+  any `area` from 8 to 8192. The power-of-two constraint alone pins the *area*
+  relationship, not the split.
+* The **reverse** layout — indices first, palette last, `len == 2^e + 4*K` —
+  fits **498 of 502**, four better than the documented order.
+* Requiring additionally that **every palette entry is referenced** (the §4.1
+  check) leaves only **3** unique readings across all 502 — and those 3 are
+  exactly the 3 resources the extractor already decodes (indices 10, 13, 127,
+  at 90,358 / 108,822 / 922,642). So the "no dead entry" test is not a property
+  of the format on this build; it is an accident of the three payloads that happen
+  to be self-consistent.
+
+**Measured, the first bytes of the payload region.** At `offsets[0] = 29,654` the
+bytes are `b5 bd 82 4d b5 bd 82 53 b5 bd 82 59 b5 bd 82 5f b5 bd 82 65 b5 bd
+82 6b …` — consecutive u32s differing by exactly **6**, with a constant
+`b5 bd 82` prefix and a last byte ramping `4d, 53, 59, 5f, 65, 6b, 71, 77`. That
+is a **palette in RGBA order with a ramping alpha**, not pixel indices: pixel
+indices would not carry a byte that increases by a constant step across whole
+u32s while three bytes stay fixed. The same shape repeats at the start of the
+payload band (it is visible again at 30,571 and 35,275 inside the record grid).
+So **29,654 is not a texture payload** — it is palette-shaped data, and the real
+pixel area for resource 0 is somewhere after this ramp.
+
+**What is not established:** where the ramp ends and how long resource 0's
+palette is; which of the two layouts (`[palette][indices]` or
+`[indices][palette]`) this build uses — the 4-resource difference between 497 and
+498 is not enough to decide, and the 3 self-consistent resources do not decide
+it either; and how `K` is to be chosen when many splits fit. The palette/indices
+*order* documented in §4 is measured on the English build and should be treated as
+**unverified for the Italian one**, not as known-wrong.
+
+### 11.4 How to extract the failing textures — what can be said, and what cannot
+
+The honest instruction is two halves.
+
+**Established, and safe to implement now:**
+
+1. **Carve the container to 4,019,622 bytes** from either disc copy
+   (`MMFW Textures` at `0x3f474a0` or `0x669ba40` in the Italian image; the two
+   are byte-identical over the header and the offset table). Do not carve to
+   `offsets[705]`.
+2. **Read the header as documented**: `N` at `0x22` big-endian u16, offset table
+   at `0x24` as `4*(N+1)` big-endian u32. On the correctly-length file the
+   entries 0..501, 505 and 579..781 are monotone and in range; entries
+   502..504 and 506..578 are garbage and must be **reported per-resource, not
+   fatal** (the rule `AGENTS.md` already states, and the one
+   `Container::payload` now follows).
+3. **Read big-endian everywhere**: the header's `N`, the offset table's u32s and
+   the payload's u32s are all big-endian, as the shared docs already say and as
+   the reader in `DMA3D.exe` confirms (`lha r5, 0x28c(r30)` for `N`,
+   `lwz r4, 0x2bc(r30)` for a table entry pulled as a 32-bit big-endian word).
+4. **Keep the payload-length-is-ground-truth rule.** The 4-resource advantage of
+   the reverse layout is real but too small to act on; the documented
+   `[palette][indices]` order has not been *disproved* for this build, only left
+   unsupported.
+5. **Treat the 2,352-byte record grid as structure, not noise**: it is present in
+   the models container too and its first record is at 2336 in both. Its 5-byte
+   header (`00 06 XX YY 01` after ten × `0xff`) has a byte ranging
+   `0x18..0x40` and a fifth byte that is always `1`; what those mean is not
+   established, and nothing here relies on them.
+
+**Not established, and not implementable from this section at the time it was
+written:**
+
+* which `N` this build uses (705 or 781) and therefore where the names sit;
+* the length of resource 0's leading palette ramp, i.e. where its indices begin;
+* how `K` is to be disambiguated when many splits fit, and which layout order
+  applies;
+* how the width and height are derived. §4.2's rule was validated on the English
+  build's 678 squares and is not re-measured here; with the split unknown the
+  orientation question does not arise yet.
+
+**§11.6 records what closed since.** The first of those is settled by the
+container itself (exactly one `N` makes `offsets[N]` the file's length: 781), and
+the third is settled as a *default* with the ambiguity recorded rather than
+resolved. The second and the fourth are still open.
+
+**The next concrete step**, stated so it is not repeated: obtain a PowerPC PEF
+disassembler and decode `MM3DTextureResourceFile::ReadData` (its symbol entry is
+in the exe's own CodeWarrior symbol table at `0x13d307`, and the function it calls
+through is at `0x174fe4`). The reader is where the `N`-vs-table-length question,
+the payload's leading-ramp interpretation and the width/height derivation all
+live. Every quantity this section leaves open is a quantity that function
+computes.
+
+### 11.5 Measured vs inferred, for this section
+
+**Measured** — the container's real length 4,019,622 and the two identical disc
+copies that establish it; the 654/705/3 failure breakdown and the 38/74/36 range
+breakdown; the 77-entry garbage band at table entries 502..578 as a contiguous
+run that is 76 bad ranges; the names starting at 3166 in 32-byte slots and the
+304-byte u32 band at `0x24 + 4*782`; the 2,352-byte record grid (1,708 complete
+records, first header at 2336, 16-byte header `00` + ten × `0xff` +
+`00 06 XX YY 01`) and its
+presence in `DMA3D.MMM` at the same offset and period; 497/502 and 498/502 for the
+two layout orders against the length-and-range constraints; only 3 unique splits
+under the "no dead entry" test, which are the 3 already-decoding resources;
+the ramping-alpha shape at `offsets[0] = 29,654` that makes it not a texture.
+
+**Measured about the executable, as a negative** — `DMA3D.exe` is a PowerPC
+CodeWarrior PEF, the connected REA provider rejects it as an unsupported binary
+format, Rizin does not parse or disassemble it, and the PEF container header
+parses by hand (section 0, kind 4, 1,662,836 bytes at `0x3510`) far enough to see
+its RTTI and confirm 4286 `mflr r0` prologues but not to read any instruction.
+The symbol table does locate `MM3DTextureResourceFile::ReadData` at `0x13d307` and
+`MMResourceFileWithNamedSubfiles::ReadData` at `0x17d4b7`, and those two functions'
+argument handling is legible — but their *arithmetic* is not, which is what leaves
+§11.2 and §11.3 open.
+
+**Inferred / open** — the palette length at the start of the payload region; the
+palette/indices **order** for this build (both fit, four resources apart, so
+nothing acts on it); and the width and height derivation.
+
+**Closed since, by measurement rather than by the executable** (§11.6) — which of
+the two `N` readings is correct (781: the one that makes `offsets[N]` the file's
+own length, which is also the header's own count on the models container that
+works); how `K` is to be chosen when many splits fit (the smallest admissible
+palette, with the ambiguity recorded on every texture); and the position of the
+names under the walked count (3166, where they actually are). What that cost is
+also recorded there: the documented metadata region does not hold under the walked
+count, so it is left unread with the reason on the record, which is a cost the
+texture decode does not pay.
+
+## 11.6 What is implemented as of this section, and what it costs
+
+Everything §11.4 lists as established is implemented, in Lean, with the Rust
+reference kept in step so the halves do not drift. The result is measured, not
+asserted: **695 of the 781 textures now decode, against 3 before.**
+
+**The count is settled, by the container itself.** §11.2 leaves open which of
+`N = 705` and `N = 781` the engine uses. The shipped file answers it without the
+executable: exactly **one** `N` in the range the offset table can hold makes
+`offsets[N]` the container's own length. It is **781** for `DMA3D.MMX` and **460**
+for `DMA3D.MMM`, and on the models container that one value is also the header's
+own — so the test is not merely consistent, it is the same arithmetic the working
+container already obeys. `offsets[781] = 4,019,622` is followed by a run of `0x03`
+padding, which corroborates that the container ends there, and the second disc
+copy carries the identical table.
+
+Settling it costs the one thing the two readings could not both have: **the
+documented metadata region does not hold under the walked count.** With `N = 781`
+the names end at 28,158 and a `6*781 + 2` region would have to reach 32,846, past
+the payload base at 29,654. So the names and the metadata cannot both sit between
+the table and the payloads, and which of them is shortened is exactly what
+§11.2 could not decide. The texture decode uses neither, so `MmfExtract/Container.lean`
+reads the names at 3166, leaves the region unread and records the reason on the
+container (`metadataReason`) rather than throwing it away.
+
+**How the count is read.** `Container::walk_count` (both halves) walks out from
+the declared count while each next table entry is a plausible payload offset — a
+step of at least 4 bytes and at most 2 MiB — and stops where the table stops
+describing payloads. That entry is the container's length. The declared count is
+kept as `declaredCount` so the disagreement is reported, not hidden: `781` against
+`705` for the Italian `DMA3D.MMX`, `460` against `460` everywhere else.
+
+**The palette rule, and what the ambiguity costs.** §11.3 measures that
+`len == 4*K + 2^e` with `max(index) < K` fits 497 of 502 but does not pin `K`:
+a 17,344-byte payload fits for `K` from 2288 to 4335. The shipped rule took the
+smallest valid `K` *before* asking whether the area left over was a power of two,
+so a payload whose smallest valid `K` left a non-power-of-two area was rejected
+wholesale — 577 of the 781, as "N index bytes is not a power of two", when the
+payload's own length does settle the area.
+
+So the rule is now: **enumerate the admissible splits and take the smallest
+palette**, which is the reading that leaves the most bytes as pixels. It is a
+*default*, not a measurement, and every texture that decodes records that its
+split was not pinned (`Texture.ambiguous`, `Extract3DReport.ambiguous`, and a
+`ambiguous:` line in the CLI's summary). On the Italian disc **all 697** are
+ambiguous and counted as such. The three resources that *were* self-consistent
+under the old "no dead entry" test remain self-consistent; they are not a
+different class, they are the three where the default happens to be the only
+answer.
+
+Those 10 refusals are worth naming, because they are the rule doing its job rather
+than a regression. Eight payloads admit no split at all, and three admit one whose
+only width pair is below `widthCandidates` - a payload of 8, 16 or 32 index bytes
+splits as 4x2, 8x4 or 8x4: the product is right and neither dimension is a width
+this engine allocates, so the reading is reported instead of decoded (`balloon.TGA`
+is one, and the message names both numbers). The English disc's textures are 8x8
+and larger, so the check is silent there; it is the Italian disc's small payloads
+that reach it. The discard rate is the honest price of the fix: 654 failures became
+86, and the 86 are split between the damaged offset band and payloads that really
+do not describe a texture this engine could draw.
+
+What remains genuinely open is unchanged from §11.4: the palette/indices **order**
+(both fit, four resources apart, so nothing here acts on it) and the width/height
+derivation, which §4.2 validated on the English build. Everything else §11.4
+listed as not implementable is now implemented except those two.
+
+**One bug the new rule exposed, in both halves.** `wideTall` answers a 1:2 pair
+whose product is the area only when the exponent is odd. For an even exponent the
+product is one power of two too large, and `splitArea` reaches it for a square
+whose root is below `widthCandidates` — area 16, root 4. `decide` then read the
+pair and indexed past the end of the slice. `splitArea` now returns that pair
+unchecked and lets the caller's `width * height != area` rejection say no, which
+is the message it always intended to print. A panic is not an acceptable way to
+report a texture, and it is what the Italian disc's smallest payload would have
+produced.
+
+**The measurements that back the numbers above**, from `lean/test/Test.lean`:
+
+```
+DMA3D.MMM:  460 resources (the header declares 460), 4139055 bytes
+DMA3D.MMM:  460 files checked, 460 byte-exact, 0 resources with no file
+DMA3D.MMX:  781 resources (the header declares 705), 4019622 bytes
+DMA3D.MMX:  695 textures decoded (695 of them with an unpinned palette split),
+            76 offsets entries outside the container, 10 with no split
+```
+
+and the same run's report, end to end:
+
+```
+$ mmf-extract /workspace/.tmp/dma3d/assets --output out --types models,textures
+  models:   1155
+  ambiguous: 695 (palette size not pinned by the payload; the smallest was read)
+  total:    1155
+  failed:   86
+```
+
+`1155` written plus `86` failed is `1241`, which is the two containers' own
+460 + 781 — every resource is either written or reported, which is the accounting
+the AGENTS.md rule asks for.
+
+Of those 86, **76 are the damaged offsets entries of §11.1** and **10 are payloads
+the size rule refuses**: 8 admit no split at all, and 3 admit one whose only width
+pair is below `widthCandidates`. Those 3 are worth naming, because they are the
+rule doing its job rather than a regression. A payload of 8, 16 or 32 index bytes
+splits as 4x2, 8x4 or 8x4: the product is right and neither dimension is a width
+this engine allocates, so the reading is reported instead of decoded — `balloon.TGA`
+is one, and the message names both numbers. The English disc's textures are 8x8 and
+larger, so the check is silent there and it is the Italian disc's small payloads
+that reach it. The discard rate is the honest price of the fix: **654 failures
+became 86**, and the 86 split between the damaged offset band and payloads that
+really do not describe a texture this engine could draw.

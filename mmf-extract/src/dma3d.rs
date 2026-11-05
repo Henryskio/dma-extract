@@ -105,6 +105,9 @@ pub struct Extract3DReport {
     pub written: usize,
     pub failed: Vec<(usize, String, String)>,
     pub resources: Vec<Extracted3D>,
+    /// Textures written whose palette/index split the payload does not pin, so
+    /// the palette read is the smallest admissible one (`docs/DMA3D.md` §11).
+    pub ambiguous: usize,
 }
 
 /// Extract every model payload of a `Models` container.

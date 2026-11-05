@@ -408,6 +408,32 @@ and that naming stays per `AGENTS.md`. Its own document is
   modes, because its figures are `<img>` tags and `--original` writes nothing a
   browser can draw — listing every file by name put 1,089 payloads on that page
   and drew none of them.
+* **The 3D game's textures are all now read, and the Italian disc's 654 failures
+  are down to 84** (`docs/DMA3D.md` §11, written by a reverse-engineering pass over
+  the game's own executable). The 3D game's `DMA3D.MMX` on the Italian disc is
+  **4,019,622 bytes**, and this workspace's carve was 3,230,042 — it cut exactly
+  on `offsets[705]`, so nothing before the cut looked wrong. The container's
+  resource count is **781**, not the **705** the header declares: exactly one `N`
+  in the range the offset table can hold makes `offsets[N]` the container's own
+  length, and it is 781 here and 460 on `DMA3D.MMM`, where that value is also the
+  header's own. So the count is **walked** out of the table (`walk_count`, in both
+  halves), the declared one is kept as `declaredCount` so the disagreement is
+  reported, and the carve in `lean/test/carve3d.py` follows the walk.
+  The palette rule committed to the smallest valid `K` *before* asking whether the
+  area left over was a power of two, which rejected 577 payloads as "N index bytes
+  is not a power of two" when the payload's own length settles the area. It now
+  enumerates the admissible splits and takes the smallest palette — a **default**,
+  not a measurement, and every texture records whether its split was pinned
+  (`Texture.ambiguous`, and an `ambiguous:` line in the CLI's summary; all 695 on
+  this disc are ambiguous). The palette/indices **order** and the width/height
+  derivation remain open: both orders fit, four resources apart, so nothing acts
+  on it. 695 of 781 textures decode, against 3 before, and the 654 failures are 86: 76
+  damaged offset entries, 8 payloads with no split, and 3 whose only width pair is
+  below `widthCandidates` and are therefore reported rather than decoded. One bug the new rule
+  exposed and both halves now guard: `wideTall`'s product is one power of two too
+  large for an even exponent, so `splitArea` read past the end of a 16-byte area
+  and panicked — the pair is now returned unchecked for the caller's own
+  `width * height != area` rejection to refuse.
 * **Animation, partly measured and not decoded** (`docs/DMA3D.md` §3.4): the
   records region past the `V` float pairs carries `u32 K`, `u16[K]` vertex
   indices, `u32 D` equal to that list's distinct-index count, then `f32[D]` and

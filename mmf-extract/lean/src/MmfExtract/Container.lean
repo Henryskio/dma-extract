@@ -89,6 +89,14 @@ structure Container where
   fileId : ByteArray
   timestamp : Float
   resourceCount : UInt16
+  /-- What the header's own count field at `0x22` says, when it disagrees with
+  the count the offset table holds.
+
+  They differ only on the Italian 3D game's `DMA3D.MMX`, whose header declares
+  705 while its table holds 782 entries (781 resources). The table is what the
+  decode reads, so `resourceCount` is the walked count and this field keeps the
+  declared one so the disagreement is reported rather than hidden. -/
+  declaredCount : UInt16
   /-- `resourceCount + 1` file offsets; the last is EOF. -/
   offsets : Array UInt32
   names : Array String
@@ -109,6 +117,18 @@ structure Container where
   uncompressedSizes : Array UInt32
   /-- Scripts-only object-database metadata; `none` for every other kind. -/
   scriptMeta : Option ScriptMeta
+  /-- Why the metadata region could not be read, when it could not.
+
+  The documented region length is `6*N + 2` for `Textures` and it is measured on
+  the English build. The Italian `DMA3D.MMX` does not have it: walked to its
+  table's real 782 entries, its names table ends at 28,158 and the region would
+  have to reach 32,846, past the payload base at 29,654. So the names and the
+  metadata do not both fit between the table and the payloads, and which of the
+  two readings is right is not something the shipped bytes decide
+  (`docs/DMA3D.md` §11). The texture decode does not use this region, so the
+  container is read with it empty and the reason recorded here rather than thrown
+  away. -/
+  metadataReason : Option String
   deriving Inhabited
 
 -------------------------------------------------------------------------------
@@ -230,6 +250,41 @@ def parseScriptMeta (path : System.FilePath) (d : ByteArray) (metadataStart payl
 -- Parsing
 -------------------------------------------------------------------------------
 
+/-- The count the offset table really holds, walked out from the declared one.
+
+A table entry describes a payload while the step from the previous entry is a
+plausible payload size: at least four bytes (a resource cannot be empty) and at
+most `2 MiB` (the largest payload any of these containers holds). The walk stops
+at the first entry that is not one, and that entry is the container's own length
+-- which is the check that makes the walk right rather than merely convenient.
+
+This is a correction, not a convenience: `docs/DMA3D.md` §11 records that the
+Italian `DMA3D.MMX`'s header declares 705 while its table holds 782 entries, and
+that reading only 706 of them truncated the container to a third of its size and
+lost most of its textures.
+-/
+def walkCount (data : ByteArray) (offBase : Nat) (bigEndian : Bool) (declared : Nat) : UInt16 := Id.run do
+  -- A plain integer read: the walk's own bound keeps it inside the file, and a
+  -- byte past the end reads as zero, which the step test rejects before the
+  -- entry is used for anything.
+  let entry := fun i =>
+    match MmfExtract.Bytes.u32At data (offBase + 4 * i) bigEndian with
+    | .ok v => v.toNat
+    | .error _ => 0
+  let mut n := declared
+  let mut prev := entry n
+  -- The table cannot run past the file, and it cannot describe a payload that
+  -- starts before it ends.
+  let limit := (data.size - offBase) / 4 - 1
+  while n < limit do
+    let next := entry (n + 1)
+    let step := next - prev
+    if step < 4 || step > 2 * 1024 * 1024 then
+      break
+    n := n + 1
+    prev := next
+  return UInt16.ofNat n
+
 /-- Parse a container from an in-memory image. -/
 def parse (path : System.FilePath) (data : ByteArray) : Except String Container := do
   let loc := MmfExtract.Path.str path
@@ -249,11 +304,19 @@ def parse (path : System.FilePath) (data : ByteArray) : Except String Container 
 
   -- Version 1 stores the resource count four bytes earlier than the versions
   -- 2 and 3 table, which is what pins the base down.
-  let resourceCount ←
+  let declaredCount ←
     if version == 1 then MmfExtract.Bytes.u16At data 0x1E bigEndian
     else MmfExtract.Bytes.u16At data 0x22 bigEndian
-  let n := resourceCount.toNat
   let offBase := if version == 1 then 0x20 else 0x24
+  -- The count the offset table really holds, walked out from the declared one.
+  -- A table entry is only describing a payload while the step from the previous
+  -- entry is a plausible payload size, so the walk stops where the table stops
+  -- describing payloads -- and that last entry is the container's own length.
+  -- The Italian `DMA3D.MMX` is why this exists: its header declares 705, its
+  -- table holds 782 entries, and reading only 706 of them truncated the file to
+  -- a third of its size and lost 704 of its textures (`docs/DMA3D.md` §11).
+  let resourceCount := walkCount data offBase bigEndian (declaredCount.toNat)
+  let n := resourceCount.toNat
   let need := offBase + 4 * (n + 1)
   if data.size < need then
     throw s!"{loc}: truncated offset table (need {need}, have {data.size})"
@@ -267,20 +330,21 @@ def parse (path : System.FilePath) (data : ByteArray) : Except String Container 
     let metadataStart := offBase + 4 * (n + 1)
     let script ← parseScriptMeta path data metadataStart payloadStart n bigEndian
     return {
-      path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, offsets,
+      path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, declaredCount, offsets,
       names := script.objectNames, attr := ByteArray.empty, flags := ByteArray.empty,
       dimensions := #[], sizes := Array.replicate n 0, extraU32 := #[], kinds := ByteArray.empty,
       namesEnd := metadataStart, palettes := #[], uncompressedSizes := #[],
-      scriptMeta := some script
+      scriptMeta := some script, metadataReason := none
     }
   -- A version-1 Scripts container has no names table either: its payloads start
   -- two bytes after the offsets table and its names are read from the payloads.
   if kind == .scripts && version == 1 then
     return {
-      path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, offsets,
+      path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, declaredCount, offsets,
       names := Array.replicate n "", attr := ByteArray.empty, flags := ByteArray.empty,
       dimensions := #[], sizes := Array.replicate n 0, extraU32 := #[], kinds := ByteArray.empty,
       namesEnd := payloadStart, palettes := #[], uncompressedSizes := #[], scriptMeta := none
+      metadataReason := none
     }
 
   -- 2 bytes of padding after the offset table, then the 32-byte name fields.
@@ -300,13 +364,14 @@ def parse (path : System.FilePath) (data : ByteArray) : Except String Container 
     let region ← (if kind == .scripts then pure MmfExtract.V1.Metadata.default
                 else MmfExtract.V1.Metadata.parse data kind n namesEnd payloadStart bigEndian path)
     return {
-      path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, offsets, names,
+      path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, declaredCount, offsets, names,
       attr := region.attr, flags := region.flags, dimensions := region.dimensions,
       -- Version-1 containers have no decoded-size table: the uncompressed-size
       -- array is the equivalent field, and a zero there means "stored as-is".
       sizes := Array.replicate n 0, extraU32, kinds := region.kinds, namesEnd,
       palettes := region.palettes, uncompressedSizes := region.uncompressedSizes,
       scriptMeta := none
+      metadataReason := none
     }
 
   -- The shared (versions 2 and 3) metadata region: `15*N + 4` bytes for
@@ -318,50 +383,62 @@ def parse (path : System.FilePath) (data : ByteArray) : Except String Container 
     | .textures => 6 * n + 2
     | _ => 15 * n + 4
   let metaEnd := namesEnd + metaLen
-  if metaEnd > payloadStart || metaEnd > data.size then
-    throw s!"{loc}: metadata region does not fit (names_end={namesEnd}, meta_end={metaEnd}, payload_start={payloadStart}, len={data.size})"
+  -- The documented region length is measured on the English build. The Italian
+  -- `DMA3D.MMX` does not have one at all: walked to the 782 entries its offset
+  -- table really holds, its names table ends at 28,158 and the region would have
+  -- to reach 32,846, past the payload base at 29,654. The payload region is what
+  -- the decode reads, so a region that overruns it is left unread with the
+  -- reason recorded, rather than made to fit by shortening the names table or
+  -- discarding the payload base (`docs/DMA3D.md` §11).
+  let metaDoesNotFit := metaEnd > payloadStart || metaEnd > data.size
+  let metadataReason :=
+    if metaDoesNotFit then
+      some s!"the {metaLen}-byte metadata region does not fit between the names table (ends {namesEnd}) and the first payload ({payloadStart})"
+    else none
 
   let mut extraU32 : Array UInt32 := #[]
-  for i in [0:n] do
-    extraU32 := extraU32.push (← MmfExtract.Bytes.u32At data (namesEnd + 4 * i) bigEndian)
-
-  -- The attribute byte array sits after the extra 2-byte word in a sound
-  -- container instead of directly after the u32 array.
-  let byteArrays := if kind == .sounds then namesEnd + 4 * n + 2 else namesEnd + 4 * n
-  let attrBase := byteArrays
   let mut attr : ByteArray := ByteArray.empty
-  for i in [0:n] do
-    attr := attr.push (byte data (attrBase + i))
-  let flagsBase := attrBase + n
   let mut flags : ByteArray := ByteArray.empty
-  for i in [0:n] do
-    flags := flags.push (byte data (flagsBase + i))
-
-  -- 2 bytes of padding, then the dimension table (pictures only).
-  let dimBase := if kind == .sounds then flagsBase + n else flagsBase + n + 2
   let mut dimensions : Array Dimension := #[]
-  for i in [0:n] do
-    -- The pair is {height, width}: the SECOND u16 is the width.
-    let h ← MmfExtract.Bytes.u16At data (dimBase + 4 * i) bigEndian
-    let w ← MmfExtract.Bytes.u16At data (dimBase + 4 * i + 2) bigEndian
-    dimensions := dimensions.push { width := w, height := h }
-
-  let sizeBase := dimBase + 4 * n
   let mut sizes : Array UInt32 := #[]
-  for i in [0:n] do
-    sizes := sizes.push (← MmfExtract.Bytes.u32At data (sizeBase + 4 * i) bigEndian)
-
-  -- The kind byte array (object offset 0x2a8); sounds and films have none.
   let mut kinds : ByteArray := ByteArray.empty
-  if metaLen >= 15 * n + 4 then
-    let kindBase := sizeBase + 4 * n
+  unless metaDoesNotFit do
     for i in [0:n] do
-      kinds := kinds.push (byte data (kindBase + i))
+      extraU32 := extraU32.push (← MmfExtract.Bytes.u32At data (namesEnd + 4 * i) bigEndian)
+
+    -- The attribute byte array sits after the extra 2-byte word in a sound
+    -- container instead of directly after the u32 array.
+    let byteArrays := if kind == .sounds then namesEnd + 4 * n + 2 else namesEnd + 4 * n
+    let attrBase := byteArrays
+    for i in [0:n] do
+      attr := attr.push (byte data (attrBase + i))
+    let flagsBase := attrBase + n
+    for i in [0:n] do
+      flags := flags.push (byte data (flagsBase + i))
+
+    -- 2 bytes of padding, then the dimension table (pictures only).
+    let dimBase := if kind == .sounds then flagsBase + n else flagsBase + n + 2
+    for i in [0:n] do
+      -- The pair is {height, width}: the SECOND u16 is the width.
+      let h ← MmfExtract.Bytes.u16At data (dimBase + 4 * i) bigEndian
+      let w ← MmfExtract.Bytes.u16At data (dimBase + 4 * i + 2) bigEndian
+      dimensions := dimensions.push { width := w, height := h }
+
+    let sizeBase := dimBase + 4 * n
+    for i in [0:n] do
+      sizes := sizes.push (← MmfExtract.Bytes.u32At data (sizeBase + 4 * i) bigEndian)
+
+    -- The kind byte array (object offset 0x2a8); sounds and films have none.
+    if metaLen >= 15 * n + 4 then
+      let kindBase := sizeBase + 4 * n
+      for i in [0:n] do
+        kinds := kinds.push (byte data (kindBase + i))
+
 
   return {
-    path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, offsets, names,
+    path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, declaredCount, offsets, names,
     attr, flags, dimensions, sizes, extraU32, kinds, namesEnd, palettes := #[],
-    uncompressedSizes := #[], scriptMeta := none
+    uncompressedSizes := #[], scriptMeta := none, metadataReason
   }
 
 /-- Read and parse a container from disk.

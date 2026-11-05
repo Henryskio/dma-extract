@@ -151,6 +151,17 @@ pub struct Container {
     pub file_id: [u8; 6],
     pub timestamp: f64,
     pub resource_count: u16,
+    /// What the header's own count field at `0x22` says, when it disagrees with
+    /// the count the offset table holds. They differ only on the Italian 3D
+    /// game's `DMA3D.MMX`, whose header declares 705 while its table holds 782
+    /// entries (`docs/DMA3D.md` §11), so the table's count is what is read and
+    /// this keeps the declared one so the disagreement is reported.
+    pub declared_count: u16,
+    /// Why the metadata region could not be read, when it could not.
+    /// `docs/DMA3D.md` §11 records the Italian `DMA3D.MMX`, where the names
+    /// table and the documented metadata region cannot both fit between the
+    /// offset table and the first payload.
+    pub metadata_reason: Option<String>,
     /// `resource_count + 1` file offsets; the last is EOF.
     pub offsets: Vec<u32>,
     pub names: Vec<String>,
@@ -191,6 +202,30 @@ pub struct Container {
     pub uncompressed_sizes: Vec<u32>,
     /// Scripts-only object-database metadata. `None` for every other kind.
     pub script: Option<ScriptMeta>,
+}
+
+/// The count the offset table really holds, walked out from the declared one.
+///
+/// A table entry describes a payload while the step from the previous entry is a
+/// plausible payload size: at least four bytes (a resource cannot be empty) and
+/// at most 2 MiB. The walk stops at the first entry that is not one, and that
+/// entry is the container's own length -- which is the check that makes the walk
+/// right rather than merely convenient. See `Container::declared_count`.
+fn walk_count(data: &[u8], off_base: usize, big_endian: bool, declared: usize) -> u16 {
+    let entry = |i: usize| read_u32(data, off_base + 4 * i, big_endian) as usize;
+    let limit = (data.len().saturating_sub(off_base)) / 4 - 1;
+    let mut n = declared;
+    let mut prev = entry(n);
+    while n < limit {
+        let next = entry(n + 1);
+        let step = next.saturating_sub(prev);
+        if !(4..=2 * 1024 * 1024).contains(&step) {
+            break;
+        }
+        n += 1;
+        prev = next;
+    }
+    n as u16
 }
 
 impl Container {
@@ -256,14 +291,24 @@ impl Container {
         // (HD.PIC N=1682, mpApp.PIC 384, pack.PIC 10893, Topolino.CPK 2,
         // HD.SND 66, mpApp.SND 152, pack.SND 234, pack.BLB 305, HD.mms 295,
         // pack.mms 988).
-        let resource_count = if version == 1 {
+        let declared_count = if version == 1 {
             read_u16(&data, 0x1e, big_endian)
         } else {
             read_u16(&data, 0x22, big_endian)
         };
-        let n = resource_count as usize;
+        let declared = declared_count as usize;
 
         let off_base = if version == 1 { 0x20 } else { 0x24 };
+        // The count the offset table really holds, walked out from the declared
+        // one. A table entry describes a payload while the step from the
+        // previous entry is a plausible payload size, so the walk stops where
+        // the table stops describing payloads -- and that entry is the
+        // container's own length. The Italian 3D game's `DMA3D.MMX` is why:
+        // its header declares 705, its table holds 782 entries, and reading only
+        // 706 of them truncated the container to 3,230,042 of its 4,019,622
+        // bytes and lost most of its textures (`docs/DMA3D.md` §11).
+        let resource_count = walk_count(&data, off_base, big_endian, declared);
+        let n = resource_count as usize;
         let need = off_base + 4 * (n + 1);
         if data.len() < need {
             bail!(
@@ -300,6 +345,7 @@ impl Container {
                 file_id,
                 timestamp,
                 resource_count,
+                declared_count,
                 offsets,
                 names,
                 attr: Vec::new(),
@@ -312,6 +358,7 @@ impl Container {
                 palettes: Vec::new(),
                 uncompressed_sizes: Vec::new(),
                 script: Some(script),
+                metadata_reason: None,
             });
         }
 
@@ -331,6 +378,7 @@ impl Container {
                 file_id,
                 timestamp,
                 resource_count,
+                declared_count,
                 offsets,
                 names,
                 attr: Vec::new(),
@@ -347,6 +395,7 @@ impl Container {
                 // having none is what makes the shared extractor say "no
                 // version-1 layout" rather than mis-read a payload.
                 script: None,
+                metadata_reason: None,
             });
         }
 
@@ -418,6 +467,7 @@ impl Container {
             file_id,
             timestamp,
             resource_count,
+            declared_count,
             offsets,
             names,
             attr,
@@ -427,6 +477,7 @@ impl Container {
             extra_u32,
             kinds,
             names_end,
+            metadata_reason: None,
             palettes,
             uncompressed_sizes,
             script: None,
@@ -459,76 +510,91 @@ impl Container {
             _ => 15 * n + 4,
         };
         let meta_end = names_end + meta_len;
-        if meta_end > payload_start || meta_end > data.len() {
-            bail!(
-                "{}: metadata region does not fit (names_end={}, meta_end={}, payload_start={}, len={})",
-                path.display(),
-                names_end,
-                meta_end,
-                payload_start,
-                data.len()
-            );
-        }
-
-        // 4*N u32 array of unknown purpose, then the attribute byte array.
-        let extra_base = names_end;
-        let mut extra_u32 = Vec::with_capacity(n);
-        for i in 0..n {
-            extra_u32.push(read_u32(&data, extra_base + 4 * i, big_endian));
-        }
-
-        // The attribute byte array (object offset 0x278). In a sound
-        // container it sits after the extra 2-byte word instead.
-        let byte_arrays = if kind == ContainerKind::Sounds {
-            extra_base + 4 * n + 2
+        // The documented region length is measured on the English build. The
+        // Italian 3D game's `DMA3D.MMX` does not have one: walked to the 782
+        // entries its offset table really holds, its names table ends at 28158
+        // and the region would have to reach 32846, past the payload base at
+        // 29654. The payload region is what the decode reads, so a region that
+        // overruns it is left unread with the reason recorded, rather than made
+        // to fit by shortening the names table (`docs/DMA3D.md` §11).
+        let metadata_reason = if meta_end > payload_start || meta_end > data.len() {
+            Some(format!(
+                "the {meta_len}-byte metadata region does not fit between the names table                  (ends {names_end}) and the first payload ({payload_start})"
+            ))
         } else {
-            extra_base + 4 * n
+            None
         };
-        let attr_base = byte_arrays;
-        let mut attr = Vec::with_capacity(n);
-        for i in 0..n {
-            attr.push(data[attr_base + i]);
-        }
+        let meta_does_not_fit = metadata_reason.is_some();
 
-        // The flags byte array (object offset 0x284): bit 0 = 8bpp.
-        let flags_base = attr_base + n;
-        let mut flags = Vec::with_capacity(n);
-        for i in 0..n {
-            flags.push(data[flags_base + i]);
-        }
-
-        // 2 bytes of padding, then the dimension table. The padding exists
-        // only in picture containers.
-        let dim_base = if kind == ContainerKind::Sounds {
-            flags_base + n
-        } else {
-            flags_base + n + 2
-        };
-        let mut dimensions = Vec::with_capacity(n);
-        for i in 0..n {
-            // The pair is {height, width}: the SECOND u16 is the width.
-            let h = read_u16(&data, dim_base + 4 * i, big_endian);
-            let w = read_u16(&data, dim_base + 4 * i + 2, big_endian);
-            dimensions.push(Dimension {
-                width: w,
-                height: h,
-            });
-        }
-
-        // The decompressed-size table.
-        let size_base = dim_base + 4 * n;
-        let mut sizes = Vec::with_capacity(n);
-        for i in 0..n {
-            sizes.push(read_u32(&data, size_base + 4 * i, big_endian));
-        }
-
-        // The kind byte array (object offset 0x2a8): the palette source.
-        // Sounds and Films containers have no kind array.
-        let mut kinds = Vec::with_capacity(n);
-        if meta_len >= 15 * n + 4 {
-            let kind_base = size_base + 4 * n;
+        // The arrays are empty when the region was not read, which is the same
+        // thing the Lean core does (`MmfExtract/Container.lean`).
+        let mut extra_u32: Vec<u32> = Vec::new();
+        let mut attr: Vec<u8> = Vec::new();
+        let mut flags: Vec<u8> = Vec::new();
+        let mut dimensions: Vec<Dimension> = Vec::new();
+        let mut sizes: Vec<u32> = Vec::new();
+        let mut kinds: Vec<u8> = Vec::new();
+        if !meta_does_not_fit {
+            // 4*N u32 array of unknown purpose, then the attribute byte array.
+            let extra_base = names_end;
+            extra_u32 = Vec::with_capacity(n);
             for i in 0..n {
-                kinds.push(data[kind_base + i]);
+                extra_u32.push(read_u32(&data, extra_base + 4 * i, big_endian));
+            }
+
+            // The attribute byte array (object offset 0x278). In a sound
+            // container it sits after the extra 2-byte word instead.
+            let byte_arrays = if kind == ContainerKind::Sounds {
+                extra_base + 4 * n + 2
+            } else {
+                extra_base + 4 * n
+            };
+            let attr_base = byte_arrays;
+            attr = Vec::with_capacity(n);
+            for i in 0..n {
+                attr.push(data[attr_base + i]);
+            }
+
+            // The flags byte array (object offset 0x284): bit 0 = 8bpp.
+            let flags_base = attr_base + n;
+            flags = Vec::with_capacity(n);
+            for i in 0..n {
+                flags.push(data[flags_base + i]);
+            }
+
+            // 2 bytes of padding, then the dimension table. The padding exists
+            // only in picture containers.
+            let dim_base = if kind == ContainerKind::Sounds {
+                flags_base + n
+            } else {
+                flags_base + n + 2
+            };
+            dimensions = Vec::with_capacity(n);
+            for i in 0..n {
+                // The pair is {height, width}: the SECOND u16 is the width.
+                let h = read_u16(&data, dim_base + 4 * i, big_endian);
+                let w = read_u16(&data, dim_base + 4 * i + 2, big_endian);
+                dimensions.push(Dimension {
+                    width: w,
+                    height: h,
+                });
+            }
+
+            // The decompressed-size table.
+            let size_base = dim_base + 4 * n;
+            sizes = Vec::with_capacity(n);
+            for i in 0..n {
+                sizes.push(read_u32(&data, size_base + 4 * i, big_endian));
+            }
+
+            // The kind byte array (object offset 0x2a8): the palette source.
+            // Sounds and Films containers have no kind array.
+            kinds = Vec::with_capacity(n);
+            if meta_len >= 15 * n + 4 {
+                let kind_base = size_base + 4 * n;
+                for i in 0..n {
+                    kinds.push(data[kind_base + i]);
+                }
             }
         }
 
@@ -541,6 +607,7 @@ impl Container {
             file_id,
             timestamp,
             resource_count,
+            declared_count,
             offsets,
             names,
             attr,
@@ -550,6 +617,7 @@ impl Container {
             extra_u32,
             kinds,
             names_end,
+            metadata_reason,
             palettes: Vec::new(),
             uncompressed_sizes: Vec::new(),
             script: None,

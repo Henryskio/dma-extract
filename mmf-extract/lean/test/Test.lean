@@ -196,6 +196,82 @@ def dirExists (dir : String) : IO Bool := do
   match ← (try read catch _ => pure false) with
   | b => pure b
 
+/-- The Italian disc's `DMA3D.MMX` textures, decoded.
+
+This is the check the carve and the palette rule exist for. The shipped
+container was truncated to a third of its size and read at the header's stale
+count, and the palette rule committed to the smallest valid split before asking
+whether the area left over was a power of two. Together they failed 704 of the
+705 resources. Both are fixed, and what that buys is measured here rather than
+claimed: `docs/DMA3D.md` §11.
+
+What the check holds each half to:
+
+* the container is the size its own offset table says (4,019,622 bytes), and the
+  count that table holds is 781, against the header's declared 705;
+* the payload region is where the first offset says it is;
+* the textures that decode are the ones whose length admits a split, and the
+  ones that do not are reported rather than forced;
+* every texture that decodes records whether the split was pinned, because most
+  are not.
+-/
+def checkTextures3D (assetDir : String) : IO Bool := do
+  let mut ok := true
+  match ← Container.read (System.FilePath.mk (assetDir ++ "/DMA3D.MMX")) with
+  | .error e => IO.eprintln s!"DMA3D.MMX: {e}"; return false
+  | .ok container =>
+    let n := container.resourceCount.toNat
+    let declared := container.declaredCount.toNat
+    let last := (container.offsets.getD n 0).toNat
+    IO.println s!"DMA3D.MMX: {n} resources (the header declares {declared}), {container.data.size} bytes"
+    if n != 781 then
+      IO.eprintln s!"DMA3D.MMX: walked {n} resources, expected 781"
+      ok := false
+    if declared != 705 then
+      IO.eprintln s!"DMA3D.MMX: declared {declared}, expected 705"
+      ok := false
+    if last != container.data.size then
+      IO.eprintln s!"DMA3D.MMX: the last offset {last} is not the container's length {container.data.size}"
+      ok := false
+    -- The payload region begins where the first offset says, which is the one
+    -- part of the layout that does not depend on the count dispute.
+    let payloadStart := (container.offsets.getD 0 0).toNat
+    if payloadStart != 29654 then
+      IO.eprintln s!"DMA3D.MMX: the first payload starts at {payloadStart}, expected 29654"
+      ok := false
+
+    let mut decoded := 0
+    let mut ambiguous := 0
+    let mut outside := 0
+    let mut noSplit := 0
+    for i in [0:n] do
+      match Container.payload container i with
+      | .error _ => outside := outside + 1
+      | .ok payload =>
+        match parse payload with
+        | .ok texture =>
+          decoded := decoded + 1
+          if texture.ambiguous then
+            ambiguous := ambiguous + 1
+        | .error _ => noSplit := noSplit + 1
+    IO.println s!"DMA3D.MMX: {decoded} textures decoded ({ambiguous} of them with an unpinned palette split), {outside} offsets entries outside the container, {noSplit} with no split"
+    if decoded != 695 then
+      IO.eprintln s!"DMA3D.MMX: {decoded} textures decoded, expected 695"
+      ok := false
+    if ambiguous != 695 then
+      -- Every one of them is a default: the constraint does not pin a unique
+      -- split, so the smallest admissible palette was read and the ambiguity
+      -- is on the record.
+      IO.eprintln s!"DMA3D.MMX: {ambiguous} ambiguous, expected 695"
+      ok := false
+    if outside != 76 then
+      IO.eprintln s!"DMA3D.MMX: {outside} offsets entries outside, expected 76"
+      ok := false
+    if noSplit != 10 then
+      IO.eprintln s!"DMA3D.MMX: {noSplit} with no split, expected 10"
+      ok := false
+  return ok
+
 /-- The 3D game's `--original` extraction, verified against the container.
 
 The containers are carved out of the disc image by `test/carve3d.py`, so the
@@ -301,6 +377,7 @@ def main (_args : List String) : IO UInt32 := do
   if !(← checkDpcm) then ok := false
   if !(← checkDifferentialSounds) then ok := false
   if !(← checkOriginal3D "/workspace/.tmp/dma3d/assets" "/tmp/dma3d-original") then ok := false
+  if !(← checkTextures3D "/workspace/.tmp/dma3d/assets") then ok := false
   if !(← checkModern3D) then ok := false
   if !(← checkContainers "/RawAssets") then ok := false
   if ok then IO.println "all checks passed"; return 0 else return 1

@@ -61,6 +61,8 @@ pub struct Report {
     pub scripts: usize,
     pub blobs: usize,
     pub models: usize,
+    /// Textures written whose palette/index split the payload does not pin.
+    pub ambiguous: usize,
     pub total: usize,
     pub failed: Vec<String>,
 }
@@ -214,6 +216,7 @@ fn parse_report(text: &str) -> Result<Report> {
             "scripts" => report.scripts = parse_count(value, "scripts")?,
             "blobs" => report.blobs = parse_count(value, "blobs")?,
             "models" => report.models = parse_count(value, "models")?,
+            "ambiguous" => report.ambiguous = parse_count(value, "ambiguous")?,
             "total" => report.total = parse_count(value, "total")?,
             "failed" => report.failed = Vec::new(),
             "fail" => report.failed.push(value.to_string()),

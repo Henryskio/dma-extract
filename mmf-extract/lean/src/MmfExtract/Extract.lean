@@ -98,6 +98,9 @@ structure Report where
   scripts : Nat := 0
   blobs : Nat := 0
   models : Nat := 0
+  /-- Textures written whose palette/index split the payload does not pin, so
+  the palette read is the smallest admissible one (`docs/DMA3D.md` §11). -/
+  ambiguous : Nat := 0
   failed : Array String := #[]
   deriving Inhabited
 
@@ -227,7 +230,9 @@ def run (options : Options) : IO Report := do
     let report ← Dma3d.extractTextures container outDir original
     for (index, name, why) in report.failed do
       reportFailure r s!"{MmfExtract.Path.str path}: texture {index} '{name}': {why}"
-    r.modify fun rep => { rep with models := rep.models + report.written }
+    r.modify fun rep => { rep with
+      models := rep.models + report.written,
+      ambiguous := rep.ambiguous + report.ambiguous }
     textureDir := some outDir
 
   for path in files do

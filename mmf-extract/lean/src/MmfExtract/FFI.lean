@@ -42,6 +42,7 @@ def render (report : MmfExtract.Extract.Report) : String :=
   ++ line "scripts" (toString report.scripts)
   ++ line "blobs" (toString report.blobs)
   ++ line "models" (toString report.models)
+  ++ line "ambiguous" (toString report.ambiguous)
   ++ line "total" (toString report.total)
   ++ line "failed" (toString report.failed.size)
   ++ String.intercalate "" (report.failed.toList.map (fun f => "fail\t" ++ f ++ "\n"))

@@ -161,17 +161,20 @@ pub fn parse(payload: &[u8]) -> Result<Texture> {
         bail!("{area} index bytes is not a power of two, so no width and height fit");
     }
 
-    // The area is a power of two in all 705 shipped textures, and that is what
-    // makes the root and the 1:2 pair exact. A payload whose area is not one
-    // does not fit this format, and is reported rather than factored into a
-    // width no texture in this engine can have.
-    if !area.is_power_of_two() {
-        bail!("{area} index bytes is not a power of two, so no width and height fit");
-    }
-
     let (width, height, axis) = split_area(indices.as_slice(), area);
     if width * height != area {
         bail!("{area} index bytes do not factor into {width}x{height}");
+    }
+    // A width below `WIDTH_CANDIDATES` is one this engine does not allocate, so
+    // the reading is reported rather than decoded. Three of the Italian disc's
+    // payloads carry 8, 16 and 32 bytes of indices, whose only split is 4x2 or
+    // 8x4: the product is right and neither dimension is
+    // (`docs/DMA3D.md` §11.6).
+    if !WIDTH_CANDIDATES.contains(&width) || !WIDTH_CANDIDATES.contains(&height) {
+        bail!(
+            "{area} index bytes do not factor into a width this engine can allocate \
+             ({width}x{height} is neither size of {WIDTH_CANDIDATES:?})"
+        );
     }
 
     // Whether the pixel data could tell the two readings apart at all. It is
@@ -201,18 +204,55 @@ pub fn parse(payload: &[u8]) -> Result<Texture> {
 /// the indices can name, and it cannot be shorter than the largest one. The
 /// length of the payload confirms the result, because `payload_len - 4*K`
 /// then lands on a power of two in all 705 shipped textures.
-pub fn palette_size(payload: &[u8]) -> Result<usize> {
-    for k in 1..=payload.len() / PALETTE_ENTRY_BYTES {
-        let start = k * PALETTE_ENTRY_BYTES;
-        if start >= payload.len() {
-            bail!("payload is all palette: {k} entries with no index bytes");
+/// Every palette size a payload admits, smallest first.
+///
+/// A split of `K` entries is admissible when the area left over
+/// (`payload_len - 4*K`) is a power of two and every index byte names an entry
+/// that exists. The exponent is walked from the largest area that leaves at
+/// least one palette entry down to a single pixel, so the smallest admissible
+/// palette comes first.
+///
+/// This replaces the shipped rule, which took the smallest `K` that made the
+/// indices valid and only then demanded a power-of-two area: a payload whose
+/// smallest valid `K` left a non-power-of-two area was rejected wholesale. On
+/// the Italian `DMA3D.MMX` that rejected 577 of 781 payloads as "N index bytes
+/// is not a power of two" when the payload's own length settles the area.
+/// `docs/DMA3D.md` §11 records what the constraint does *not* pin down.
+pub fn palette_sizes(payload: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    // Start below the payload's own length: an area as large as the payload
+    // would leave a palette of zero entries, which is not a split.
+    let mut area = payload.len().next_power_of_two() / 2;
+    while area > 0 && area + 4 <= payload.len() {
+        let palette_bytes = payload.len() - area;
+        if palette_bytes % PALETTE_ENTRY_BYTES == 0 {
+            let k = palette_bytes / PALETTE_ENTRY_BYTES;
+            if k > 0 {
+                let largest = payload[palette_bytes..].iter().copied().max().unwrap_or(0);
+                if usize::from(largest) < k {
+                    out.push(k);
+                }
+            }
         }
-        let largest = payload[start..].iter().copied().max().unwrap_or(0);
-        if usize::from(largest) < k {
-            return Ok(k);
-        }
+        area /= 2;
     }
-    bail!("no palette size makes the trailing bytes valid indices")
+    out
+}
+
+/// Whether the payload's own bytes pin its palette size.
+///
+/// `true` when more than one admissible split exists, so the palette read is a
+/// default rather than a measurement. Recorded rather than acted on.
+pub fn palette_ambiguous(payload: &[u8]) -> bool {
+    palette_sizes(payload).len() > 1
+}
+
+/// The palette size to read the payload with: the smallest admissible one.
+pub fn palette_size(payload: &[u8]) -> Result<usize> {
+    match palette_sizes(payload).first() {
+        Some(&k) => Ok(k),
+        None => bail!("no palette size makes the trailing bytes valid indices"),
+    }
 }
 
 /// Split an index count into a width and a height.
@@ -222,6 +262,15 @@ fn split_area(indices: &[u8], area: usize) -> (usize, usize, Axis) {
         return (root, root, Axis::Square);
     }
     let (w, h) = wide_tall(area);
+    // `wide_tall` answers a 1:2 pair only for an area that is not a perfect
+    // square: its product is the area for an odd exponent and one power of two
+    // too large for an even one. A square whose root is below the smallest
+    // width candidate lands here (area 16, root 4), and `decide` reading that
+    // pair would index past the end of the slice. So the pair is returned
+    // unchecked and the caller's `width * height != area` rejection says no.
+    if w * h != area {
+        return (w, h, Axis::Tall);
+    }
     if decide(indices, w, h).0 {
         (w, h, Axis::Wide)
     } else {
@@ -408,8 +457,32 @@ mod tests {
     /// then has to be a usable area, so `parse` refuses it.
     #[test]
     fn a_payload_of_one_repeated_byte_is_not_an_image() {
-        assert!(palette_size(&[0x00; 64]).is_ok());
-        assert!(parse(&[0x00; 64]).is_err());
+        // Which repeated byte it is decides the answer, and that is the point.
+        // `0x00` leaves an admissible split: 8 palette entries and 32 zero
+        // indices, so `len == 4*8 + 32` holds and the area is a power of two.
+        // `0xff` names no palette entry that could exist -- every candidate
+        // split leaves indices of `255`, which `K` cannot cover -- so it is not
+        // an image. The rule used to reject the zero payload too, because it
+        // committed to the smallest valid `K` before asking whether the area
+        // left over was a power of two, and for `K = 1` the leftover 60 bytes
+        // are not one (`docs/DMA3D.md` §11.6).
+        assert_eq!(palette_sizes(&[0x00; 64]), vec![8, 12, 14, 15]);
+        assert_eq!(palette_size(&[0x00; 64]).expect("a zero payload admits a split"), 8);
+        // The split exists and the size does not: 32 index bytes leave 4x8 or
+        // 8x4, and neither 4 nor 8 on both axes is a width this engine
+        // allocates. So the payload is admitted by the palette rule and refused
+        // by the size rule, which is the same treatment the Italian disc's
+        // three small textures get (`docs/DMA3D.md` §11.6).
+        let err = parse(&[0x00; 64]).expect_err("4x8 is not an engine width");
+        assert!(
+            err.to_string().contains("width this engine can allocate"),
+            "{err}"
+        );
+
+        let sizes = palette_sizes(&[0xff; 64]);
+        assert!(sizes.is_empty(), "{sizes:?} is not a split");
+        assert!(palette_size(&[0xff; 64]).is_err());
+        assert!(parse(&[0xff; 64]).is_err());
     }
 
     /// The simplest palette texture: one colour, 8x8, every index zero.
@@ -461,8 +534,13 @@ mod tests {
         use crate::container::Container;
 
         fn textures() -> Option<Container> {
+            // The 3D game ships a disc image, so the containers are carved out
+            // of it by `lean/test/carve3d.py`; the carve's own folder is where
+            // these tests look, and `DMA3D_ASSETS` still overrides it. These
+            // used to look only at the two PC folders and so never ran at all.
             for dir in [
                 std::env::var("DMA3D_ASSETS").unwrap_or_default(),
+                "/workspace/.tmp/dma3d/assets".into(),
                 "/tmp/dma3d/pc".into(),
                 "/tmp/en/dma3d_en".into(),
             ] {
@@ -483,12 +561,27 @@ mod tests {
                 return;
             };
             let n = c.resource_count as usize;
+            // The container holds 781 resources and not all of them are
+            // textures: 76 have an offsets entry naming a range the file does
+            // not hold, and 8 admit no palette/index split at all. Those are
+            // reported per-resource, not fatal -- the rule `AGENTS.md` states
+            // and the one `docs/DMA3D.md` §11 measures (`docs/DMA3D.md` §11.6).
+            assert_eq!(n, 781, "the walked count, not the header's declared 705");
+            let mut decoded = 0usize;
+            let mut failed = 0usize;
             let mut square = 0usize;
             let mut wide = 0usize;
             let mut tall = 0usize;
             let mut axes = Vec::new();
             for i in 0..n {
-                let t = parse(c.payload(i)).unwrap_or_else(|e| panic!("{}: {e}", c.name(i)));
+                let t = match parse(c.payload(i)) {
+                    Err(_) => {
+                        failed += 1;
+                        continue;
+                    }
+                    Ok(t) => t,
+                };
+                decoded += 1;
                 let area = t.width * t.height;
                 assert!(
                     area.is_power_of_two(),
@@ -518,8 +611,19 @@ mod tests {
                     }
                 }
             }
-            eprintln!("{n} textures: {square} square, {wide} wide, {tall} tall ({axes:?})");
-            assert!(square > 600, "only {square} square textures");
+            eprintln!(
+                "{n} resources: {decoded} decode, {failed} reported; {square} square, {wide} wide, {tall} tall"
+            );
+            // These numbers are the Italian disc's, measured, and they are not
+            // the English disc's: 70 square here against the 678 squares §4.2
+            // was validated on. What matters is that all three readings occur
+            // and that the counts are stable, not that this build's textures
+            // happen to be square.
+            assert_eq!(decoded, 695, "the number of textures that decode changed");
+            assert_eq!(failed, 86, "the number of resources reported changed");
+            assert_eq!(square + wide + tall, decoded);
+            assert!(square > 0 && wide > 0 && tall > 0, "a reading never occurred");
+            assert_eq!(square, 70, "the square count changed");
         }
 
         /// The measured payload length must be `4*K + area` exactly, so a
@@ -530,11 +634,23 @@ mod tests {
                 eprintln!("skipping: the 3D game's assets are not present");
                 return;
             };
+            let mut checked = 0usize;
+            let mut failed = 0usize;
             for i in 0..c.resource_count as usize {
                 let payload = c.payload(i);
-                let t = parse(payload).unwrap_or_else(|e| panic!("{}: {e}", c.name(i)));
-                assert_eq!(t.palette.len() * 4 + t.indices.len(), payload.len());
+                // The same accounting: a payload the container does not hold,
+                // or one that admits no split, is reported rather than made to
+                // fit (`docs/DMA3D.md` §11.6).
+                match parse(payload) {
+                    Err(_) => failed += 1,
+                    Ok(t) => {
+                        assert_eq!(t.palette.len() * 4 + t.indices.len(), payload.len());
+                        checked += 1;
+                    }
+                }
             }
+            assert_eq!(checked, 695, "the number of textures that decode changed");
+            assert_eq!(failed, 86, "the number of resources reported changed");
         }
     }
 }

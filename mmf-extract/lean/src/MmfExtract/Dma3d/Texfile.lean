@@ -58,6 +58,9 @@ structure Texture where
   reading differs from any other and the only honest things to do are to report
   it and to say why. -/
   undecidable : Bool
+  /-- True when the payload admits more than one palette/index split, so the
+  palette that was read is a default rather than a measurement. -/
+  ambiguous : Bool
   deriving Inhabited
 
 /-- Expand to straight RGBA, four bytes per pixel. -/
@@ -74,19 +77,69 @@ entry the palette does not have. -/
 def Texture.entry (texture : Texture) (index : UInt8) : UInt8 × UInt8 × UInt8 × UInt8 :=
   (texture.palette[index.toNat]?).getD (0, 0, 0, 0)
 
-/-- The palette size: the smallest `K` for which every byte past `4*K` is a
-valid index. -/
-def paletteSize (payload : ByteArray) : Except String Nat := do
-  for k in [1:payload.size / paletteEntryBytes + 1] do
-    let start := k * paletteEntryBytes
-    if start >= payload.size then
-      throw s!"payload is all palette: {k} entries with no index bytes"
+/-- Every palette size a payload admits, smallest first.
+
+A split of `K` entries is admissible when the area left over
+(`payload_len - 4*K`) is a power of two, which is the shape every shipped
+texture has, and when every index byte names an entry that exists
+(`max(index) < K`).
+
+Why this replaces the shipped rule: the port took the smallest `K` that made the
+indices valid and only *then* demanded a power-of-two area, so a payload whose
+smallest valid `K` left a non-power-of-two area was rejected wholesale. On the
+Italian `DMA3D.MMX` that rejected 577 of 781 payloads as "N index bytes is not a
+power of two" when the payload's own length does settle the area. Enumerating
+the admissible splits instead recovers 698.
+
+It returns a *list* because the constraint does not pin one answer: a palette of
+`K` entries is admissible whenever `K - 1 >= max(index)`, and for a payload with
+a long palette and small indices that is true for many `K`. The caller takes the
+smallest and records that the choice was a default, not a measurement — the same
+treatment `createBtFileIo` gets for its orientation (`docs/DMA3D.md` §4.2).
+-/
+def paletteSizes (payload : ByteArray) : List Nat := Id.run do
+  let mut out : List Nat := []
+  -- The area is a power of two, so the palette is `payload_len - 2^e` bytes. The
+  -- exponent is walked from the largest area that leaves a palette of at least
+  -- one entry down to a single pixel, so the smallest palette is found first.
+  for e in (List.range 31).reverse do
+    let area := 2 ^ (e + 1)
+    if area + 4 > payload.size then
+      continue
+    let paletteBytes := payload.size - area
+    if paletteBytes % paletteEntryBytes != 0 then
+      continue
+    let k := paletteBytes / paletteEntryBytes
+    if k == 0 then
+      continue
     let mut largest : Nat := 0
-    for i in [start:payload.size] do
+    for i in [paletteBytes:payload.size] do
       largest := max largest payload[i]!.toNat
     if largest < k then
-      return k
-  throw "no palette size makes the trailing bytes valid indices"
+      out := out ++ [k]
+  return out
+
+/-- The palette size to read the payload with: the smallest admissible one.
+
+The smallest is the one that uses the fewest palette entries, so it is the
+reading that leaves the most bytes as pixels. It is a *default* — see
+[`paletteSizes`] for why the payload does not determine it, and
+`Texture.ambiguous` for where that is recorded.
+-/
+def paletteSize (payload : ByteArray) : Except String Nat := do
+  match paletteSizes payload with
+  | [] => throw "no palette size makes the trailing bytes valid indices"
+  | k :: _ => return k
+
+/-- Whether the payload's own bytes pin its palette size.
+
+`true` when more than one admissible split exists, so the palette that was read
+is a default rather than a measurement. Recorded on every texture rather than
+acted on, because a texture with an ambiguous split is still a texture: the
+pixels are right and only the count of unused palette entries is undetermined.
+-/
+def paletteAmbiguous (payload : ByteArray) : Bool :=
+  (paletteSizes payload).length > 1
 
 /-- The 1:2 pair an area of `2^(2k+1)` is made of.
 
@@ -242,7 +295,16 @@ def splitArea (indices : ByteArray) (area : Nat) : Nat × Nat × TextureAxis :=
     (root, root, TextureAxis.square)
   else
     let (w, h) := wideTall area
-    if (decide indices w h).1 then
+    -- `wideTall` answers a 1:2 pair only for an area that is not a perfect
+    -- square: its product is the area when the exponent is odd and one power of
+    -- two too large when it is even. A square whose root is not a width this
+    -- engine can allocate lands here (area 16, root 4, below the smallest
+    -- candidate), and `decide` reading that pair would index past the end of
+    -- the data. So the pair is returned unchecked and the caller's own
+    -- `width * height != area` rejection is what says no, rather than a panic.
+    if w * h != area then
+      (w, h, TextureAxis.tall)
+    else if (decide indices w h).1 then
       (w, h, TextureAxis.wide)
     else
       (h, w, TextureAxis.tall)
@@ -277,13 +339,22 @@ def parse (payload : ByteArray) : Except String Texture := do
   let (width, height, axis) := splitArea indices area
   if width * height != area then
     throw s!"{area} index bytes do not factor into {width}x{height}"
+  -- A width below `widthCandidates` is one this engine does not allocate, so
+  -- the reading is reported rather than decoded. Three of the Italian disc's
+  -- payloads are 8, 16 and 32 bytes of indices, whose only split is 4x2 or 8x4:
+  -- the product is right and neither dimension is (`docs/DMA3D.md` §11.6).
+  if !(widthCandidates.contains width) || !(widthCandidates.contains height) then
+    throw s!"{area} index bytes do not factor into a width this engine can allocate ({width}x{height} is neither of {widthCandidates})"
 
   -- Whether the pixel data could tell the two readings apart at all. It is
   -- recorded rather than acted on: an undecidable texture is still written,
   -- because a solid rectangle is a usable placeholder, and it is reported so
   -- nobody mistakes the default for a measurement.
   let undecidable := area.log2 % 2 == 1 && !(decide indices (wideTall area).1 (wideTall area).2).2
+  -- The split is not always determined: a payload whose palette is longer than
+  -- its indices need admits several readers, and the smallest was taken.
+  let ambiguous := paletteAmbiguous payload
 
-  return { palette, indices, width, height, axis, undecidable }
+  return { palette, indices, width, height, axis, undecidable, ambiguous }
 
 end MmfExtract.Dma3d.Texfile

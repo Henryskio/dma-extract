@@ -39,6 +39,11 @@ structure Extract3DReport where
   written : Nat := 0
   failed : Array (Nat × String × String) := #[]
   resources : Array Extracted3D := #[]
+  /-- Textures written whose palette/index split the payload does not pin down,
+  so the palette that was read is the smallest admissible one rather than a
+  measurement. They are counted rather than failed: the pixels are right and only
+  the count of unused palette entries is undetermined (`docs/DMA3D.md` §11). -/
+  ambiguous : Nat := 0
   deriving Inhabited
 
 /-- The output file name's stem: the resource name, sanitised.
@@ -96,6 +101,7 @@ def extractPngs (container : Container) (outDir : System.FilePath) : IO Extract3
           (Png.ofRgba texture.width texture.height (rgba.extract 0 (texture.width * texture.height * 4)))
         report := { report with
           written := report.written + 1,
+          ambiguous := report.ambiguous + (if texture.ambiguous then 1 else 0),
           resources := report.resources.push
             { index, name, path, bytes := texture.width * texture.height * 4 } }
   return report
