@@ -12,6 +12,14 @@ Scripts container in the shipped assets.
 > `src/script.rs` decodes. The first game is in **`GAME1.md`** §7: its Scripts
 > containers have **no names table and no metadata region** at all, so they
 > open through `src/v1/scripts.rs` and extract byte-exactly in `--original`
+
+> **Where the decoders live.** The extraction is written in Lean:
+> `lean/src/MmfExtract/Script.lean` decodes the object database the CLI emits,
+> `lean/src/MmfExtract/V1/Scripts.lean` the first game's version-1 Scripts
+> containers, and `src/script.rs` / `src/v1/scripts.rs` are the Rust references
+> they were ported from. `tests/lean_parity.rs` compares the two on the
+> version-2/3 corpus, file for file, and fails if any file differs in length or
+> in any byte.
 > mode. What still blocks a structured extraction there is the same thing this
 > document solves here with `type_aux` — the per-class record size — and §7
 > records it as the open question rather than guessing.

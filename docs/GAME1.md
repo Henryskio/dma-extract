@@ -9,6 +9,16 @@ states **only what version 1 changes**; anything the games share is written
 down once in the shared document and referenced from here, the same rule
 `src/v1/` follows against `src/`.
 
+> **Where the decoders live.** The extraction is written in Lean: the version-1
+> decoders the CLI runs are `lean/src/MmfExtract/V1/Picture.lean`,
+> `V1/Metadata.lean`, `V1/Lzss.lean`, `V1/Scripts.lean` and `V1/Blobs.lean`, with
+> the shared container reader `lean/src/MmfExtract/Container.lean` in front of
+> them. `src/v1/` is the Rust reference they were ported from, and
+> `tests/lean_parity.rs` compares the two — the corpus identical file for file.
+> Because the count and boundaries are now read out of the offset table (§1.1 and
+> §1.2 of `PICTURES.md`), this file's measured counts are `HD.mms` at 295 and its
+> payload region closing exactly; both still pass.
+
 Everything below is derived from the shipped files and the game's own
 executable, and checked numerically.
 

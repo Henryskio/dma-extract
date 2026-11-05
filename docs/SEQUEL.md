@@ -7,6 +7,14 @@
 > and therefore the *older* build, despite being lumped in with a
 > "sequel".
 
+> **Where the decoders live.** This game's payload formats are the third game's,
+> so the same Lean modules decode it — `lean/src/MmfExtract/Picture.lean`,
+> `Sound.lean`, `Script.lean`, `Film.lean` and `Container.lean` — with
+> `src/picture.rs` and the rest of `src/` as the Rust references and
+> `tests/lean_parity.rs` comparing them. What is this game's own is listed in §3:
+> the two format differences the shared decoders handle, and the 4 Galois-case
+> picture bug.
+
 \*\*\*\*\*\* Magico Artista 2 uses the **same in-house `MMFW` container family and
 the same payload encodings** as the third game, so the existing extractor
 works on it after two small format differences are handled. Nothing new had

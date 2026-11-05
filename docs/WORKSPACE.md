@@ -127,6 +127,7 @@ These exist in a development workspace and are **not** part of the deliverable:
 |---|---|
 | `PathAssets/Dati/` | the first game's ten containers, carved from `TOPOLINO.ISO` (`docs/GAME1.md` §1) |
 | `sequel/`, `PathAssets2/` | the second game's disc image and the files carved from it (`docs/SEQUEL.md`) |
+| `/workspace/.tmp/dma3d/` | the 3D game's disc image, its two carved containers, `carve3d.py`'s output, and `DMA3D.exe` carved out of it. **Local-only and gitignored** — the repository holds no game data. The 3D game ships a *disc*, so its containers are runs of bytes inside `Disney Creazioni in 3D (Italy).bin` and have to be carved out by `mmf-extract/lean/test/carve3d.py`; `tests/dma3d.rs` finds them there (`docs/DMA3D.md` §1, §8) |
 | `mmex-sound/`, `mmex-script/`, `mmex-film/` | throwaway per-asset working copies used while the formats were being reverse-engineered; their results are merged into `mmf-extract/` |
 | `.tmp-channeltest/`, `check_hidden_files` | scratch output from earlier debugging |
 | `.claude/`, `.git/`, `.gitignore` | agent/tool state and version control |
