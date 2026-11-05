@@ -13,6 +13,12 @@ tests.
 > region ends in an `N`-byte array instead of the `attr`/`flags` pairs used
 > here. Those deltas and the shipped counts live in **`GAME1.md`** §5.
 
+> **Where the decoder lives.** The extraction is written in Lean:
+> `lean/src/MmfExtract/Sound.lean` is the decoder the CLI runs, `src/sound.rs`
+> is the Rust reference it was ported from, and `tests/lean_parity.rs` compares
+> the two — the sounds byte-identical, on the third game's shipped containers.
+> The `flac` subprocess both halves shell out to is described in §6.
+
 > **Engine note.** Despite the `MMFW` container signature this is **not** a
 > Clickteam Multimedia Fusion 2 application. `DMA4.exe` carries the PDB path
 > `C:\Projects\DeluxeRevision\DMA Art Ware\Intermediate\Release\DMAAW.pdb`,

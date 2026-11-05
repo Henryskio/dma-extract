@@ -24,6 +24,17 @@ binaries in `src/bin/`.
 > against the mmex documentation; the layout below is confirmed directly
 > against the files and the game's own loader.
 
+> **Where the decoders live.** The extraction is written in Lean:
+> `lean/src/MmfExtract/Picture.lean` is the picture decoder the CLI runs,
+> `lean/src/MmfExtract/Lz77.lean` the decompressor in front of it, and
+> `lean/src/MmfExtract/Png.lean` the stored-deflate writer behind it.
+> `src/picture.rs` and `src/lz77.rs` are the Rust references they were ported
+> from, and `tests/lean_parity.rs` compares the two — the pictures identical
+> pixel for pixel, on the third game's shipped containers. This
+> document is also the shared container chain, so §1.1 and §1.2 record the two
+> container-reader rules that apply to **every** game, including the ones whose
+> payload formats are described elsewhere.
+
 ---
 
 ## 1. Container header
@@ -46,6 +57,51 @@ version 3.
 Payloads begin at `off[0]`. Each payload is compressed with the game's own
 LZ77 variant (a byte-oriented LZ77 with 16/32 KiB windows), implemented in
 `src/lz77.rs` and transliterated from `FUN_004c557a` in `DMA4.exe`.
+
+### 1.1 The resource count, when the header and the table disagree
+
+`N` at `0x22` is a **hint**, not the count. The count that matters is the one the
+container's own offset table holds, because the table is what the payload reader
+indexes, and the table is longer than `4*(N+1)` entries whenever the header's
+`N` is short.
+
+The rule, in both halves (`Container::walk_count` in `src/container.rs`,
+`MmfExtract.Container.walkCount` in `lean/src/MmfExtract/Container.lean`):
+
+1. If `offsets[N_declared]` is the container's own byte length, the declared count
+   is right and the table is `4*(N_declared + 1)` entries. **The walk does not
+   run.** This is the case for every correct container, which is what keeps the
+   three games' existing containers byte-for-byte as they were.
+2. Otherwise walk forward while each next table entry is a plausible payload
+   offset — a step of at least 4 bytes and at most 2 MiB — and stop where the
+   table stops describing payloads. That entry is the container's own length, and
+   the count walked to is the one used.
+
+Both readings are recorded: `resourceCount` is the count actually read, and
+`declaredCount` is what the header said, so a disagreement is reported rather
+than hidden.
+
+**Why the walk must be a repair and not a preference** is measured on the first
+game's `HD.mms` (`/PathAssets/Dati/HD.mms`, 75,889 bytes, version 1): it declares
+`N = 295`, `offsets[295]` is exactly 75,889, and `offsets[296]` is `262144` — a
+step of 186,255 bytes, which is under the 2 MiB bound an unconditional walk
+accepts. Reading it "the walked way" gives 296 resources and breaks
+`tests/game1.rs`, on the strength of one plausible-looking table entry.
+
+**The one container in this workspace that needs it** is the 3D game's
+`DMA3D.MMX`, whose header declares 705 while its table holds 782 entries
+(`docs/DMA3D.md` §11.6). It is the reason the rule exists.
+
+### 1.2 The metadata region, when it does not fit
+
+The documented region length (`15*N + 4` for pictures, `14*N + 2` for sounds, and
+the 3D game's own `4*N + 100` and `6*N + 2`) is measured on the **English**
+builds. A container whose walked count makes the region overrun the payload base
+does not have one: the payload base is what the decode reads, so the region is
+left unread and the reason is recorded on the container (`metadataReason` in both
+halves) rather than thrown away, and rather than being made to fit by shortening
+the names table. The Italian `DMA3D.MMX` is the case (`docs/DMA3D.md` §11.6); the
+texture decode uses no field from that region.
 
 ## 2. Metadata region
 

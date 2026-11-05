@@ -14,6 +14,7 @@ byte-for-byte when you need to prove nothing was lost.
 | `.MMA` | Sounds | `NNNNN_name.flac` — unsigned 8-bit PCM plus the game's table-driven differential codec |
 | `.MMS` | Scripts | object database: `container.json`, `types.txt`, `strings.txt`, per-object dumps |
 | `.MMF` | Films | inner `.flm` chunk stream → per-frame PNG + `manifest.json` |
+| `.MMM` / `.MMX` | 3D game's models and textures | `.mod` payload verbatim, or a glTF + preview + `.tail` + `.anim.txt` per mesh-carrying payload, and one PNG per texture |
 
 Measured on the shipped assets of the third game in the series: **30,404
 pictures, 683 sounds, 4,813 script objects, 139 film frames**. A second game
@@ -35,8 +36,10 @@ The extractor is split in two, and the split is the point:
   `cli.rs` turns them into a request and prints the report — nothing else.
 * **`lean/` (Lean 4, a Lake project)** holds everything that reads a container
   or decodes a resource, and writes the output. `lean/src/MmfExtract/` contains
-  `Container`, `Lz77`, `Picture`, `Sound`, `Script`, `V1.*`, and the driver, one
-  module per format, mirroring `docs/` the same way the Rust modules did.
+  `Bytes`, `Types`, `Path`, `Container`, `V1.*`, `Lz77`, `Picture`, `Png`,
+  `Sound`, `Script`, `Film`, `Dma3d`, `Dma3d.*`, `Extract` (the driver) and
+  `FFI` (the exported boundary) — one module per format, mirroring `docs/` the
+  same way the Rust modules did.
 
 `cargo build` builds both: `build.rs` runs `lean/build/build.sh`, which builds
 the Lake project and links `lean/build/libmmfextract.so`, and generates the Rust
@@ -46,11 +49,17 @@ assumed). At run time `src/lean.rs` hands the core a request and reads its
 report back; the boundary is line-oriented text, so neither side knows the
 other's types.
 
-Two modules in `src/` remain as the **reference implementation** the Lean port
-was written against: `picture.rs`, `sound.rs`, `film.rs`, `script.rs`, `v1/` and
-`dma3d/` still decode containers, are still used by the analysis bins in
-`src/bin/`, and are what `tests/lean_parity.rs` compares the Lean output against
-(its sounds are byte-identical, its pictures identical pixel for pixel).
+The Rust side of the split is the **reference implementation** the Lean port was
+written against. `container.rs`, `lz77.rs`, `picture.rs`, `sound.rs`, `script.rs`,
+`film.rs`, `v1/` and `dma3d/` still decode containers, are still used by the
+analysis bins in `src/bin/`, and are what `tests/lean_parity.rs` compares the
+Lean output against (its sounds are byte-identical, its pictures identical pixel
+for pixel, its films identical frame for frame, its corpus identical file for
+file). The container reader is the one module that changed in *both* halves this
+way: `Container::walk_count` reads a resource count out of a container's own
+offset table rather than out of its header when the two disagree, and the Lean
+core is the one the CLI runs, so both halves were edited together rather than
+left to drift (`docs/PICTURES.md` §1.1).
 
 ## Quick start
 
@@ -77,8 +86,17 @@ ones to glTF in Rust, and the result is checked in Lean
 (`lean/src/MmfExtract/Dma3d/Verify.lean`), which reads the glTF back and holds
 it to the contract `modfile::parse_mesh` enforces: the buffer decodes, the index
 length matches, and every index names a vertex the POSITION accessor counts.
-`lean/test/run3d.sh` runs the whole path, and `docs/DMA3D.md` §8-§9 records the
-two places the halves had to be made to agree.
+`lean/test/run3d.sh` runs the whole path. `docs/DMA3D.md` §8-§9 records the two
+places the halves had to be made to agree and **§11** records the 3D game's
+failing textures, what is established about them, and what the fix bought them:
+**695 of the Italian disc's 781 textures decode where 3 did**, and the run's
+report says so with a line of its own:
+
+```
+  models:   1155
+  ambiguous: 695 (palette size not pinned by the payload; the smallest was read)
+  failed:   86
+```
 
 Tests need the assets; they skip themselves otherwise:
 

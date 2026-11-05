@@ -35,6 +35,14 @@ format documentation was used as authority.
 > loader is `FUN_004ca309`, the delta-frame decoder `FUN_004bf7e5`, and the
 > 32-bit byte reversal used by the RLE codec `FUN_004c396b`.
 
+> **Where the decoder lives.** The extraction is written in Lean:
+> `lean/src/MmfExtract/Film.lean` is the decoder the CLI runs, `src/film.rs` is
+> the Rust reference it was ported from, and `tests/lean_parity.rs` compares the
+> two — its films identical frame for frame. Neither half has a version branch.
+> `tests/film_roundtrip.rs` checks all 139 frames of the third game's film
+> numerically, `tests/film_3d.rs` the 3D game's three at 61, 62 and 901: 1,024 in
+> total.
+
 ---
 
 ## 1. Container header
