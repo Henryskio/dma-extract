@@ -5,6 +5,14 @@
 //! number in a comment that no assertion checks is a number that rots. These
 //! tests read the shipped containers and assert each figure. They skip when
 //! the carved assets are absent, like the rest of the asset-dependent suite.
+//!
+//! **Every number here is the English build's.** The two discs differ
+//! materially — the Italian one holds 781 textures where this suite's
+//! container holds 705, 0 payloads with a mesh against 144, and 70 square
+//! textures against 678 — so these tests must not be pointed at the Italian
+//! carve. `docs/DMA3D.md` §11 holds the Italian disc's measurements, and
+//! `Tests::dma3d` / `texfile::tests::shipped` hold them against the carve
+//! `lean/test/carve3d.py` makes.
 
 use mmf_extract::container::Container;
 use mmf_extract::dma3d::modfile;
