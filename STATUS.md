@@ -408,31 +408,46 @@ and that naming stays per `AGENTS.md`. Its own document is
   modes, because its figures are `<img>` tags and `--original` writes nothing a
   browser can draw — listing every file by name put 1,089 payloads on that page
   and drew none of them.
-* **The 3D game's textures are all now read, and the Italian disc's 654 failures
-  are down to 84** (`docs/DMA3D.md` §11, written by a reverse-engineering pass over
-  the game's own executable). The 3D game's `DMA3D.MMX` on the Italian disc is
-  **4,019,622 bytes**, and this workspace's carve was 3,230,042 — it cut exactly
-  on `offsets[705]`, so nothing before the cut looked wrong. The container's
-  resource count is **781**, not the **705** the header declares: exactly one `N`
-  in the range the offset table can hold makes `offsets[N]` the container's own
-  length, and it is 781 here and 460 on `DMA3D.MMM`, where that value is also the
-  header's own. So the count is **walked** out of the table (`walk_count`, in both
-  halves), the declared one is kept as `declaredCount` so the disagreement is
-  reported, and the carve in `lean/test/carve3d.py` follows the walk.
+* **The 3D game's textures are all now read, and the Italian disc's 86 failures are
+  9** (`docs/DMA3D.md` §11, §11.7). The Italian `DMA3D.MMX` is **4,019,622 bytes**
+  and this workspace's carve was 3,230,042 — it cut exactly on a table entry, so
+  nothing before the cut looked wrong. Its table holds 782 entries, of which **76
+  (indices 503..578) were overwritten with values such as `0x5f32a7e1` and
+  `0xffffffff`**; reading them as boundaries reported 76 resources as failures
+  whose payloads "ran past the end of the file". They are not boundaries. A table
+  entry is a payload boundary only when it is a plausible payload offset — at or
+  after the first payload, at or before the container's own length, and strictly
+  past the boundary already accepted, because the payloads are contiguous and a
+  resource cannot be empty. Dropping the 76 leaves **706 boundaries: 705 resources,
+  exactly the count the container's own header declares**, spanning 29,654..4,019,622
+  with no gap, and the resource the damaged run swallowed (4,468 bytes at 2,577,290)
+  is recovered as a `K = 605`, 64x32 texture. That the surviving count equals the
+  declared one is the check: it is the same arithmetic `DMA3D.MMM` obeys. The names
+  move with the table and not the count, which is what made the two readings
+  irreconcilable — the accepted entries run to index 781, so the names sit at
+  `0x24 + 4*782 + 2` = 3166, even though only 705 of those entries are boundaries;
+  reading them at the payload count instead (2862) gives garbage for every name. The
+  cost is recorded rather than hidden: a `6*705 + 2` region at those names reaches
+  30,090, past the payload base at 29,654, so the container keeps recording
+  `metadataReason`.
   The palette rule committed to the smallest valid `K` *before* asking whether the
   area left over was a power of two, which rejected 577 payloads as "N index bytes
   is not a power of two" when the payload's own length settles the area. It now
   enumerates the admissible splits and takes the smallest palette — a **default**,
-  not a measurement, and every texture records whether its split was pinned
-  (`Texture.ambiguous`, and an `ambiguous:` line in the CLI's summary; all 695 on
-  this disc are ambiguous). The palette/indices **order** and the width/height
-  derivation remain open: both orders fit, four resources apart, so nothing acts
-  on it. 695 of 781 textures decode, against 3 before, and the 654 failures are 86: 76
-  damaged offset entries, 8 payloads with no split, and 3 whose only width pair is
-  below `widthCandidates` and are therefore reported rather than decoded. One bug the new rule
-  exposed and both halves now guard: `wideTall`'s product is one power of two too
-  large for an even exponent, so `splitArea` read past the end of a 16-byte area
-  and panicked — the pair is now returned unchecked for the caller's own
+  not a measurement: the constraint admits several (a 17,344-byte payload fits `K`
+  from 2288 to 4335), so every texture records whether its split was pinned
+  (`Texture.ambiguous`, and an `ambiguous:` line in the CLI's summary; all 696 here
+  are ambiguous and counted as such). The palette/indices **order** and the
+  width/height derivation remain open: both orders fit, four resources apart, so
+  nothing acts on it.
+  **696 of 705 textures decode, against 3 before.** The 9 that remain are not the
+  damaged band: 6 admit no split at all, and 3 admit one whose only width pair is
+  below `widthCandidates` and are therefore reported rather than decoded.
+  `--original` writes 1,165 files (460 models + 705 textures), every one byte-exact
+  against the container's own slices — verified in Lean, not asserted. One bug the
+  new rule exposed and both halves now guard: `wideTall`'s product is one power of
+  two too large for an even exponent, so `splitArea` read past the end of a 16-byte
+  area and panicked; the pair is now returned unchecked for the caller's own
   `width * height != area` rejection to refuse.
 * **Animation, partly measured and not decoded** (`docs/DMA3D.md` §3.4): the
   records region past the `V` float pairs carries `u32 K`, `u16[K]` vertex
