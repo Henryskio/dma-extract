@@ -980,12 +980,20 @@ the table and the payloads, and which of them is shortened is exactly what
 reads the names at 3166, leaves the region unread and records the reason on the
 container (`metadataReason`) rather than throwing it away.
 
-**How the count is read.** `Container::walk_count` (both halves) walks out from
-the declared count while each next table entry is a plausible payload offset — a
-step of at least 4 bytes and at most 2 MiB — and stops where the table stops
-describing payloads. That entry is the container's length. The declared count is
-kept as `declaredCount` so the disagreement is reported, not hidden: `781` against
-`705` for the Italian `DMA3D.MMX`, `460` against `460` everywhere else.
+**How the count is read.** `Container::walk_count` (both halves) is a **repair,
+not a preference**: it runs only when the declared count does not describe the
+whole container. If the declared count already puts the table's last entry at the
+file's end, that is the count, and the walk never runs. Otherwise it walks out
+while each next table entry is a plausible payload offset — a step of at least 4
+bytes and at most 2 MiB — and stops where the table stops describing payloads,
+which is the container's own length.
+
+That condition is what keeps every other container byte-for-byte as it was. It is
+not hypothetical: the first game's version-1 `HD.mms` holds 295 resources and the
+entry after its table is plausible enough that an unconditional walk read 296 and
+broke `tests/game1.rs`. The declared count is kept as `declaredCount` so the
+disagreement is reported, not hidden: `781` against `705` for the Italian
+`DMA3D.MMX`, `460` against `460` everywhere else.
 
 **The palette rule, and what the ambiguity costs.** §11.3 measures that
 `len == 4*K + 2^e` with `max(index) < K` fits 497 of 502 but does not pin `K`:

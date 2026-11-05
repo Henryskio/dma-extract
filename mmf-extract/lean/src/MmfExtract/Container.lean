@@ -271,6 +271,15 @@ def walkCount (data : ByteArray) (offBase : Nat) (bigEndian : Bool) (declared : 
     match MmfExtract.Bytes.u32At data (offBase + 4 * i) bigEndian with
     | .ok v => v.toNat
     | .error _ => 0
+  -- A container whose declared count already puts the table's last entry at the
+  -- file's end is read as it declares. The walk is a *repair*, not a preference:
+  -- it runs only when the declared count does not describe the whole container,
+  -- which is what keeps the first game's containers (and every correct build of
+  -- the other two) byte-for-byte as they were. Reading them "the walked way"
+  -- instead would change `HD.mms` from 295 resources to 296, on the strength of
+  -- one plausible-looking table entry.
+  if entry declared == data.size then
+    return UInt16.ofNat declared
   let mut n := declared
   let mut prev := entry n
   -- The table cannot run past the file, and it cannot describe a payload that
@@ -283,6 +292,8 @@ def walkCount (data : ByteArray) (offBase : Nat) (bigEndian : Bool) (declared : 
       break
     n := n + 1
     prev := next
+    if next == data.size then
+      break
   return UInt16.ofNat n
 
 /-- Parse a container from an in-memory image. -/
@@ -343,8 +354,8 @@ def parse (path : System.FilePath) (data : ByteArray) : Except String Container 
       path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, declaredCount, offsets,
       names := Array.replicate n "", attr := ByteArray.empty, flags := ByteArray.empty,
       dimensions := #[], sizes := Array.replicate n 0, extraU32 := #[], kinds := ByteArray.empty,
-      namesEnd := payloadStart, palettes := #[], uncompressedSizes := #[], scriptMeta := none
-      metadataReason := none
+      namesEnd := payloadStart, palettes := #[], uncompressedSizes := #[],
+      scriptMeta := none, metadataReason := none
     }
 
   -- 2 bytes of padding after the offset table, then the 32-byte name fields.

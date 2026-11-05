@@ -213,6 +213,16 @@ pub struct Container {
 /// right rather than merely convenient. See `Container::declared_count`.
 fn walk_count(data: &[u8], off_base: usize, big_endian: bool, declared: usize) -> u16 {
     let entry = |i: usize| read_u32(data, off_base + 4 * i, big_endian) as usize;
+    // A container whose declared count already puts the table's last entry at the
+    // file's end is read as it declares. The walk is a *repair*, not a
+    // preference: it runs only when the declared count does not describe the
+    // whole container, which is what keeps the first game's containers (and every
+    // correct build of the other two) byte-for-byte as they were. Reading them
+    // "the walked way" instead would change `HD.mms` from 295 resources to 296,
+    // on the strength of one plausible-looking table entry.
+    if entry(declared) == data.len() {
+        return declared as u16;
+    }
     let limit = (data.len().saturating_sub(off_base)) / 4 - 1;
     let mut n = declared;
     let mut prev = entry(n);
@@ -224,6 +234,9 @@ fn walk_count(data: &[u8], off_base: usize, big_endian: bool, declared: usize) -
         }
         n += 1;
         prev = next;
+        if next == data.len() {
+            break;
+        }
     }
     n as u16
 }
