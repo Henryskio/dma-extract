@@ -224,8 +224,8 @@ def checkTextures3D (assetDir : String) : IO Bool := do
     let declared := container.declaredCount.toNat
     let last := (container.offsets.getD n 0).toNat
     IO.println s!"DMA3D.MMX: {n} resources (the header declares {declared}), {container.data.size} bytes"
-    if n != 781 then
-      IO.eprintln s!"DMA3D.MMX: walked {n} resources, expected 781"
+    if n != 705 then
+      IO.eprintln s!"DMA3D.MMX: walked {n} resources, expected 705"
       ok := false
     if declared != 705 then
       IO.eprintln s!"DMA3D.MMX: declared {declared}, expected 705"
@@ -255,20 +255,20 @@ def checkTextures3D (assetDir : String) : IO Bool := do
             ambiguous := ambiguous + 1
         | .error _ => noSplit := noSplit + 1
     IO.println s!"DMA3D.MMX: {decoded} textures decoded ({ambiguous} of them with an unpinned palette split), {outside} offsets entries outside the container, {noSplit} with no split"
-    if decoded != 695 then
-      IO.eprintln s!"DMA3D.MMX: {decoded} textures decoded, expected 695"
+    if decoded != 696 then
+      IO.eprintln s!"DMA3D.MMX: {decoded} textures decoded, expected 696"
       ok := false
-    if ambiguous != 695 then
+    if ambiguous != 696 then
       -- Every one of them is a default: the constraint does not pin a unique
       -- split, so the smallest admissible palette was read and the ambiguity
       -- is on the record.
-      IO.eprintln s!"DMA3D.MMX: {ambiguous} ambiguous, expected 695"
+      IO.eprintln s!"DMA3D.MMX: {ambiguous} ambiguous, expected 696"
       ok := false
-    if outside != 76 then
-      IO.eprintln s!"DMA3D.MMX: {outside} offsets entries outside, expected 76"
+    if outside != 0 then
+      IO.eprintln s!"DMA3D.MMX: {outside} offsets entries outside, expected 0"
       ok := false
-    if noSplit != 10 then
-      IO.eprintln s!"DMA3D.MMX: {noSplit} with no split, expected 10"
+    if noSplit != 9 then
+      IO.eprintln s!"DMA3D.MMX: {noSplit} with no split, expected 9"
       ok := false
   return ok
 

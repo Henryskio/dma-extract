@@ -566,7 +566,7 @@ mod tests {
             // not hold, and 8 admit no palette/index split at all. Those are
             // reported per-resource, not fatal -- the rule `AGENTS.md` states
             // and the one `docs/DMA3D.md` §11 measures (`docs/DMA3D.md` §11.6).
-            assert_eq!(n, 781, "the walked count, not the header's declared 705");
+            assert_eq!(n, 705, "the count the table holds, which is the header's own");
             let mut decoded = 0usize;
             let mut failed = 0usize;
             let mut square = 0usize;
@@ -619,8 +619,8 @@ mod tests {
             // was validated on. What matters is that all three readings occur
             // and that the counts are stable, not that this build's textures
             // happen to be square.
-            assert_eq!(decoded, 695, "the number of textures that decode changed");
-            assert_eq!(failed, 86, "the number of resources reported changed");
+            assert_eq!(decoded, 696, "the number of textures that decode changed");
+            assert_eq!(failed, 9, "the number of resources reported changed");
             assert_eq!(square + wide + tall, decoded);
             assert!(square > 0 && wide > 0 && tall > 0, "a reading never occurred");
             assert_eq!(square, 70, "the square count changed");
@@ -649,8 +649,8 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(checked, 695, "the number of textures that decode changed");
-            assert_eq!(failed, 86, "the number of resources reported changed");
+            assert_eq!(checked, 696, "the number of textures that decode changed");
+            assert_eq!(failed, 9, "the number of resources reported changed");
         }
     }
 }

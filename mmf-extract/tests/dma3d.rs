@@ -89,16 +89,17 @@ fn the_3d_containers_open_with_their_own_kinds() {
     let textures = Container::open(dir.join(TEXTURE_CONTAINER)).expect("open Textures");
     assert_eq!(textures.kind, ContainerKind::Textures);
     assert_eq!(textures.version, 3);
-    // The count is the one the offset table holds, not the one the header
-    // declares. The Italian `DMA3D.MMX`'s header says 705 while its table holds
-    // 782 entries, and reading only 706 of them truncated the container to
-    // 3,230,042 of its 4,019,622 bytes — which is why 704 of its 705 textures
-    // used to fail to decode. `Container::walk_count` walks the table out, and
-    // the disagreement is kept in `declared_count` rather than hidden
-    // (`docs/DMA3D.md` §11).
-    assert_eq!(textures.resource_count, 781);
+    // The count comes from the table's payload boundaries, not from the header's
+    // `N`. The Italian `DMA3D.MMX`'s table holds 782 entries of which 76 (indices
+    // 503..578) were overwritten with values such as `0xffffffff`; reading them
+    // as boundaries reported 76 resources as failures whose payloads "ran past
+    // the end of the file". They are not boundaries: dropping them leaves 706,
+    // which is 705 resources — exactly the header's own count — spanning the
+    // payload region contiguously (`docs/DMA3D.md` §11.7).
+    assert_eq!(textures.resource_count, 705);
     assert_eq!(textures.declared_count, 705);
-    assert_eq!(textures.offsets.len(), 782);
+    assert_eq!(textures.offsets.len(), 706);
+    assert_eq!(textures.offsets.len(), 706);
     assert_eq!(
         *textures.offsets.last().unwrap() as usize,
         textures.data.len(),
@@ -196,21 +197,23 @@ fn the_metadata_regions_are_measured() {
         assert_eq!(region, mmf_extract::dma3d::models_meta_len(n));
     }
 
-    // The `Textures` container is where the two readings part, and the shipped
-    // bytes do not decide between them (`docs/DMA3D.md` §11):
+    // The `Textures` container is where the two readings of the *metadata region*
+    // part. The count itself is no longer in dispute — the payload boundaries
+    // give 705, the header's own — but the region's length and the names'
+    // position cannot both be satisfied (`docs/DMA3D.md` §11.7):
     //
     // * read at the header's 705, the names end at 2862 and the region to the
     //   first payload is `29654 - 2862 - 32*705` = 4232, which is exactly
     //   `6*705 + 2` -- but the names at 2862 are garbage; the real ones start at
     //   3166, 304 bytes later;
-    // * walked to the 782 entries the table actually holds, the names start at
-    //   3166 and end at 28158, and a `6*781 + 2` region would have to reach 32846,
-    //   1192 bytes past the payload base at 29654.
+    // * the names the shipped bytes actually carry start at 3166 and, taken
+    //   32 bytes at a time, run to 28158, where a `6*705 + 2` region would have
+    //   to reach 32090 -- 2436 bytes past the payload base at 29654.
     //
-    // So the region length and the names' position cannot both be right, and the
-    // payload base -- which is what the decode reads -- does not depend on the
-    // choice. Both readings are asserted, and the disagreement is recorded, so
-    // the test fails if either stops matching the shipped bytes.
+    // So the region does not fit under either reading of where the names sit,
+    // which is why the container records the reason rather than throwing. The
+    // payload base -- what the decode reads -- does not depend on the choice, so
+    // both readings are asserted and the test fails if either stops matching.
     {
         let data = std::fs::read(dir.join(TEXTURE_CONTAINER)).expect("read textures");
         let declared = u16::from_be_bytes([data[0x22], data[0x23]]) as usize;
@@ -218,13 +221,20 @@ fn the_metadata_regions_are_measured() {
             .expect("open textures")
             .resource_count as usize;
         assert_eq!(declared, 705, "the header's declared count");
-        assert_eq!(walked, 781, "the walked count");
-        let at = 0x24 + 4 * walked;
+        // The count the table's boundaries give is the header's own, so the two
+        // readings of the *region* are what remain in dispute, not the count
+        // (`docs/DMA3D.md` §11.7).
+        assert_eq!(walked, 705, "the count the payload boundaries give");
+        // The last *boundary* is the container's own length, which is what makes
+        // the payload region complete — even though its table index (781) is past
+        // the count (705), because 76 entries between them are not boundaries.
+        let opened = Container::open(dir.join(TEXTURE_CONTAINER)).expect("open textures");
         assert_eq!(
-            u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize,
+            *opened.offsets.last().expect("has boundaries") as usize,
             data.len(),
-            "the walked count must make the container's own length"
+            "the last boundary must be the container's own length"
         );
+        assert_eq!(opened.offsets.len(), 706, "706 boundaries for 705 resources");
         let first = u32::from_be_bytes([
             data[0x24],
             data[0x25],
@@ -241,22 +251,30 @@ fn the_metadata_regions_are_measured() {
             "the documented region holds at the header's count"
         );
 
-        // Reading two: the names where they actually are.
-        let names_at_walked = 0x24 + 4 * (walked + 1) + 2;
-        assert_eq!(names_at_walked, 3166, "the walked count puts the names at 3166");
+        // Reading two: the names where they actually are. The shipped bytes put
+        // them 304 bytes past the header's reading, which is the 782-entry
+        // position — the reading whose count the payload boundaries reject.
+        let names_at_782 = 0x24 + 4 * 782 + 2;
+        assert_eq!(names_at_782, 3166, "the 782-entry reading puts the names at 3166");
         let name = |at: usize| {
             let end = data[at..at + 24].iter().position(|&b| b == 0).unwrap_or(24);
             String::from_utf8_lossy(&data[at..at + end]).to_string()
         };
-        assert_eq!(name(names_at_walked), "CreationSlotTex.TGA");
-        assert_eq!(name(names_at_walked + 32), "CreationTex.TGA");
+        assert_eq!(name(names_at_782), "CreationSlotTex.TGA");
+        assert_eq!(name(names_at_782 + 32), "CreationTex.TGA");
 
-        // And the region under the walked count does not fit, which is what the
-        // container parser records instead of failing.
-        let region_at_walked = 6 * walked + 2;
+        // And the region does not fit under either reading, which is what the
+        // container parser records instead of failing. At the header's count the
+        // names sit at 2862 (garbage, but the arithmetic closes); at 3166, where
+        // the real names are, a `6*705 + 2` region overruns the payload base.
+        let region_at_705 = 6 * 705 + 2;
         assert!(
-            names_at_walked + 32 * walked + region_at_walked > first,
-            "the walked reading's region must overrun the payload base"
+            names_at_782 + 32 * 705 + region_at_705 > first,
+            "the names' own reading's region must overrun the payload base"
+        );
+        assert!(
+            names_at_782 < names_at_782 + 32 * 705 + region_at_705,
+            "region evaluated"
         );
         let container = Container::open(dir.join(TEXTURE_CONTAINER)).expect("open textures");
         assert!(
@@ -592,7 +610,7 @@ fn the_modern_output_is_a_browsable_whole() {
         // hold, which used to abort the process (`docs/DMA3D.md` §8.1, §11).
         assert_eq!(
             summary.models + summary.failed.len(),
-            460 + 781,
+            460 + 705,
             "{dir:?}: the run must account for every resource"
         );
 

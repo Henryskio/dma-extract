@@ -1074,3 +1074,57 @@ larger, so the check is silent there and it is the Italian disc's small payloads
 that reach it. The discard rate is the honest price of the fix: **654 failures
 became 86**, and the 86 split between the damaged offset band and payloads that
 really do not describe a texture this engine could draw.
+## 11.7 The damaged offset band, and how it reads now
+
+§11.1 recorded **76 failures** of the form `range [N, N) outside a N byte buffer`,
+from table entries 503..578 whose values are garbage (`0x5f32a7e1`, `0xffffffff`,
+`0`). They are reported, not fatal, so the rest of the container extracts — which
+is why the count of *failing* resources and the count of *lost* textures have to be
+kept distinct. On the Italian disc they were 76 and 76: every one of those
+resources was unavailable.
+
+The band is not an offset table. §11.1's reading of the 304 bytes that follow it as
+"76 u32s ending in `0x0031`..`0x003d`" was an artefact of a 2-byte misalignment:
+those bytes *are* table entries 706..781, and reading a monotone offset table two
+bytes late produces exactly the shape described — a small repeating high byte and a
+low half that increases. There is no second table.
+
+**What the entries are is not established, and nothing below depends on it.** What
+is established is what to *do*, and it is the same rule the payload rule already
+stated: the byte counts win. A table entry is a payload boundary only when it is a
+plausible payload offset — at or after the first payload, at or before the
+container's own length, and strictly past the boundary already accepted, because
+the payloads are contiguous and a resource cannot be empty.
+
+Dropping the 76 that fail leaves **706 boundaries**, which is **705 resources** —
+*exactly the count the container's own header declares* — spanning 29,654..4,019,622
+with no gap, and the resource the damaged run used to swallow is recovered: the
+4,468 bytes at 2,577,290 that the old reading could not attribute to anything now
+read as a `K = 605`, 64×32 texture. That the surviving count equals the declared one
+is the check that this reading is the right one: it is the same arithmetic
+`DMA3D.MMM` obeys, where the declared count and the boundaries agree.
+
+The names move with the table and not with the count, which is what previously made
+the two readings irreconcilable: the accepted entries run to index 781, so the names
+sit at `0x24 + 4*782 + 2` = 3166 — the 782-entry reading — even though only 705 of
+those entries are boundaries. Reading them at the payload count instead (2862) gives
+garbage for every name.
+
+The cost is recorded rather than hidden: with the names at 3166 and 705 of them, a
+`6*705 + 2` region would have to reach 30,090, which is 436 bytes past the payload
+base at 29,654 — so the container still records `metadataReason` (§1.2) instead of
+inventing the region.
+
+### What this bought, measured
+
+|| before | after |
+|---|---|---|
+| resources read | 781 (76 of them failures) | **705, none failing** |
+| textures decoded | 695 | **696** |
+| resources reported | 86 | **9** |
+| `--original` files | 1,090 (76 missing) | **1,165, every one byte-exact** |
+
+The 9 that remain are not the damaged band. Measured on the shipped container, **6**
+admit no palette/index split at all, and **3** admit one whose only width pair is below
+`widthCandidates` and are therefore reported rather than decoded. The arithmetic
+closes: 696 decoded + 9 reported = 705, which is the container's own declared count.

@@ -204,41 +204,57 @@ pub struct Container {
     pub script: Option<ScriptMeta>,
 }
 
-/// The count the offset table really holds, walked out from the declared one.
+/// The offset entries that are really payload boundaries, in table order.
 ///
-/// A table entry describes a payload while the step from the previous entry is a
-/// plausible payload size: at least four bytes (a resource cannot be empty) and
-/// at most 2 MiB. The walk stops at the first entry that is not one, and that
-/// entry is the container's own length -- which is the check that makes the walk
-/// right rather than merely convenient. See `Container::declared_count`.
-fn walk_count(data: &[u8], off_base: usize, big_endian: bool, declared: usize) -> u16 {
-    let entry = |i: usize| read_u32(data, off_base + 4 * i, big_endian) as usize;
-    // A container whose declared count already puts the table's last entry at the
-    // file's end is read as it declares. The walk is a *repair*, not a
-    // preference: it runs only when the declared count does not describe the
-    // whole container, which is what keeps the first game's containers (and every
-    // correct build of the other two) byte-for-byte as they were. Reading them
-    // "the walked way" instead would change `HD.mms` from 295 resources to 296,
-    // on the strength of one plausible-looking table entry.
-    if entry(declared) == data.len() {
-        return declared as u16;
-    }
-    let limit = (data.len().saturating_sub(off_base)) / 4 - 1;
-    let mut n = declared;
-    let mut prev = entry(n);
-    while n < limit {
-        let next = entry(n + 1);
-        let step = next.saturating_sub(prev);
-        if !(4..=2 * 1024 * 1024).contains(&step) {
-            break;
+/// A table entry is a boundary only when it is a plausible payload offset: it
+/// lies inside the file (at or after the first payload, and at or before the
+/// file's own length) and it is strictly past the boundary already accepted,
+/// because the payloads are contiguous and a resource cannot be empty. Entries
+/// that fail that test are not boundaries, and the payload region is still
+/// complete — the resources simply run from one surviving boundary to the next.
+///
+/// This is what the Italian 3D game's `DMA3D.MMX` needs (`docs/DMA3D.md` §11.6):
+/// 76 of its 782 entries, at indices 503..578, were overwritten with values such
+/// as `0x5f32a7e1` and `0xffffffff`, and reading them as boundaries reported 76
+/// resources as failures whose payloads "ran past the end of the file". They are
+/// not boundaries at all. Dropping them leaves 706 boundaries — **exactly the
+/// 705 resources the container's own header declares** — spanning
+/// 29,654..4,019,622 contiguously, and the resource the damaged run used to
+/// swallow (a 4,468-byte 64×32 texture) is recovered.
+///
+/// The bound: a table cannot describe a payload that starts before it ends, so
+/// it holds at most `(first payload - off_base) / 4` entries.
+fn payload_boundaries(data: &[u8], off_base: usize, big_endian: bool) -> (Vec<u32>, usize) {
+    let entry = |i: usize| read_u32(data, off_base + 4 * i, big_endian);
+    let first = entry(0) as usize;
+    let count = if first > off_base {
+        (first - off_base) / 4
+    } else {
+        0
+    };
+    let mut out: Vec<u32> = Vec::new();
+    let mut prev: Option<u32> = None;
+    // The last index whose entry was accepted is the table's extent, because the
+    // names table follows the offset table and not the payload count. On the
+    // Italian `DMA3D.MMX` the accepted entries run to index 781, so the names sit
+    // at `0x24 + 4*782 + 2` = 3166 -- the 782-entry reading -- even though only
+    // 705 of those entries are payload boundaries. Reading the names at the
+    // payload count instead (2862) would produce garbage for every name.
+    let mut extent = 0usize;
+    for i in 0..count {
+        let v = entry(i);
+        let ordered = match prev {
+            None => true,
+            Some(p) => v > p,
+        };
+        let value = v as usize;
+        if value >= first && value <= data.len() && ordered {
+            out.push(v);
+            prev = Some(v);
+            extent = i + 1;
         }
-        n += 1;
-        prev = next;
-        if next == data.len() {
-            break;
-        }
     }
-    n as u16
+    (out, extent)
 }
 
 impl Container {
@@ -312,29 +328,19 @@ impl Container {
         let declared = declared_count as usize;
 
         let off_base = if version == 1 { 0x20 } else { 0x24 };
-        // The count the offset table really holds, walked out from the declared
-        // one. A table entry describes a payload while the step from the
-        // previous entry is a plausible payload size, so the walk stops where
-        // the table stops describing payloads -- and that entry is the
-        // container's own length. The Italian 3D game's `DMA3D.MMX` is why:
-        // its header declares 705, its table holds 782 entries, and reading only
-        // 706 of them truncated the container to 3,230,042 of its 4,019,622
-        // bytes and lost most of its textures (`docs/DMA3D.md` §11).
-        let resource_count = walk_count(&data, off_base, big_endian, declared);
+        // The count and the boundaries come from the table itself, not from the
+        // header's `N`: an entry is a payload boundary only if it is a plausible
+        // payload offset, and the payloads run from one surviving boundary to the
+        // next. See `payload_boundaries`. On the Italian 3D game's `DMA3D.MMX`
+        // this reads 705 resources — the header's own count — where the previous
+        // walk reported 76 of them as failures (`docs/DMA3D.md` §11.6).
+        let (boundaries, table_entries) = payload_boundaries(&data, off_base, big_endian);
+        if boundaries.is_empty() {
+            bail!("{}: the offset table holds no payload boundaries", path.display());
+        }
+        let resource_count = (boundaries.len() - 1) as u16;
         let n = resource_count as usize;
-        let need = off_base + 4 * (n + 1);
-        if data.len() < need {
-            bail!(
-                "{}: truncated offset table (need {}, have {})",
-                path.display(),
-                need,
-                data.len()
-            );
-        }
-        let mut offsets = Vec::with_capacity(n + 1);
-        for i in 0..=n {
-            offsets.push(read_u32(&data, off_base + 4 * i, big_endian));
-        }
+        let offsets = boundaries;
 
         let payload_start = offsets.first().copied().unwrap_or(0) as usize;
 
@@ -413,7 +419,7 @@ impl Container {
         }
 
         // 2 bytes of padding after the offset table.
-        let names_base = off_base + 4 * (n + 1) + 2;
+        let names_base = off_base + 4 * table_entries + 2;
         let names_len = 32 * n;
         if names_base + names_len > data.len() {
             bail!(
@@ -498,7 +504,7 @@ impl Container {
     }
 
         // 2 bytes of padding after the offset table.
-        let names_base = off_base + 4 * (n + 1) + 2;
+        let names_base = off_base + 4 * table_entries + 2;
 
         // Resource names: 32 bytes each, NUL padded.
         let mut names = Vec::with_capacity(n);

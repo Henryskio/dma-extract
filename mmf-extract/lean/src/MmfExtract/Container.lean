@@ -250,51 +250,57 @@ def parseScriptMeta (path : System.FilePath) (d : ByteArray) (metadataStart payl
 -- Parsing
 -------------------------------------------------------------------------------
 
-/-- The count the offset table really holds, walked out from the declared one.
+/-- The offset entries that are really payload boundaries, in table order.
 
-A table entry describes a payload while the step from the previous entry is a
-plausible payload size: at least four bytes (a resource cannot be empty) and at
-most `2 MiB` (the largest payload any of these containers holds). The walk stops
-at the first entry that is not one, and that entry is the container's own length
--- which is the check that makes the walk right rather than merely convenient.
+A table entry is a boundary only when it is a plausible payload offset: it lies
+inside the file (at or after the end of the table, and at or before the file's
+own length) and it is strictly past the boundary already accepted, because the
+payloads are contiguous and a resource cannot be empty. Entries that fail that
+test are not boundaries, and the payload region is still complete — the resources
+simply run from one surviving boundary to the next.
 
-This is a correction, not a convenience: `docs/DMA3D.md` §11 records that the
-Italian `DMA3D.MMX`'s header declares 705 while its table holds 782 entries, and
-that reading only 706 of them truncated the container to a third of its size and
-lost most of its textures.
+This is what the Italian 3D game's `DMA3D.MMX` needs (`docs/DMA3D.md` §11.6):
+76 of its 782 entries, at indices 503..578, were overwritten with values such as
+`0x5f32a7e1` and `0xffffffff`, and reading them as boundaries reported 76
+resources as failures whose payloads "ran past the end of the file". They are not
+boundaries at all. Dropping them leaves **706 boundaries — exactly the 705
+resources the container's own header declares** — spanning 29,654..4,019,622
+contiguously, and the resource the damaged run used to swallow (a 4,468-byte
+64×32 texture) is recovered.
+
+The bound: a table cannot describe a payload that starts before it ends, so it
+holds at most `(first payload - offBase) / 4` entries.
 -/
-def walkCount (data : ByteArray) (offBase : Nat) (bigEndian : Bool) (declared : Nat) : UInt16 := Id.run do
-  -- A plain integer read: the walk's own bound keeps it inside the file, and a
-  -- byte past the end reads as zero, which the step test rejects before the
-  -- entry is used for anything.
+def payloadBoundaries (data : ByteArray) (offBase : Nat) (bigEndian : Bool) :
+    List Nat × Nat := Id.run do
   let entry := fun i =>
     match MmfExtract.Bytes.u32At data (offBase + 4 * i) bigEndian with
     | .ok v => v.toNat
     | .error _ => 0
-  -- A container whose declared count already puts the table's last entry at the
-  -- file's end is read as it declares. The walk is a *repair*, not a preference:
-  -- it runs only when the declared count does not describe the whole container,
-  -- which is what keeps the first game's containers (and every correct build of
-  -- the other two) byte-for-byte as they were. Reading them "the walked way"
-  -- instead would change `HD.mms` from 295 resources to 296, on the strength of
-  -- one plausible-looking table entry.
-  if entry declared == data.size then
-    return UInt16.ofNat declared
-  let mut n := declared
-  let mut prev := entry n
-  -- The table cannot run past the file, and it cannot describe a payload that
-  -- starts before it ends.
-  let limit := (data.size - offBase) / 4 - 1
-  while n < limit do
-    let next := entry (n + 1)
-    let step := next - prev
-    if step < 4 || step > 2 * 1024 * 1024 then
-      break
-    n := n + 1
-    prev := next
-    if next == data.size then
-      break
-  return UInt16.ofNat n
+  -- The first payload starts after the table, so the table cannot run past it.
+  let first : Nat := entry 0
+  let count := if first > offBase then (first - offBase) / 4 else 0
+  let mut out : List Nat := []
+  -- The last index whose entry was accepted: the table's extent, because the
+  -- names table follows the offset table and not the payload count. On the
+  -- Italian `DMA3D.MMX` the accepted entries run to index 781, so the names sit
+  -- at `0x24 + 4*782 + 2` = 3166 — the 782-entry reading — even though only 705
+  -- of those entries are payload boundaries. Reading the names at the payload
+  -- count instead (2862) would produce garbage for every name.
+  let mut lastIndex : Nat := 0
+  for i in [0:count] do
+    let v := entry i
+    -- A payload boundary is at or after the first payload (the first entry),
+    -- at or before the file's own length, and strictly past the boundary already
+    -- accepted. The table holds at most `count` entries, so reading past it
+    -- reads names, which is why the last boundary being the file's own length
+    -- matters: anything after it fails the strictly-increasing test.
+    if !Nat.blt v first && !Nat.blt data.size v && (match out with
+      | [] => true
+      | prev :: _ => !Nat.blt v prev) then
+      out := v :: out
+      lastIndex := i
+  return (out.reverse, lastIndex + 1)
 
 /-- Parse a container from an in-memory image. -/
 def parse (path : System.FilePath) (data : ByteArray) : Except String Container := do
@@ -319,26 +325,23 @@ def parse (path : System.FilePath) (data : ByteArray) : Except String Container 
     if version == 1 then MmfExtract.Bytes.u16At data 0x1E bigEndian
     else MmfExtract.Bytes.u16At data 0x22 bigEndian
   let offBase := if version == 1 then 0x20 else 0x24
-  -- The count the offset table really holds, walked out from the declared one.
-  -- A table entry is only describing a payload while the step from the previous
-  -- entry is a plausible payload size, so the walk stops where the table stops
-  -- describing payloads -- and that last entry is the container's own length.
-  -- The Italian `DMA3D.MMX` is why this exists: its header declares 705, its
-  -- table holds 782 entries, and reading only 706 of them truncated the file to
-  -- a third of its size and lost 704 of its textures (`docs/DMA3D.md` §11).
-  let resourceCount := walkCount data offBase bigEndian (declaredCount.toNat)
-  let n := resourceCount.toNat
-  let need := offBase + 4 * (n + 1)
-  if data.size < need then
-    throw s!"{loc}: truncated offset table (need {need}, have {data.size})"
-  let mut offsets : Array UInt32 := #[]
-  for i in [0:n + 1] do
-    offsets := offsets.push (← MmfExtract.Bytes.u32At data (offBase + 4 * i) bigEndian)
+  -- The count and the boundaries come from the table itself, not from the
+  -- header's `N`: an entry is a payload boundary only if it is a plausible
+  -- payload offset, and the payloads run from one surviving boundary to the
+  -- next. See `payloadBoundaries`. On the Italian 3D game's `DMA3D.MMX` this
+  -- reads 705 resources where the header's 705 would have lost 76 of them to
+  -- overwritten table entries (`docs/DMA3D.md` §11.6).
+  let (boundaries, tableEntries) := payloadBoundaries data offBase bigEndian
+  let n := boundaries.length - 1
+  if n < 0 then
+    throw s!"{loc}: the offset table holds no payload boundaries"
+  let resourceCount := UInt16.ofNat n
+  let offsets : Array UInt32 := boundaries.toArray.map UInt32.ofNat
   let payloadStart := (offsets.getD 0 0).toNat
 
   -- Scripts containers have no names table and no picture metadata.
   if kind == .scripts && version != 1 then
-    let metadataStart := offBase + 4 * (n + 1)
+    let metadataStart := offBase + 4 * tableEntries
     let script ← parseScriptMeta path data metadataStart payloadStart n bigEndian
     return {
       path, data, kind, bigEndian, version, fileId, timestamp, resourceCount, declaredCount, offsets,
@@ -359,7 +362,7 @@ def parse (path : System.FilePath) (data : ByteArray) : Except String Container 
     }
 
   -- 2 bytes of padding after the offset table, then the 32-byte name fields.
-  let namesBase := offBase + 4 * (n + 1) + 2
+  let namesBase := offBase + 4 * tableEntries + 2
   if namesBase + 32 * n > data.size then
     throw s!"{loc}: names table does not fit (need {namesBase + 32 * n}, have {data.size})"
   let names := namesTable data namesBase n
