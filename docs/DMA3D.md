@@ -1823,3 +1823,58 @@ The named byte-level blocker is the shape *after* a shared `mod II` + `16`
 header, and the executables' `li r0, 2` against the texture reader's `li r0, 1`
 (§11.17) says that shape is a version-2 layout. That is where the next reader
 has to start, and it is a decoder question rather than an encryption one.
+
+## 11.21 The payloads are 16-byte records, and that is the layout
+
+The 17 payloads the reader accepts are not the sample they looked like, and
+naming them correctly is what makes the 443 tractable. Listed from the container
+(`cargo run --bin modlist`):
+
+| | |
+| --- | --- |
+| decodes as a mesh | 17 of 460 |
+| carries `mod II` | 74 |
+| carries both | **4** — `createBkFloorWire` (1,752 B), `BmpPict` (8,824 B), `createModShrColorHB`-adjacent, `createModDrawProfileSquare3` |
+
+So **13 of the 17 decoders carry no magic at all**, and their payloads are small:
+`Tri1..Tri5` (514-560 B), `UI4star`, `UIdmnd`, `UIsqr`, `UItri` (422-468 B),
+`Square5` (584 B), `createModFreehandPuffy` (560 B), `e.mod` (1,720 B),
+`mod` (3,386 B). `createModDrawProfileSquare3` is **2,654,687 bytes** — 2.6 MB for
+a "square profile" — and is almost certainly a coincidental fit of the reader's
+looser rules on a large payload, not a decoding.
+
+**That puts the two families in the same size range and makes them directly
+comparable, and the comparison finds the record.** `createModDrawProfileUIdmnd`
+(422 B) is 16-byte records, all three the same shape:
+
+```text
++  0: 80 25 00 00 80 3f c0 cc 4c bd c0 cc 4c 3d 00 00
++ 16: 80 25 00 00 80 3f c0 cc 4c 3d c0 cc 4c bd 00 00
++ 32: 80 25 00 00 80 3f c0 cc 4c 3d c0 cc 4c 3d 00 00
+```
+
+Read at a 4-byte stride from **offset 2**, every record is
+`f32 = 1.0`, `f32 = -0.05`, `f32 = +0.05` (`0x3f800000`, `0xbd4cccc0`,
+`0x3d4cccc0` — the bytes `00 00 80 3f` that recurred through §11.15, §11.16 and
+§11.20). `createModDrawProfileSquare5`'s records carry the same `1.0` at offset 6,
+`createModDrawProfile4Point1`'s at offset 8, and `4Point2`'s at offset 6 — the slot
+moves with the record's own 2-byte leading tag, which is why a flat stride-4 scan
+read them as garbage and why §11.15 called them *big-endian* `f32` and §11.16
+measured 4.56-7.07 bits/byte and read that as encryption.
+
+So the payload is a **stream of 16-byte records, each beginning with a 2-byte tag
+and holding little-endian `f32` fields**, and the tag tells the reader how many
+`f32`s follow and what they mean. `0x2580` on `UIdmnd`, a different tag on the
+`4Point` family, and a different one on `Square5`. That is a tagged record format,
+which is a reader this repository has not written, and it is the thing to write
+next — one tag table per family, starting from `0x2580`, which is 1,920 and is
+carried by every `UIdmnd` record in the shipped container.
+
+**What this costs the claim of the previous sections.** §11.15's "big-endian
+`f32`" was wrong twice over: the values are little-endian, and they are `f32` at
+a *tagged* stride rather than at a flat one. §11.16's entropy argument survives
+untouched — 4.56-7.07 bits/byte is still too high for a plain coordinate list —
+but its conclusion "encrypted or compressed" does not, because the same entropy
+is what a stream of `f32` fields with 24-bit mantissas produces. §11.20's
+"layout unidentified" is now identified to the record level, and the tag table is
+what remains.
