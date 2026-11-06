@@ -1289,9 +1289,14 @@ pub fn write_name_json(path: &Path, name: &str, table: &NameTable) -> Result<()>
     // must not treat `createBtSelect.38.tg` as a complete name (`docs/DMA3D.md`
     // §11.54).
     let cut: Vec<String> = table.truncated.iter().map(|n| json_string(n)).collect();
+    // An empty list is `[]`, not nothing: a JSON member with no value after the
+    // colon is invalid, and the first version of this wrote nothing when the table
+    // ends with a whole name. `json.load` rejected 11 of the 21 documents it was
+    // given, which is the third time this session a hand-written document was not
+    // checked against its reader (`docs/DMA3D.md` §11.54).
     document.push_str(&format!(
-        "    \"names the slice cut off\": {}\n",
-        if cut.is_empty() { String::new() } else { format!("[{}]", cut.join(", ")) }
+        "    \"names the slice cut off\": [{}]\n",
+        cut.join(", ")
     ));
     document.push_str("  }\n");
     document.push_str("}\n");
@@ -1332,4 +1337,58 @@ pub fn write_stream_json(path: &Path, name: &str, stream: &ValueStream) -> Resul
     std::fs::write(path, document.as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod name_json_tests {
+    use crate::dma3d::modfile::{NameTable, parse_name_table};
+
+    /// The document must be valid JSON, and it was not: the first version wrote
+    /// nothing after the colon when the table ends with a whole name, which
+    /// `json.load` rejected for 11 of the 21 documents.
+    #[test]
+    fn a_written_table_document_is_valid_json() {
+        // A table that ends whole: no sliced tail, so the list must be `[]`.
+        let mut payload: Vec<u8> = Vec::new();
+        for n in ["createBtFill.00.TGA", "createBtFill.01.TGA", "createBtFill.02.TGA"] {
+            payload.extend_from_slice(n.as_bytes());
+            payload.push(0);
+            while payload.len() % 32 != 0 {
+                payload.push(0xcc);
+            }
+        }
+        let table = parse_name_table(&payload).expect("read");
+        let path = std::env::temp_dir().join("mmf-name-table-whole.json");
+        super::write_name_json(&path, "selftest", &table).expect("write");
+
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            !text.contains("\": \n"),
+            "a member has no value after its colon"
+        );
+        for (k, line) in text.lines().enumerate() {
+            let t = line.trim();
+            if t.is_empty() || t == "{" || t == "}" {
+                continue;
+            }
+            assert!(t.starts_with('"'), "line {k} does not start with a quoted key: {t}");
+        }
+
+        // And a table whose last record was sliced: the list carries the cut name.
+        let mut sliced: Vec<u8> = Vec::new();
+        sliced.extend_from_slice(b"ct.36.tga\0");
+        sliced.extend_from_slice(&[0xcc; 8]);
+        sliced.extend_from_slice(b"createBtSelect.37.tga\0");
+        sliced.extend_from_slice(&[0xcc; 6]);
+        sliced.extend_from_slice(b"createBtSelect.38.tg");
+        let table = parse_name_table(&sliced).expect("read");
+        let path = std::env::temp_dir().join("mmf-name-table-sliced.json");
+        super::write_name_json(&path, "selftest", &table).expect("write");
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            text.contains("names the slice cut off\": [\"createBtSelect.38.tg\"]"),
+            "the sliced name is not recorded separately: {text}"
+        );
+        let _ = NameTable { names: Vec::new(), truncated: Vec::new() };
+    }
 }
