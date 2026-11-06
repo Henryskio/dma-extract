@@ -474,6 +474,92 @@ def parseNameTable (payload : ByteArray) : Except String NameTable := Id.run do
     return .error s!"{names.size} names is fewer than the 3 a table needs"
   return .ok { names }
 
+/-! ## The `f32` value stream -/
+
+/-- The shortest run of values that counts as a stream. -/
+def minStreamValues : Nat := 16
+/-- How far apart the extremes must be for a run to be a stream rather than a
+constant. -/
+def minStreamSpread : Float := 0.5
+/-- The largest magnitude a value may have and still be a coordinate. -/
+def maxStreamValue : Float := 1.0e6
+
+/-- One `f32` value stream: the payload's own numbers, with no constant slot.
+
+`docs/DMA3D.md` §11.41: 39 of the shipped payloads that no other reader claims carry
+a run of little-endian `f32` values that is long (16 or more), spread (more than 0.5
+between the extremes) and has **no slot that is constant** — which is exactly why the
+drawing-profile reader rejects them, since it requires one coordinate to be the same
+in every record to call the stream a planar profile.
+
+These are the payloads whose points are not in a plane. `createModDrawProfileOct1`
+through `Oct4` are four of them, and the rest carry large ranges (`-1050` to `495`)
+that read as world coordinates rather than normalized ones.
+
+This records the stream and deliberately does not assert a field layout: whether the
+values are `xyz` triples, `xy` pairs, or a per-record layout with something else in it
+is not readable from the bytes, and §11.32 measured that no position in a comparable
+stream holds a constant across payloads either.
+-/
+structure ValueStream where
+  /-- Byte offset the stream starts at, i.e. the phase the run was found at. -/
+  phase : Nat
+  /-- The values, in payload order. -/
+  values : Array Float
+  /-- The smallest and largest value, recorded so the stream's range is visible. -/
+  range : Float × Float
+  deriving Inhabited
+
+/-- Read an `f32` value stream out of a payload that fits no other reader.
+
+The phase is measured over 0..4, because a stream's alignment is not at a fixed
+offset and the four possible ones are all this format has. A payload whose longest
+run is under sixteen values, or whose extremes are within half a unit of each other,
+is an error, so the caller reports it rather than writing a document that describes
+nothing.
+-/
+def parseValueStream (payload : ByteArray) : Except String ValueStream := Id.run do
+  let mut best : Option (Nat × Float × Float × Array Float) := none
+  for phase in [0:4] do
+    if phase + 4 > payload.size then
+      continue
+    let mut values : Array Float := #[]
+    let mut lo := Float.inf
+    let mut hi := -Float.inf
+    let mut k := 0
+    let mut stop := false
+    while !stop do
+      let offset := phase + 4 * k
+      if offset + 4 > payload.size then
+        stop := true
+      else
+        match leF32 payload offset with
+        | Except.error _ => stop := true
+        | Except.ok v =>
+          -- The same plausibility rule the other readers use, and for the same
+          -- measured reason: a denormal is a misaligned read landing in a
+          -- neighbouring value's mantissa (§11.26), and writing one would report
+          -- noise as data.
+          if !(v.isFinite) || !(v.abs < maxStreamValue)
+              || !(v == 0.0 || v.abs >= 1.1754943508222875e-38) then
+            stop := true
+          else
+            if v < lo then lo := v
+            if v > hi then hi := v
+            values := values.push v
+            k := k + 1
+    if hi - lo > minStreamSpread && values.size >= minStreamValues then
+      match best with
+      | some (bestCount, _, _, _) =>
+          if values.size > bestCount then
+            best := some (values.size, lo, hi, values)
+      | none => best := some (values.size, lo, hi, values)
+  match best with
+  | some (_, lo, hi, values) =>
+    return .ok { phase := 0, values, range := (lo, hi) }
+  | none =>
+    return .error "no f32 run of 16 values with a spread over 0.5 fits this payload (docs/DMA3D.md 11.41)"
+
 /-- Read the drawing profile out of a `Models` payload.
 
 The reader measures the phase and the constant slot rather than assuming them. For

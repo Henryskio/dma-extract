@@ -2832,3 +2832,52 @@ one level down.
 wrong: measured directly, the 173 spread continuously from 1.1 to 6.2 bits per byte
 rather than falling into buckets, and 48 of them have no period explaining even 30% of
 their bytes. The goal's second half is not met at 306 of 460.
+
+## 11.41 The `f32` value streams are written as JSON+text, and 345 of 460 have output
+
+The probe that found r5's `0.25, 0.5, 0.0, 0.99999` in an earlier session was
+abandoned mid-measurement. Finishing it over the 154 payloads that fit no reader
+finds **39 carrying a run of little-endian `f32` values that is long (16 or more) and
+spread (more than 0.5 between the extremes) with no slot that is constant** — and that
+last part is exactly why the drawing-profile reader rejects them, since it requires
+one coordinate to be the same in every record to call a stream a planar profile.
+
+These are the payloads whose points are not in a plane. Four are
+`createModDrawProfileOct1` through `Oct4`, the same family as 213 payloads that do
+convert, and the rest carry large ranges (`-1050` to `495`) that read as world
+coordinates. `parse_value_stream` reads them and `write_stream_json` writes them:
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 115
+glTF 230   json 115   previews 230   png 935   .mod 115
+```
+
+**17 meshes + 213 profiles + 48 records + 9 tables + 19 name tables + 39 streams =
+345 of 460**, against 306 before. The Lean reader agrees exactly — `mesh 17, profile
+213, record 48, param 9, names 19, streams 39, other 115` — and the harness reports
+`all checks passed`.
+
+### What the document says, and what it refuses to say
+
+It records the values, the phase the run was found at, and the range. It states that
+the **field layout is not determined** — whether the values are `xyz` triples, `xy`
+pairs, or a per-record layout with something else in it is not readable from the
+bytes. That is the same honest form the record stream and the parameter table take,
+and the reason is the same: asserting a stride would invent geometry the payload does
+not carry, which `AGENTS.md` forbids.
+
+The reader is also checked the other way round:
+`a_stream_with_no_constant_slot_is_not_a_profile` asserts the profile reader refuses
+the payloads this one accepts, so the two cannot both claim the same bytes.
+
+The plausibility rule is the one the other readers use, for the reason §11.26 measured:
+a denormal is a misaligned read landing in a neighbouring value's mantissa, and
+writing one would report noise as data.
+
+### What is left
+
+**115 payloads** fit no reader, and the entropy figure §11.29 reported as a census is
+wrong. Measured directly over the 154 that were left then, the spread is continuous
+from 1.1 to 6.2 bits per byte rather than falling into buckets, and 48 of them had no
+period explaining even 30% of their bytes. The goal's second half is not met at 345 of
+460.

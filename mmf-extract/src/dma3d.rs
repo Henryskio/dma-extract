@@ -120,6 +120,9 @@ pub struct Extract3DReport {
     /// Payloads written as JSON+text, i.e. tables of the texture names they
     /// reference (`docs/DMA3D.md` §11.40).
     pub names: usize,
+    /// Payloads written as JSON+text, i.e. `f32` value streams with no
+    /// constant slot (`docs/DMA3D.md` §11.41).
+    pub streams: usize,
     /// Payloads that are neither a mesh nor a drawing profile, and are therefore
     /// written through as the original bytes rather than as modern geometry.
     /// Counted, not skipped: `AGENTS.md` requires a per-resource report.
@@ -400,6 +403,32 @@ fn extract_gltf(
                                                     continue;
                                                 }
                                                 Err(name_err) => {
+                                            // Neither a mesh, a profile, a record
+                                            // stream, a parameter table nor a name
+                                            // table. It may still carry an `f32` value
+                                            // stream -- long, spread, and with no
+                                            // constant slot, which is why the
+                                            // planar-profile reader rejects it
+                                            // (`docs/DMA3D.md` §11.41).
+                                            match modfile::parse_value_stream(payload) {
+                                                Ok(stream) => {
+                                                    let path = out_dir
+                                                        .join(format!("{index:05}_{stem}.json"));
+                                                    gltf::write_stream_json(&path, name, &stream)
+                                                        .with_context(|| {
+                                                            format!("writing the values of {name}")
+                                                        })?;
+                                                    report.written += 1;
+                                                    report.streams += 1;
+                                                    report.resources.push(Extracted3D {
+                                                        index,
+                                                        name: name.to_string(),
+                                                        path,
+                                                        bytes: payload.len(),
+                                                    });
+                                                    continue;
+                                                }
+                                                Err(stream_err) => {
                                             report.unconverted += 1;
                                             report.failed.push((
                                                 index,
@@ -408,7 +437,7 @@ fn extract_gltf(
                                                     "{mesh_err:#}; the profile reading also fails \
                                                      ({profile_err}); the record reading also fails \
                                                      ({record_err}); the parameter-table reading also \
-                                                     fails ({table_err}); the name-table reading also fails ({name_err})"
+                                                     fails ({table_err}); the name-table reading also fails ({name_err}); the value-stream reading also fails ({stream_err})"
                                                 ),
                                             ));
                                             // Nothing modern was produced, so the
@@ -426,6 +455,8 @@ fn extract_gltf(
                                                 bytes: payload.len(),
                                             });
                                             continue;
+                                                }
+                                            }
                                                 }
                                             }
                                     }

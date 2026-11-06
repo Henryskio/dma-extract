@@ -22,7 +22,7 @@
 //! `>= 1` and `< V`, and `V` itself never appears), so the writer subtracts
 //! one. glTF's index base is zero.
 
-use crate::dma3d::modfile::{MagicRecord, ModelMesh, NameTable, ParamTable, Profile};
+use crate::dma3d::modfile::{MagicRecord, ModelMesh, NameTable, ParamTable, Profile, ValueStream};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -1284,6 +1284,40 @@ pub fn write_name_json(path: &Path, name: &str, table: &NameTable) -> Result<()>
         .map(|n| json_string(n))
         .collect();
     document.push_str(&format!("    \"names\": [{}]\n", quoted.join(", ")));
+    document.push_str("  }\n");
+    document.push_str("}\n");
+    std::fs::write(path, document.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+/// Write an `f32` value stream as a JSON+text document.
+///
+/// `docs/DMA3D.md` §11.41: these payloads carry the numbers and no layout. The
+/// document records the values, the phase the run was found at and the range, and
+/// states that the field layout is not determined — the same honest form the record
+/// stream and the parameter table take, because asserting a stride would invent
+/// geometry the payload does not carry.
+pub fn write_stream_json(path: &Path, name: &str, stream: &ValueStream) -> Result<()> {
+    let what = "an f32 value stream with no constant slot, so not a planar drawing profile";
+    let meaning = "the values are determined; the field layout is not -- whether they are \\
+                   xyz triples, xy pairs or a per-record layout with something else in it \\
+                   is not readable from the bytes (docs/DMA3D.md 11.32, 11.41)";
+    let meaning = meaning.replace('\n', " ");
+    let mut document = String::new();
+    document.push_str("{\n");
+    document.push_str(&format!("  \"name\": {},\n", json_string(name)));
+    document.push_str(&format!("  \"what this is\": {},\n", json_string(what)));
+    document.push_str(&format!("  \"meaning\": {},\n", json_string(&meaning)));
+    document.push_str("  \"measured\": {\n");
+    document.push_str(&format!("    \"phase\": {},\n", stream.phase));
+    document.push_str(&format!("    \"count\": {},\n", stream.values.len()));
+    document.push_str(&format!(
+        "    \"range\": [{}, {}],\n",
+        stream.range.0, stream.range.1
+    ));
+    let nums: Vec<String> = stream.values.iter().map(|v| v.to_string()).collect();
+    document.push_str(&format!("    \"values\": [{}]\n", nums.join(", ")));
     document.push_str("  }\n");
     document.push_str("}\n");
     std::fs::write(path, document.as_bytes())

@@ -1070,3 +1070,151 @@ mod name_table_tests {
         assert!(parse_name_table(b"nothing here").is_err());
     }
 }
+
+/// One `f32` value stream: the payload's own numbers, with no constant slot.
+///
+/// `docs/DMA3D.md` §11.41: 39 of the shipped payloads that no other reader claims
+/// carry a run of little-endian `f32` values that is long (16 or more), spread
+/// (more than 0.5 between the extremes) and has **no slot that is constant** — which
+/// is exactly why the drawing-profile reader rejects them, since it requires one
+/// coordinate to be the same in every record to call the stream a planar profile.
+///
+/// These are the payloads whose points are not in a plane. `createModDrawProfileOct1`
+/// through `Oct4` are four of them, and the rest carry large ranges (`-1050` to `495`)
+/// that read as world coordinates rather than normalized ones.
+///
+/// This records the stream and deliberately does not assert a field layout: whether
+/// the values are `xyz` triples, `xy` pairs, or a per-record layout with something
+/// else in it is not readable from the bytes, and §11.32 measured that no position in
+/// a comparable stream holds a constant across payloads either.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueStream {
+    /// Byte offset the stream starts at, i.e. the phase the run was found at.
+    pub phase: usize,
+    /// The values, in payload order.
+    pub values: Vec<f32>,
+    /// The smallest and largest value, recorded so the stream's range is visible.
+    pub range: (f32, f32),
+}
+
+/// The shortest run of values that counts as a stream.
+const MIN_STREAM_VALUES: usize = 16;
+/// How far apart the extremes must be for a run to be a stream rather than a constant.
+const MIN_STREAM_SPREAD: f32 = 0.5;
+/// The largest magnitude a value may have and still be a coordinate.
+const MAX_STREAM_VALUE: f32 = 1.0e6;
+
+/// Read an `f32` value stream out of a payload that fits no other reader.
+///
+/// The phase is measured over 0..4, because a stream's alignment is not at a fixed
+/// offset and the four possible ones are all this format has. A payload whose longest
+/// run is under sixteen values, or whose extremes are within half a unit of each
+/// other, is an error, so the caller reports it rather than writing a document that
+/// describes nothing.
+pub fn parse_value_stream(payload: &[u8]) -> Result<ValueStream> {
+    let mut best: Option<(usize, usize, f32, f32, Vec<f32>)> = None;
+    for phase in 0..4usize {
+        if phase + 4 > payload.len() {
+            continue;
+        }
+        let mut values: Vec<f32> = Vec::new();
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        let mut k = 0usize;
+        while phase + 4 * (k + 1) <= payload.len() {
+            let at = phase + 4 * k;
+            let v = f32_at(payload, at);
+            // The same plausibility rule the other readers use, and for the same
+            // measured reason: a denormal is a misaligned read landing in a
+            // neighbouring value's mantissa (§11.26), and writing one would report
+            // noise as data.
+            let ok = v.is_finite()
+                && v.abs() < MAX_STREAM_VALUE
+                && (v == 0.0 || v.abs() >= f32::MIN_POSITIVE);
+            if !ok {
+                break;
+            }
+            if v < lo {
+                lo = v;
+            }
+            if v > hi {
+                hi = v;
+            }
+            values.push(v);
+            k += 1;
+        }
+        if hi - lo > MIN_STREAM_SPREAD
+            && values.len() >= MIN_STREAM_VALUES
+            && best.as_ref().map(|b| values.len() > b.0).unwrap_or(true)
+        {
+            best = Some((values.len(), phase, lo, hi, values));
+        }
+    }
+    match best {
+        Some((_, phase, lo, hi, values)) => Ok(ValueStream {
+            phase,
+            values,
+            range: (lo, hi),
+        }),
+        None => bail!(
+            "no f32 run of {MIN_STREAM_VALUES} values with a spread over {MIN_STREAM_SPREAD} \\
+             fits this payload (`docs/DMA3D.md` §11.41)"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod value_stream_tests {
+    use super::*;
+
+    /// The measured shape: a run of `f32` values that is long and spread, with no
+    /// slot constant, so the planar-profile reader refuses it.
+    #[test]
+    fn a_long_spread_stream_is_read() {
+        let mut payload: Vec<u8> = Vec::new();
+        for k in 0..20 {
+            payload.extend_from_slice(&(k as f32 * 0.3).to_le_bytes());
+        }
+        let stream = parse_value_stream(&payload).expect("the payload carries a stream");
+        assert_eq!(stream.values.len(), 20);
+        assert_eq!(stream.phase, 0);
+        // The extremes are the payload's own values, computed the same way the
+        // payload's bytes were: 19 * 0.3 in `f32` is 5.7000003, not 5.7.
+        assert_eq!(stream.range, (0.0, 19.0f32 * 0.3));
+    }
+
+    /// A payload with no constant slot is *not* a planar drawing profile, which is
+    /// exactly why the profile reader rejects these and this reader takes them.
+    #[test]
+    fn a_stream_with_no_constant_slot_is_not_a_profile() {
+        let mut payload: Vec<u8> = Vec::new();
+        for k in 0..20 {
+            payload.extend_from_slice(&(k as f32 * 0.3).to_le_bytes());
+        }
+        assert!(
+            crate::dma3d::modfile::parse_profile(&payload).is_err(),
+            "a stream with no constant slot was read as a drawing profile"
+        );
+    }
+
+    /// Too few values to be a stream.
+    #[test]
+    fn too_few_values_is_not_a_stream() {
+        let mut payload: Vec<u8> = Vec::new();
+        for k in 0..4 {
+            payload.extend_from_slice(&(k as f32).to_le_bytes());
+        }
+        assert!(parse_value_stream(&payload).is_err());
+    }
+
+    /// A run whose extremes are within half a unit of each other is a constant, not
+    /// a stream.
+    #[test]
+    fn a_narrow_run_is_not_a_stream() {
+        let mut payload: Vec<u8> = Vec::new();
+        for k in 0..20 {
+            payload.extend_from_slice(&(k as f32 * 0.01).to_le_bytes());
+        }
+        assert!(parse_value_stream(&payload).is_err());
+    }
+}
