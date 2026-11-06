@@ -2614,3 +2614,49 @@ documented in this repository, and applying it needs the loader to run.
 So the blocker is now a single specific thing: the relocation entry that patches
 `0x1633ec`. Everything else about the routine is located, and the `u32` record schema
 that follows the `mod II` magic is behind this one branch.
+
+## 11.37 The "even bytes mostly zero" group is a parameter table, not geometry
+
+§11.29 and §11.36 flagged 61 payloads whose even bytes are mostly zero as "structured"
+and therefore the ones a reader might reach. Reading them thoroughly says otherwise,
+and the reason is worth writing down before another reader is attempted against them.
+
+The group is 60 payloads. Their odd bytes — the half that carry data — span the **full
+`0x00..0xff` range** in most of them, not the narrow `0x75..0x8c` that one member
+(`createModShapeBtProp`, 108 bytes) suggested. Reading them as big-endian `u16` values
+gives small integers, but the values are not sorted, not a permutation of a range, and
+not a length-prefixed list.
+
+Reading them as little-endian `f32` is where it looked briefly promising: `createMod*
+` payload 5 has a clean run of 32 floats from phase 3, `0.25, 0.5, 0.5, 0.0, 0.99999,
+…`, and **57 of the 60 have every value inside `[0, 1]`** — which is what a normalized
+coordinate or a parameter table looks like. It does not hold up as a *stream*: the runs
+are short (8, 9, 11 floats in the examples), several are entirely zeros, and the group
+has no common phase. A stream that is mostly zeros read as floats is a zero-padded
+table being read at the wrong width, not a coordinate list.
+
+So the shape is: **a table of small values stored at alternating byte positions**, with
+zero fill. That is a parameter table, an index table, or a packed enum — the kind of
+record the game reads to configure a UI element or a material, not to describe its
+outline. `createModShapeBtProp`, `fileCreationSlot`, `createModShrMaterial*` are all
+configuration records, which is consistent with what the names already said.
+
+### What this means for the residue
+
+The four shapes of §11.29 now measure as:
+
+| shape | count | what it is |
+| --- | --- | --- |
+| even bytes mostly zero | 60 | a small-value table, not geometry |
+| odd bytes mostly zero | 20 | the same, at the other parity |
+| mid entropy, mixed | 69 | not determined |
+| high entropy | 81 | no readable structure |
+
+Of the 460 payloads, 230 convert. The 60 + 20 of the table shape are **not convertible
+to glTF**, and a reader for them would have to emit something other than geometry —
+a JSON parameter dump beside the verbatim bytes, which is what the modern output for a
+configuration record honestly is. That is a different output target from the one this
+project set for models, and it needs a decision, not a measurement.
+
+The goal's second half is not met: 230 of 460 glTFs, and 80 of the remaining 230 are
+now known to be configuration records rather than models.
