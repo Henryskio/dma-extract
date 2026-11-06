@@ -408,8 +408,8 @@ and that naming stays per `AGENTS.md`. Its own document is
   modes, because its figures are `<img>` tags and `--original` writes nothing a
   browser can draw — listing every file by name put 1,089 payloads on that page
   and drew none of them.
-* **The 3D game's textures are all now read, and the Italian disc's 86 failures are
-  9** (`docs/DMA3D.md` §11, §11.7). The Italian `DMA3D.MMX` is **4,019,622 bytes**
+* **The 3D game's textures are all now read, and the Italian disc's extraction
+  reports nothing** (`docs/DMA3D.md` §11, §11.7, §11.14). The Italian `DMA3D.MMX` is **4,019,622 bytes**
   and this workspace's carve was 3,230,042 — it cut exactly on a table entry, so
   nothing before the cut looked wrong. Its table holds 782 entries, of which **76
   (indices 503..578) were overwritten with values such as `0x5f32a7e1` and
@@ -440,9 +440,14 @@ and that naming stays per `AGENTS.md`. Its own document is
   are ambiguous and counted as such). The palette/indices **order** and the
   width/height derivation remain open: both orders fit, four resources apart, so
   nothing acts on it.
-  **696 of 705 textures decode, against 3 before.** The 9 that remain are not the
-  damaged band: 6 admit no split at all, and 3 admit one whose only width pair is
-  below `widthCandidates` and are therefore reported rather than decoded.
+  **705 of 705 textures now decode, against 3 before, and the run reports no
+  failures at all.** The nine that used to fail are **8-bit coverage masks** —
+  the sub-format `docs/PICTURES.md` §4.2 documents for the picture containers,
+  where an 8-bit payload with no 1024-byte prefix is an alpha mask rather than a
+  palette image. That is why §11.11 could not find a palette in them: they have
+  none. `white`, `tan` and `purple` carry bodies using only the values `0` and `1`.
+  The area is the largest power of two the payload leaves room for after a 4-byte
+  header, which lands on 16x16, 8x8 or 32x16 (§11.14).
   `--original` writes 1,165 files (460 models + 705 textures), every one byte-exact
   against the container's own slices — verified in Lean, not asserted. One bug the
   new rule exposed and both halves now guard: `wideTall`'s product is one power of

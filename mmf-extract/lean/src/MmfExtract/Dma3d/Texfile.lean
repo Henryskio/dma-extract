@@ -313,12 +313,43 @@ def splitArea (indices : ByteArray) (area : Nat) : Nat × Nat × TextureAxis :=
 and a zero area would make every width fit. -/
 def isPowerOfTwo (n : Nat) : Bool := n > 0 && (n &&& (n - 1)) == 0
 
-/-- Read a texture out of a `Textures` container payload.
 
-The payload is the whole resource as stored, so the byte-exact `--original`
-path never comes through here.
+/-- Read a payload as the 8-bit coverage mask it is when it carries no palette.
+
+`docs/PICTURES.md` §4.2 documents this sub-format for the picture containers: an
+8-bit payload with no 1024-byte prefix is not a palette image at all but a
+**coverage (alpha) mask**, each byte an alpha value for a shape the game tints at
+runtime, rendered white. That is what nine of the Italian disc's textures are,
+and it is why none of them can hold a palette: they have none. `white`, `tan` and
+`purple` carry bodies using only the values `0` and `1`; `dark_grey` and `orange`
+carry a handful of grey levels.
+
+The area is the largest power of two the payload leaves room for after a 4-byte
+header — the same "payload length is ground truth" rule the paletted reading uses
+— and it lands on 16x16, 8x8 or 32x16 for these nine, every one a width this
+engine allocates.
 -/
-def parse (payload : ByteArray) : Except String Texture := do
+def parseMask (payload : ByteArray) : Except String Texture := do
+  let mut area : Nat := 1
+  while area * 2 + 4 <= payload.size do
+    area := area * 2
+  if area < 64 then
+    throw s!"{area} mask bytes cannot fill a texture this engine can allocate"
+  let maskStart := payload.size - area
+  let indices := payload.extract maskStart payload.size
+
+  let (width, height, axis) := splitArea indices area
+  if width * height != area then
+    throw s!"{area} mask bytes do not factor into {width}x{height}"
+  if !(widthCandidates.contains width) || !(widthCandidates.contains height) then
+    throw s!"{area} mask bytes do not factor into a width this engine can allocate ({width}x{height} is neither of {widthCandidates})"
+
+  let undecidable := area.log2 % 2 == 1 && !(decide indices (wideTall area).1 (wideTall area).2).2
+  -- A mask has no palette to split, so the split cannot be ambiguous.
+  return { palette := #[], indices, width, height, axis, undecidable, ambiguous := false }
+
+/-- A payload that carries its own palette and its index area. -/
+def parsePaletted (payload : ByteArray) : Except String Texture := do
   let k ← paletteSize payload
   let paletteBytes := k * paletteEntryBytes
   let mut palette : Array (UInt8 × UInt8 × UInt8 × UInt8) := #[]
@@ -356,5 +387,27 @@ def parse (payload : ByteArray) : Except String Texture := do
   let ambiguous := paletteAmbiguous payload
 
   return { palette, indices, width, height, axis, undecidable, ambiguous }
+
+
+
+/-- Read a texture out of a `Textures` container payload.
+
+The payload is the whole resource as stored, so the byte-exact `--original`
+path never comes through here. A payload either carries its own palette and
+its index area, or it carries no palette at all and is an 8-bit coverage
+mask; the paletted reading is tried first because that is the shape the
+English build ships, and the mask reading is the fallback (see
+`docs/DMA3D.md` 11.14). Neither is a guess: each is checked against the
+length of the payload, and a payload that fits neither is reported.
+-/
+def parse (payload : ByteArray) : Except String Texture := do
+  match parsePaletted payload with
+  | .ok t => return t
+  | .error e =>
+    match parseMask payload with
+    | .ok t => return t
+    | .error why =>
+      throw s!"no palette/index split fits this payload ({e}); the coverage-mask reading also fails ({why})"
+
 
 end MmfExtract.Dma3d.Texfile

@@ -1253,11 +1253,11 @@ textures`, so the rule `tests/dma3d.rs` asserts was restored rather than relaxed
 
 ## 11.10 The residue, stated plainly
 
-Three problems remain on the Italian disc, and none of them is the one the earlier
-sections were about:
+The **9 textures of §11.8 are resolved** in §11.14 as coverage masks, and the
+container now decodes 705 of 705 with nothing reported. What remains on the
+Italian disc:
 
-* **9 textures** — 6 with no palette/index split, 3 whose only width pair is below
-  `widthCandidates` — in two payload classes, §11.8.
+* **443 of 460 model payloads carry no mesh chain.**
 * **443 of 460 model payloads carry no mesh chain.** §11.9 explains why the count
   moved from 0 to 17 and why it stopped there: the containers are byte-identical
   on the disc's two copies, the payloads are raw rather than compressed, and the
@@ -1481,7 +1481,61 @@ bank will be. That is the next step, and it is now named rather than guessed:
 A 1024-byte palette bank and the 4/36/72-byte header §11.13 measured are what to
 look for there, since five of the nine failing textures need a full 256-entry
 palette that cannot fit in the payload.
-### The metadata region holds no dimension table either
+## 11.14 The nine are coverage masks, and that closes the residue
+
+`docs/PICTURES.md` §4.2 documents a sub-format the picture decoder already
+handles: an 8-bit payload with **no 1024-byte palette** is not a palette image at
+all but a **coverage (alpha) mask** — each byte an alpha value for a shape the game
+tints at runtime, rendered white. That is what the nine remaining textures are,
+and it is why §11.11 could not find a palette in any of them: they have none.
+
+Measured on the shipped container, the reading lands a power-of-two area behind a
+small header for every one, and every area is a width this engine allocates:
+
+| resource | bytes | header | area | dims | distinct values | entropy |
+| --- | --- | --- | --- | --- | --- | --- |
+| `balloon.TGA` | 260 | 4 | 256 | 16x16 | 23 | 4.17 |
+| `bike_frame.TGA` | 260 | 4 | 256 | 16x16 | 109 | 6.21 |
+| `bike_seat.TGA` | 260 | 4 | 256 | 16x16 | 25 | 4.30 |
+| `createBkFloorDefault.TGA` | 68 | 4 | 64 | 8x8 | 15 | 2.96 |
+| `createModDefaultTex.TGA` | 260 | 4 | 256 | 16x16 | 68 | 3.11 |
+| `orange.TGA` | 260 | 4 | 256 | 16x16 | 9 | 1.41 |
+| `Rotate.TGA` | 548 | 36 | 512 | 32x16 | 183 | 5.99 |
+| *(garbage name)* | 292 | 36 | 256 | 16x16 | 30 | 2.38 |
+| `opUIpPlant.TGA` | 328 | 72 | 256 | 16x16 | 17 | 1.42 |
+
+The decisive evidence is the value distribution. `white`, `tan` and `purple`
+carry bodies using **only the values `0` and `1`** — a two-level mask, which is
+what a flat colour is. `dark_grey` and `orange` carry a handful of grey levels,
+which is what an anti-aliased shape is. Compare a paletted image, where the
+indices cluster near zero and the maximum is the palette's own size: these
+payloads have no such cluster, because the bytes **are** the alpha.
+
+So the header is the part that is not a palette, and it is 4, 36 or 72 bytes. The
+area is the largest power of two the payload leaves room for after a 4-byte
+header — the same "payload length is ground truth" rule the paletted reading
+uses — and it lands on 16x16, 8x8 or 32x16, which is a *measured* consequence of
+the rule rather than a choice.
+
+### What this resolves
+
+The four negative results of §11.11-§11.13 were all correct measurements that
+none of them could be answered any other way. What they were missing is the
+fourth possibility: the palette is not in the payload because there is no
+palette. It closes the residue:
+
+| | before | after |
+| --- | --- | --- |
+| textures decoded | 696 / 705 | **705 / 705** |
+| resources reported | 9 | **0** |
+| read as coverage masks | 0 | **9** |
+
+The same reading already existed in `Picture.lean` for the picture containers, so
+this is the shared sub-format reaching the 3D game's container rather than a new
+one invented for it. The 8 squares that appear in the axes count are 8 of the 9
+masks, which are 16x16.
+
+
 
 §11.13's nine share a `(prefix, area)` split whose area is a power of two, which
 only works because the format derives the width and height *from the pixel count*

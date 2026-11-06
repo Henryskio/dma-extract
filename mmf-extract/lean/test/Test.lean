@@ -255,8 +255,8 @@ def checkTextures3D (assetDir : String) : IO Bool := do
             ambiguous := ambiguous + 1
         | .error _ => noSplit := noSplit + 1
     IO.println s!"DMA3D.MMX: {decoded} textures decoded ({ambiguous} of them with an unpinned palette split), {outside} offsets entries outside the container, {noSplit} with no split"
-    if decoded != 696 then
-      IO.eprintln s!"DMA3D.MMX: {decoded} textures decoded, expected 696"
+    if decoded != 705 then
+      IO.eprintln s!"DMA3D.MMX: {decoded} textures decoded, expected 705"
       ok := false
     if ambiguous != 696 then
       -- Every one of them is a default: the constraint does not pin a unique
@@ -267,8 +267,8 @@ def checkTextures3D (assetDir : String) : IO Bool := do
     if outside != 0 then
       IO.eprintln s!"DMA3D.MMX: {outside} offsets entries outside, expected 0"
       ok := false
-    if noSplit != 9 then
-      IO.eprintln s!"DMA3D.MMX: {noSplit} with no split, expected 9"
+    if noSplit != 0 then
+      IO.eprintln s!"DMA3D.MMX: {noSplit} with no split, expected 0"
       ok := false
   return ok
 

@@ -138,6 +138,16 @@ impl Texture {
 /// The payload is the whole resource as stored, so the byte-exact `--original`
 /// path never comes through here.
 pub fn parse(payload: &[u8]) -> Result<Texture> {
+    match parse_paletted(payload) {
+        Ok(t) => Ok(t),
+        Err(e) => parse_mask(payload).with_context(|| {
+            format!("no palette/index split fits this payload ({e}); the mask reading also fails")
+        }),
+    }
+}
+
+/// A payload that carries its own palette and its index area.
+fn parse_paletted(payload: &[u8]) -> Result<Texture> {
     let k = palette_size(payload).context("no palette/index split fits this payload")?;
     let palette_bytes = k * PALETTE_ENTRY_BYTES;
     let mut palette = Vec::with_capacity(k);
@@ -193,6 +203,56 @@ pub fn parse(payload: &[u8]) -> Result<Texture> {
         height,
         axis,
         undecidable,
+    })
+}
+
+/// Read a payload as the 8-bit coverage mask it is when it carries no palette.
+///
+/// `docs/PICTURES.md` §4.2 documents this sub-format for the picture containers:
+/// an 8-bit payload with no 1024-byte prefix is not a palette image at all but a
+/// **coverage (alpha) mask**, each byte an alpha value for a shape the game tints
+/// at runtime, rendered white. That is what nine of the Italian disc's textures
+/// are — measured in `docs/DMA3D.md` §11.14 — and it is why none of them can
+/// hold a palette: they have none. `white`, `tan` and `purple` carry bodies using
+/// only the values `0` and `1`; `dark_grey` and `orange` carry a handful of grey
+/// levels. All nine have a power-of-two area behind a 4, 36 or 72-byte header,
+/// and every area lands on a width this engine allocates.
+///
+/// The area is the largest power of two the payload leaves room for after a
+/// 4-byte header, which is the same rule the palette reading uses (the payload
+/// length is ground truth) and lands on 16x16, 8x8 or 32x16 for these nine.
+fn parse_mask(payload: &[u8]) -> Result<Texture> {
+    let mut area = 1usize;
+    while area * 2 <= payload.len().saturating_sub(4) {
+        area *= 2;
+    }
+    if area < 64 {
+        bail!("{area} mask bytes cannot fill a texture this engine can allocate");
+    }
+    let at = payload.len() - area;
+    let indices = payload[at..].to_vec();
+    let (width, height, axis) = split_area(indices.as_slice(), area);
+    if width * height != area {
+        bail!("{area} mask bytes do not factor into {width}x{height}");
+    }
+    if !WIDTH_CANDIDATES.contains(&width) || !WIDTH_CANDIDATES.contains(&height) {
+        bail!(
+            "{area} mask bytes do not factor into a width this engine can allocate \
+             ({width}x{height} is neither size of {WIDTH_CANDIDATES:?})"
+        );
+    }
+    Ok(Texture {
+        palette: Vec::new(),
+        indices,
+        width,
+        height,
+        axis,
+        // A mask's orientation is undecidable whenever the area is not a square,
+        // and decided exactly as a palette image's would be.
+        undecidable: area.trailing_zeros() % 2 == 1 && {
+            let (w, h) = wide_tall(area);
+            !decide(payload[at..].as_ref(), w, h).1
+        },
     })
 }
 
@@ -568,6 +628,7 @@ mod tests {
             // and the one `docs/DMA3D.md` §11 measures (`docs/DMA3D.md` §11.6).
             assert_eq!(n, 705, "the count the table holds, which is the header's own");
             let mut decoded = 0usize;
+            let mut masks = 0usize;
             let mut failed = 0usize;
             let mut square = 0usize;
             let mut wide = 0usize;
@@ -596,11 +657,19 @@ mod tests {
                     t.height
                 );
                 let largest = t.indices.iter().copied().max().unwrap_or(0);
-                assert!(
-                    usize::from(largest) < t.palette.len(),
-                    "{}: index {largest} names no palette entry",
-                    c.name(i)
-                );
+                // A paletted image's index must name an entry that exists; a
+                // coverage mask has no palette at all, and its bytes are alpha
+                // values rather than indices, so the assertion does not apply to
+                // it (`docs/DMA3D.md` §11.14).
+                if !t.palette.is_empty() {
+                    assert!(
+                        usize::from(largest) < t.palette.len(),
+                        "{}: index {largest} names no palette entry",
+                        c.name(i)
+                    );
+                } else {
+                    masks += 1;
+                }
                 assert_eq!(t.to_rgba().len(), area * 4);
                 match t.axis {
                     Axis::Square => square += 1,
@@ -619,11 +688,13 @@ mod tests {
             // was validated on. What matters is that all three readings occur
             // and that the counts are stable, not that this build's textures
             // happen to be square.
-            assert_eq!(decoded, 696, "the number of textures that decode changed");
-            assert_eq!(failed, 9, "the number of resources reported changed");
+            assert_eq!(decoded, 705, "the number of textures that decode changed");
+            assert_eq!(failed, 0, "the number of resources reported changed");
             assert_eq!(square + wide + tall, decoded);
             assert!(square > 0 && wide > 0 && tall > 0, "a reading never occurred");
-            assert_eq!(square, 70, "the square count changed");
+            // 70 squares from the paletted reading, plus 8 of the 9 coverage masks
+            // which are 16x16 (`docs/DMA3D.md` 11.14).
+            assert_eq!(square, 78, "the square count changed");
         }
 
         /// The measured payload length must be `4*K + area` exactly, so a
@@ -636,6 +707,7 @@ mod tests {
             };
             let mut checked = 0usize;
             let mut failed = 0usize;
+            let mut masks = 0usize;
             for i in 0..c.resource_count as usize {
                 let payload = c.payload(i);
                 // The same accounting: a payload the container does not hold,
@@ -644,13 +716,28 @@ mod tests {
                 match parse(payload) {
                     Err(_) => failed += 1,
                     Ok(t) => {
-                        assert_eq!(t.palette.len() * 4 + t.indices.len(), payload.len());
+                        // A paletted image's payload is `4*K + area` exactly; a
+                        // coverage mask is a small header plus the area, and the
+                        // header is the part that is not a palette
+                        // (`docs/DMA3D.md` §11.14).
+                        if t.palette.is_empty() {
+                            masks += 1;
+                            assert!(
+                                t.indices.len() <= payload.len()
+                                    && payload.len() - t.indices.len() < t.indices.len(),
+                                "{}: the mask header is not smaller than the mask",
+                                c.name(i)
+                            );
+                        } else {
+                            assert_eq!(t.palette.len() * 4 + t.indices.len(), payload.len());
+                        }
                         checked += 1;
                     }
                 }
             }
-            assert_eq!(checked, 696, "the number of textures that decode changed");
-            assert_eq!(failed, 9, "the number of resources reported changed");
+            assert_eq!(checked, 705, "the number of textures that decode changed");
+            assert_eq!(failed, 0, "the number of resources reported changed");
+            assert_eq!(masks, 9, "the number of payloads read as coverage masks changed");
         }
     }
 }
