@@ -1269,3 +1269,42 @@ the width/height derivation, the metadata region — is characterised in §11.8 
 §1.2 of `PICTURES.md`, with the measurements that bound each, and §11.8's answer
 to the order question is a negative result: the shipped bytes do not contain the
 discriminator.
+## 11.11 The texture residue, per payload
+
+§11.8 sized the two classes; this is what each of the nine actually admits, which
+is what a next reader needs in order not to redo the enumeration. For every power
+of two `area` that fits the payload, `K = (len - area) / 4` is what the format can
+supply, and `max(payload[4K..]) + 1` is what its own bytes demand.
+
+Under the documented palette-first order:
+
+| resource | name | bytes | `K` supplied (max) | `K` demanded (min) | what it admits |
+| --- | --- | --- | --- | --- | --- |
+| 6 | `bike_frame.TGA` | 260 | 64 | 76 | nothing |
+| 7 | `bike_seat.TGA` | 260 | 64 | 110 | nothing |
+| 11 | `createBkFloorDefault.TGA` | 68 | 16 | 238 | nothing |
+| 14 | `createModDefaultTex.TGA` | 260 | 64 | 206 | nothing |
+| 500 | *(name is garbage)* | 292 | 72 | 130 | nothing |
+| 687 | `opUIpPlant.TGA` | 328 | 81 | 182 | nothing |
+| 4 | `balloon.TGA` | 260 | — | — | area 4 → 2×2, area 8 → 4×2 |
+| 22 | `orange.TGA` | 260 | — | — | area 4 → 2×2, 8 → 4×2, 16 → 4×4, 32 → 8×4 |
+| 123 | `Rotate.TGA` | 548 | — | — | area 4 → 2×2, 8 → 4×2, 16 → 4×4 |
+
+**Six of the nine need a palette of 76..238 entries in a payload that supplies at
+most 16..81**, so the palette is not in the payload for them, whichever way the
+split is taken. The other three admit only sub-width areas.
+
+**Under the reverse order** (palette at the end) four of the nine acquire a
+readable split — `orange` 8×8 (`K = 49`), `Rotate` 16×8 (`K = 105`), resource 500
+16×8 (`K = 41`) and `opUIpPlant` 16×16 (`K = 18`) — and that is the whole of the
+699-vs-696 difference §11.8 measured. The rest are unchanged.
+
+**The shared-palette hypothesis does not survive.** A 260-byte payload leaves
+exactly a 4-byte prefix for 256 bytes of area, which is the shape a palette stored
+outside the payload would allow, and it is the reason the class is 260 bytes. It
+does not close: `white`, `tan` and `purple` carry bodies using only the values `0`
+and `1`, which is what a two-colour flat texture looks like, and a two-entry
+palette is 8 bytes — more than the 4 the payload leaves. The container's metadata
+region, which is where a shared palette would be named, does not fit at all (§1.2).
+So the class is a sub-format nothing in this repository has read, and the
+executable is what reads it.
