@@ -1710,3 +1710,51 @@ Two facts from this trace that constrain whatever the routine turns out to do:
 
 This is where the trace stops this session. What it leaves is a named function
 address one `px` away, not an unlocated reader.
+
+## 11.19 The trace reaches a delegated vtable, and that is the wall
+
+§11.18 assumed the constructors store a *static* vtable pointer at offset 0, as
+`stw r0, 0(r3)` suggests. Reading the sub-constructor at `0x179ef0` disposes of
+that:
+
+```text
+0x00179ef0  lwz r4, 0(r4)     ; the argument
+0x00179ef4  lwz r0, 4(r4)     ; a pointer out of the argument's offset 4
+0x00179f00  stw r0, 0(r3)     ; stored as this object's offset 0
+0x00179f04  blr
+```
+
+So the object's vtable slot is **copied from the object it delegates to**, not
+from a fixed table in the data section. That is a CodeWarrior C++ pattern (an
+adapter or a ref-counted handle), and it means `ReadData`'s
+`lwz r12, 0xc(r12)` reads a slot of a structure that is only known at run time,
+from wherever `this->0x50` was reached.
+
+The static-reading recipe this session built stops here, and it stops for a
+structural reason rather than a tooling one: with the vtable reached through an
+argument, the routine is not `px`-able from the binary alone. Reading it needs
+either a run-time observation (spawn the game with a debugger and break at
+`0x1633ec`, then inspect `r12`) or further static tracing upward to whatever set
+`this->0x50`, which is several levels above `ReadData`.
+
+That is recorded as the wall rather than as a reason to stop, because it is a
+different kind of blocker from §11.16's: not "the bytes are unreadable" but "the
+next step is a debugger, not a disassembler, and this repository has no
+executable to run".
+
+## Where the 3D goal stands, in one place
+
+| | state | evidence |
+| --- | --- | --- |
+| textures, modern | **met** | 705/705 decoded, 0 reported, no `failed` line |
+| textures, `--original` | **met** | 705/705 byte-exact, checked in Lean |
+| models, `--original` | **met** | 460/460 byte-exact, checked in Lean |
+| models, modern | **not met** | 17/460 glTFs |
+| container integrity | **met** | 705 payload boundaries, 0 out of range |
+
+So every byte of the 3D game's shipped resources is recovered byte-exactly, and
+the modern conversion of the models is what is blocked — by a reader this
+session located (`0x1632c8`), named the payload routine of (`this->0x50` slot
+`0x0c`), and then found to be reachable only at run time. That is the honest
+boundary, and it is written down so the next person does not have to re-derive
+it.
