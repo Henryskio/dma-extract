@@ -441,7 +441,10 @@ and that naming stays per `AGENTS.md`. Its own document is
   width/height derivation remain open: both orders fit, four resources apart, so
   nothing acts on it.
   **705 of 705 textures now decode, against 3 before, and the run reports no
-  failures at all.** The nine that used to fail are **8-bit coverage masks** —
+  failures at all.** The **models are 118 glTFs from 460 payloads** — 17 meshes plus
+  101 drawing profiles (`docs/DMA3D.md` §11.25, §11.26) — with the remaining 342
+  reported per resource rather than skipped. Before the profile reader the same run
+  wrote 17 glTFs and 443 `.mod` files. The nine that used to fail are **8-bit coverage masks** —
   the sub-format `docs/PICTURES.md` §4.2 documents for the picture containers,
   where an 8-bit payload with no 1024-byte prefix is an alpha mask rather than a
   palette image. That is why §11.11 could not find a palette in them: they have

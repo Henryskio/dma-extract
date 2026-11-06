@@ -399,20 +399,80 @@ fn every_3d_payload_round_trips_byte_exactly() {
         )
         .expect("extract models");
         let mut meshes = 0usize;
+        let mut profiles = 0usize;
         let mut passthrough = 0usize;
         for entry in &report.resources {
             let payload = container.payload(entry.index);
             match mmf_extract::dma3d::modfile::parse_mesh(payload) {
                 Err(_) => {
-                    // No mesh: the payload is written through unchanged.
-                    passthrough += 1;
-                    assert_eq!(
-                        std::fs::read(&entry.path).expect("read passthrough"),
-                        payload,
-                        "model {}: payload without a mesh is not byte-exact",
-                        entry.index
-                    );
-                    continue;
+                    // No mesh chain. It may still be a `createMod` drawing
+                    // profile, written as a glTF line loop
+                    // (`docs/DMA3D.md` §11.25); if it is not, the payload is
+                    // written through unchanged and counted.
+                    match mmf_extract::dma3d::modfile::parse_profile(payload) {
+                        Ok(profile) => {
+                            profiles += 1;
+                            // The points are the payload's own bytes at the
+                            // measured phase, minus the constant slot. Reading
+                            // them back independently is what stops a phase or
+                            // slot that happens to pass the reader's threshold
+                            // from being emitted as geometry.
+                            let records = (payload.len() - profile.phase) / 16;
+                            assert_eq!(
+                                profile.points.len(),
+                                records,
+                                "model {}: the profile holds {} points for {} records",
+                                entry.index,
+                                profile.points.len(),
+                                records
+                            );
+                            for (k, point) in profile.points.iter().enumerate() {
+                                let at = profile.phase + 16 * k;
+                                for (j, value) in point.iter().enumerate() {
+                                    let slot = if j < profile.constant_slot {
+                                        j
+                                    } else {
+                                        j + 1
+                                    };
+                                    let stored = f32::from_le_bytes([
+                                        payload[at + 4 * slot],
+                                        payload[at + 4 * slot + 1],
+                                        payload[at + 4 * slot + 2],
+                                        payload[at + 4 * slot + 3],
+                                    ]);
+                                    assert_eq!(
+                                        *value, stored,
+                                        "model {}: record {k} slot {slot} differs from the payload",
+                                        entry.index
+                                    );
+                                }
+                                let marker = f32::from_le_bytes([
+                                    payload[at + 4 * profile.constant_slot],
+                                    payload[at + 4 * profile.constant_slot + 1],
+                                    payload[at + 4 * profile.constant_slot + 2],
+                                    payload[at + 4 * profile.constant_slot + 3],
+                                ]);
+                                assert_eq!(
+                                    marker.to_bits(),
+                                    profile.marker.to_bits(),
+                                    "model {}: record {k} marker differs from the payload",
+                                    entry.index
+                                );
+                            }
+                            continue;
+                        }
+                        Err(_) => {
+                            passthrough += 1;
+                            assert_eq!(
+                                std::fs::read(&entry.path).expect("read passthrough"),
+                                payload,
+                                "model {}: payload that is neither a mesh nor a \
+                                 profile is not byte-exact",
+                                entry.index
+                            );
+                            continue;
+                        }
+                    }
                 }
                 Ok(mesh) => {
                     // The records the extractor located, so the comparison can
@@ -499,15 +559,35 @@ fn every_3d_payload_round_trips_byte_exactly() {
                 }
             }
         }
-        eprintln!("{meshes} glTF models, {passthrough} payloads written through");
+        eprintln!(
+            "{meshes} mesh glTFs, {profiles} profile glTFs, {passthrough} payloads written through"
+        );
         // Both discs are measured and neither count is a target. The English
         // disc carries 144 mesh-bearing payloads; the Italian disc's carry 17,
         // now that the chain is located structurally rather than by the magic
         // at offset 0 (`docs/DMA3D.md` §11.9).
         // none at all (`docs/DMA3D.md` §10), so a run on it writes every
         // payload through and reports zero glTFs. What must hold on either is
-        // the accounting: every payload is either a glTF or a passthrough.
-        assert_eq!(meshes + passthrough, container.resource_count as usize);
+        // the accounting: every payload is a mesh, a profile, or a
+        // passthrough, and the three counts close on the container's own.
+        assert_eq!(
+            meshes + profiles + passthrough,
+            container.resource_count as usize,
+            "the three model outputs do not account for every payload"
+        );
+        assert_eq!(
+            report.profiles, profiles,
+            "the report's profile count differs from what was written"
+        );
+        assert_eq!(
+            report.unconverted, passthrough,
+            "the report's unconverted count differs from what was written"
+        );
+        assert_eq!(
+            report.failed.len(),
+            passthrough,
+            "a payload that is neither a mesh nor a profile was not reported"
+        );
     }
 
     // ---- the glTF plus its `.tail` reconstructs the payload ----
@@ -525,8 +605,19 @@ fn every_3d_payload_round_trips_byte_exactly() {
             Some(&tmp.join("modern/textures")),
         )
         .expect("extract models");
-        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        // A payload that is neither a mesh nor a drawing profile is reported,
+        // not skipped: `AGENTS.md` requires the run to say what it could not
+        // convert. The count is the ones that fit neither reader, and the
+        // accounting closes on the container's own.
+        let neither = (0..container.resource_count as usize)
+            .filter(|i| {
+                mmf_extract::dma3d::modfile::parse_mesh(container.payload(*i)).is_err()
+                    && mmf_extract::dma3d::modfile::parse_profile(container.payload(*i)).is_err()
+            })
+            .count();
+        assert_eq!(report.failed.len(), neither, "the reported failures are not the unconverted");
         assert_eq!(report.written, container.resource_count as usize);
+        assert_eq!(report.unconverted, neither);
 
         let mut with_tail = 0usize;
         let mut tail_bytes = 0usize;
@@ -604,17 +695,32 @@ fn the_modern_output_is_a_browsable_whole() {
             .expect("models is a selectable type");
         let summary = mmf_extract::cli::run(dir, &tmp, &selection, false, false)
             .expect("extract the 3D game");
-        // Every asset is either a written file or a reported failure, so the
-        // two counts must be the containers' own: 460 models plus the 781
-        // textures the `DMA3D.MMX` offset table really holds. On the Italian
-        // disc the run writes the 460 model payloads through (no payload carries
-        // a mesh) and the textures whose layout fits, and reports the rest —
-        // among them the 76 offsets entries that name a range the file does not
-        // hold, which used to abort the process (`docs/DMA3D.md` §8.1, §11).
+        // Every asset is written: a mesh as a glTF, a drawing profile as a glTF
+        // line loop, and a payload that is neither as the original bytes behind
+        // a report. So the written count is the containers' own -- 460 models
+        // plus the 705 textures the `DMA3D.MMX` offset table really holds -- and
+        // the reported failures are exactly the payloads that fit neither
+        // reader, counted rather than skipped (`docs/DMA3D.md` §8.1, §11.9,
+        // §11.25).
         assert_eq!(
-            summary.models + summary.failed.len(),
+            summary.models,
             460 + 705,
-            "{dir:?}: the run must account for every resource"
+            "{dir:?}: the run must write every resource"
+        );
+        let unconverted = (0..460)
+            .filter(|i| {
+                let path = dir.join(MODEL_CONTAINER);
+                let data = std::fs::read(&path).expect("read the model container");
+                let c = mmf_extract::container::Container::parse(path, data)
+                    .expect("open the model container");
+                mmf_extract::dma3d::modfile::parse_mesh(c.payload(*i)).is_err()
+                    && mmf_extract::dma3d::modfile::parse_profile(c.payload(*i)).is_err()
+            })
+            .count();
+        assert_eq!(
+            summary.failed.len(),
+            unconverted,
+            "{dir:?}: the reported failures are not the payloads that fit no reader"
         );
 
         // ---- the index page, and every reference in it ----

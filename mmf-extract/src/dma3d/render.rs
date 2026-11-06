@@ -19,7 +19,7 @@
 //! Everything is integer and fixed-size, so a model of any vertex count
 //! rasterises in bounded time.
 
-use crate::dma3d::modfile::ModelMesh;
+use crate::dma3d::modfile::{ModelMesh, Profile};
 
 /// Side of the square preview in pixels.
 pub const PREVIEW_PIXELS: usize = 256;
@@ -203,5 +203,108 @@ pub fn render(mesh: &ModelMesh) -> Preview {
         }
     }
 
+    Preview { rgba, covered }
+}
+
+/// Rasterise a `createMod` drawing profile into a preview.
+///
+/// `docs/DMA3D.md` §11.25: a profile is a `f32` point stream, and the engine
+/// tints and extrudes it at runtime. That tessellation is not in the payload, so
+/// this draws the **outline** — the point stream itself, closed — rather than a
+/// surface it would have to invent. The projection is fitted to the stream's own
+/// bounds, so a profile fills the square whatever its scale.
+pub fn render_profile(profile: &Profile) -> Preview {
+    let width = PREVIEW_PIXELS;
+    let height = PREVIEW_PIXELS;
+    let mut rgba = vec![0u8; width * height * 4];
+
+    let points = &profile.points;
+    if points.len() < 2 {
+        return Preview {
+            rgba,
+            covered: 0,
+        };
+    }
+
+    // The bounds of the two axes that actually vary. One coordinate is constant
+    // across every record (`docs/DMA3D.md` §11.25), and projecting along it is
+    // what makes the preview a picture of the profile rather than a sliver.
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in points {
+        for j in 0..3 {
+            if p[j] < min[j] {
+                min[j] = p[j];
+            }
+            if p[j] > max[j] {
+                max[j] = p[j];
+            }
+        }
+    }
+    // The two widest axes carry the picture.
+    let mut axes: Vec<usize> = (0..3).collect();
+    axes.sort_by_key(|a| std::cmp::Reverse((max[*a] - min[*a]).to_bits() as i32));
+    let (ax, ay) = (axes[0], axes[1]);
+    let span_x = (max[ax] - min[ax]).max(1.0e-6);
+    let span_y = (max[ay] - min[ay]).max(1.0e-6);
+    let margin = 8.0;
+    let usable = (PREVIEW_PIXELS as f32) - 2.0 * margin;
+    let scale = (usable / span_x).min(usable / span_y);
+    let project = |p: &[f32; 3]| -> (f32, f32) {
+        (
+            margin + (p[ax] - min[ax]) * scale,
+            margin + (p[ay] - min[ay]) * scale,
+        )
+    };
+
+    let put = |rgba: &mut Vec<u8>, x: usize, y: usize| {
+        if x < width && y < height {
+            let at = (y * width + x) * 4;
+            rgba[at] = 240;
+            rgba[at + 1] = 240;
+            rgba[at + 2] = 240;
+            rgba[at + 3] = 255;
+        }
+    };
+    // Bresenham on the closed loop: the last edge back to the first point is
+    // part of a profile's shape, exactly as it is of the glTF's index list.
+    let mut segments: Vec<([f32; 3], [f32; 3])> = Vec::new();
+    for pair in points.windows(2) {
+        segments.push((pair[0], pair[1]));
+    }
+    if points.len() > 2 {
+        segments.push((points[points.len() - 1], points[0]));
+    }
+    for (a, b) in segments {
+        let (x0, y0) = project(&a);
+        let (x1, y1) = project(&b);
+        let mut x = x0.round() as isize;
+        let mut y = y0.round() as isize;
+        let (xe, ye) = (x1.round() as isize, y1.round() as isize);
+        let dx = (xe - x).abs();
+        let dy = (ye - y).abs();
+        let sx = if x < xe { 1 } else { -1 };
+        let sy = if y < ye { 1 } else { -1 };
+        let mut err = dx - dy;
+        loop {
+            if x >= 0 && y >= 0 {
+                put(&mut rgba, x as usize, y as usize);
+            }
+            if x == xe && y == ye {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 > -dy {
+                err -= dy;
+                x += sx;
+            }
+            if e2 < dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
+    let covered = rgba.chunks_exact(4).filter(|p| p[3] != 0).count();
     Preview { rgba, covered }
 }

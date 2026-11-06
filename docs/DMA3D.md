@@ -2108,3 +2108,81 @@ decision, and it is a format decision rather than a decoding one: a `createMod`
 profile emitted as a `glTF` line loop is honest and lossless about what the payload
 holds, whereas emitting it as a surface would invent geometry the payload does not
 contain.
+
+## 11.26 The profile reader is implemented, and the model output goes from 17 to 118
+
+`src/dma3d/modfile.rs::parse_profile` implements the shape §11.25 measured, and
+`src/dma3d.rs::extract_gltf` tries it after `parse_mesh` fails. The extraction on
+the Italian disc now reports:
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 342
+glTF 118   previews 118   png 823   .mod 342   total files 1419
+```
+
+**17 mesh glTFs, 101 profile glTFs, 342 payloads written through.** Before this,
+the same run wrote 17 glTFs and 443 `.mod` files. So the reader converts 101 of the
+443 that had no reader, and the accounting closes: `17 + 101 + 342 = 460`.
+
+### What the reader does, and what it refuses
+
+The reader measures the phase (0..8) and the constant slot (0..4) rather than
+assuming them, because the payload's prefix length is not in the payload — the same
+reason §11.22 recorded `mod II` at offsets 3, 24 and 92. For each pair it asks:
+
+* is one slot **bit-identical** across every record the payload leaves room for, and
+  is that constant exactly `0.0` or exactly `1.0`;
+* are the other three slots plausible coordinates in at least 70% of the records;
+* do at least two records carry a varying value that is not zero.
+
+Three checks keep the reader honest, and each was a way it could have lied:
+
+**The marker must be bit-identical, not merely near.** Comparing within an epsilon
+let a denormal (`9.18e-35`, `5.51e-34`) pass as zero, and the two payloads that
+carried those are unreadable-name records whose bytes are not a point stream.
+
+**`plausible` rejects denormals.** A shifted boundary lands inside a neighbouring
+`f32`'s mantissa and yields about `1e-40`, which no coordinate in this game takes.
+Admitting them let a payload of identical padding be read as a profile at phase 3
+with a marker of exactly `0.0` — which is how that test was caught.
+
+**A payload of padding is not a profile.** It has the constant slot and nothing in
+the varying ones, so the two-nonzero-records rule rejects it.
+
+The unit tests are `src/dma3d/modfile.rs::profile_tests`
+(`a_profile_pays_for_its_points`, `a_denormal_in_the_marker_slot_is_not_a_zero`,
+`a_payload_of_padding_is_not_a_profile`,
+`a_payload_too_short_for_a_profile_is_reported`), and `tests/dma3d.rs` re-reads every
+accepted payload and compares each point against the payload's own bytes at the
+measured phase and slot — so a phase that merely passed the threshold cannot be
+emitted as geometry.
+
+### The 342, reported rather than skipped
+
+A payload that fits neither reader is **counted in `report.failed` and written
+through as the original bytes**, per `AGENTS.md`. The run's `failed:` line names each
+one with the reason. That is the deliberate shape: the alternative is a silent skip,
+which is what the earlier turns did and what hid the size of the residue.
+
+### The output is a line loop, and why
+
+`gltf::write_profile_gltf` writes mode `2` (`LINES`) with the index list
+`0, 1, …, n-1, 0`, closing the outline. `render::render_profile` draws the same
+closed outline into the preview. Both are chosen because the engine's
+profile-to-surface tessellation is **not in the payload**, so emitting a surface
+would invent geometry the resource does not hold.
+
+### What is still open
+
+**The 342.** 101 of 460 converted is real progress and is not the goal; the goal is
+all 460. The 342 split into at least two groups that §11.15 already named —
+`createModShrMaterial*`, `file*` icons, `createModShapePrim*`, UI records — and
+those need their own readers, not a looser version of this one. Making the threshold
+looser would fit more payloads and would also fit payloads that are not profiles,
+which is the failure mode `AGENTS.md` forbids.
+
+**The Lean port.** The reader is in the Rust reference only. `src/cli.rs` calls it
+through `convert_models`, which is the Rust half, so the counts above are what a real
+run produces; but `AGENTS.md` requires both halves, and the Lean core still reports
+every model payload as "not ported to Lean yet". That is the next piece of work, not
+a caveat about the numbers above.

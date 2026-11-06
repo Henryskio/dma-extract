@@ -22,7 +22,7 @@
 //! `>= 1` and `< V`, and `V` itself never appears), so the writer subtracts
 //! one. glTF's index base is zero.
 
-use crate::dma3d::modfile::ModelMesh;
+use crate::dma3d::modfile::{ModelMesh, Profile};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -670,6 +670,14 @@ impl Accessor {
 /// `materials` supplies the textures in payload order; the mesh references
 /// them all through its single primitive. When there are none the primitive is
 /// written with no material, which is a plain-viewable untextured model.
+/// The bare file stem of `path`, without its extension.
+fn file_stem_of(path: &std::path::Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model")
+        .to_string()
+}
+
 pub fn write_gltf(
     path: &Path,
     name: &str,
@@ -943,4 +951,137 @@ mod gltf_tests {
         assert_eq!(back.normals, mesh.normals);
         assert_eq!(back.texcoords, uv, "the coordinates did not round-trip");
     }
+}
+
+/// Write a `createMod` drawing profile as a glTF 2.0 line loop.
+///
+/// `docs/DMA3D.md` §11.25: the 443 payloads that carry no mesh chain are `f32`
+/// point streams, and the engine tints and extrudes them at runtime. That
+/// tessellation is not in the payload, so writing these as a **line loop** is the
+/// lossless choice — it emits exactly the vertices the resource holds and invents
+/// no triangles. Emitting them as surfaces would add geometry the payload does not
+/// contain, which `AGENTS.md` forbids as a guess.
+///
+/// The document is the same self-contained glTF 2.0 shape `write_gltf` produces,
+/// with one primitive of mode `2` (`LINES`) whose indices close the loop:
+/// `0, 1, …, n-1, 0`.
+pub fn write_profile_gltf(
+    path: &std::path::Path,
+    name: &str,
+    profile: &Profile,
+) -> Result<()> {
+    let points = &profile.points;
+    if points.len() < 2 {
+        bail!("{}: a line loop needs at least two points", name);
+    }
+
+    // ---- the binary buffer: indices, then positions ----
+    let mut buffer = Vec::new();
+    let pad4 = |buf: &mut Vec<u8>| {
+        while buf.len() % 4 != 0 {
+            buf.push(0);
+        }
+    };
+    let n = points.len();
+    // The payload's points close the loop: `0, 1, ..., n-1, 0`. A drawing
+    // profile is a closed outline the game tints and extrudes, so the closing
+    // edge back to the first point is part of the shape and not an artefact.
+    let indices_start = buffer.len();
+    for i in 0..n as u32 {
+        buffer.extend_from_slice(&i.to_le_bytes());
+    }
+    buffer.extend_from_slice(&0u32.to_le_bytes());
+    let indices_len = buffer.len() - indices_start;
+    pad4(&mut buffer);
+
+    let positions_start = buffer.len();
+    for p in points {
+        for c in p {
+            buffer.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let positions_len = buffer.len() - positions_start;
+    pad4(&mut buffer);
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in points {
+        for j in 0..3 {
+            if p[j] < min[j] {
+                min[j] = p[j];
+            }
+            if p[j] > max[j] {
+                max[j] = p[j];
+            }
+        }
+    }
+
+    let accessors = vec![
+        Accessor {
+            offset: indices_start,
+            length: indices_len,
+            // UNSIGNED_INT: the loop closes, so the index count is n + 1 and
+            // the widths a u16 would need for the largest shipped payload are
+            // exceeded by none of them, but u32 keeps the reader uniform.
+            component_type: 5125,
+            kind: "SCALAR",
+            count: n + 1,
+            min_max: None,
+        },
+        Accessor {
+            offset: positions_start,
+            length: positions_len,
+            component_type: 5126,
+            kind: "VEC3",
+            count: n,
+            min_max: Some([min[0], min[1], min[2], max[0], max[1], max[2]]),
+        },
+    ];
+
+    let buffer_views: Vec<String> = accessors
+        .iter()
+        .map(|a| {
+            format!(
+                " {{\n  \"buffer\": 0,\n  \"byteOffset\": {},\n  \"byteLength\": {},\n  \"target\": {}\n }}",
+                a.offset,
+                a.length,
+                // 34963 = ELEMENT_ARRAY_BUFFER for the index view, 34962 =
+                // ARRAY_BUFFER for the position view. The buffer holds exactly
+                // two views in that order.
+                if a.component_type == 5125 { 34963 } else { 34962 }
+            )
+        })
+        .collect();
+    let accessor_json: Vec<String> = accessors
+        .iter()
+        .enumerate()
+        .map(|(i, a)| a.json(i))
+        .collect();
+
+    let bin_name = format!("{}.bin", file_stem_of(path));
+    let document = format!(
+        r#"{{"asset":{{"version":"2.0","generator":"mmf-extract (DMA3D §11.25)"}},
+"scene": 0,
+"scenes": [{{"nodes": [0]}}],
+"nodes": [{{"name": {name}, "mesh": 0}}],
+"meshes": [{{"name": {name}, "primitives": [{{"attributes": {{"POSITION": 1}},
+"indices": 0, "mode": 2}}]}}],
+"accessors": [{accessors}],
+"bufferViews": [{views}],
+"buffers": [{{"byteLength": {len}, "uri": "{bin}"}}]}}"#,
+        name = json_string(name),
+        accessors = accessor_json.join(",
+ "),
+        views = buffer_views.join(",
+ "),
+        len = buffer.len(),
+        bin = json_string(&bin_name),
+    );
+
+    std::fs::write(path, document.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    let bin = path.with_file_name(bin_name);
+    std::fs::write(&bin, &buffer)
+        .with_context(|| format!("writing {}", bin.display()))?;
+    Ok(())
 }

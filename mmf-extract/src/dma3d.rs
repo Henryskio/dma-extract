@@ -108,6 +108,13 @@ pub struct Extract3DReport {
     /// Textures written whose palette/index split the payload does not pin, so
     /// the palette read is the smallest admissible one (`docs/DMA3D.md` §11).
     pub ambiguous: usize,
+    /// Payloads written as a glTF line loop, i.e. drawing profiles rather than
+    /// meshes (`docs/DMA3D.md` §11.25).
+    pub profiles: usize,
+    /// Payloads that are neither a mesh nor a drawing profile, and are therefore
+    /// written through as the original bytes rather than as modern geometry.
+    /// Counted, not skipped: `AGENTS.md` requires a per-resource report.
+    pub unconverted: usize,
 }
 
 /// Extract every model payload of a `Models` container.
@@ -260,24 +267,85 @@ fn extract_gltf(
         let payload = container.payload(index);
         let stem = output_stem(container, index);
 
+        // A payload is a mesh chain, or a `createMod` drawing profile, or
+        // neither. The mesh reading is tried first because it is the shape the
+        // 17 shipped geometry resources carry; a drawing profile is the f32
+        // record stream of §11.25, written as a glTF line loop; and neither is
+        // written through as the original bytes, counted as unconverted rather
+        // than skipped (`AGENTS.md` requires the report).
         let mesh = match modfile::parse_mesh(payload) {
             Ok(m) => m,
-            Err(_) => {
-                // No mesh in this payload: written through unchanged so nothing
-                // is lost, and counted as a model that is not geometry.
-                let path = out_dir.join(format!("{index:05}_{stem}.mod"));
-                std::fs::write(&path, payload)
-                    .with_context(|| format!("writing {}", path.display()))?;
-                report.written += 1;
-                report.resources.push(Extracted3D {
-                    index,
-                    name: name.to_string(),
-                    path,
-                    bytes: payload.len(),
-                });
-                continue;
+            Err(mesh_err) => {
+                match modfile::parse_profile(payload) {
+                    Ok(profile) => {
+                        let path = out_dir.join(format!("{index:05}_{stem}.gltf"));
+                        gltf::write_profile_gltf(&path, name, &profile)
+                            .with_context(|| format!("writing the profile of {name}"))?;
+                        // The preview, so the index page shows the profile's
+                        // own outline beside it rather than a broken image.
+                        // Drawn from the point stream, not from a surface: the
+                        // engine's tessellation of a profile is not in the
+                        // payload and inventing one would be a guess.
+                        let preview = render::render_profile(&profile);
+                        let preview_path =
+                            out_dir.join(format!("{index:05}_{stem}.preview.png"));
+                        gltf::encode_png(
+                            &preview.rgba,
+                            render::PREVIEW_PIXELS,
+                            render::PREVIEW_PIXELS,
+                        )
+                        .and_then(|png| {
+                            std::fs::write(&preview_path, png)
+                                .map_err(|e| anyhow::anyhow!("{e}"))
+                                .map_err(Into::into)
+                        })
+                        .with_context(|| format!("writing the preview of {name}"))?;
+                        if preview.covered == 0 {
+                            eprintln!(
+                                "warning: {}: model {index} '{name}': the profile preview \
+                                 covers no pixels",
+                                container.path.display()
+                            );
+                            report
+                                .failed
+                                .push((index, name.to_string(), "preview covers no pixels".into()));
+                        }
+                        report.written += 1;
+                        report.profiles += 1;
+                        report.resources.push(Extracted3D {
+                            index,
+                            name: name.to_string(),
+                            path,
+                            bytes: payload.len(),
+                        });
+                        continue;
+                    }
+                    Err(profile_err) => {
+                        report.unconverted += 1;
+                        report.failed.push((
+                            index,
+                            name.to_string(),
+                            format!("{mesh_err:#}; the profile reading also fails ({profile_err})"),
+                        ));
+                        // Nothing modern was produced, so the payload is written
+                        // through unchanged: `--original` is the reference, and a
+                        // resource this build cannot convert must not be lost.
+                        let path = out_dir.join(format!("{index:05}_{stem}.mod"));
+                        std::fs::write(&path, payload)
+                            .with_context(|| format!("writing {}", path.display()))?;
+                        report.written += 1;
+                        report.resources.push(Extracted3D {
+                            index,
+                            name: name.to_string(),
+                            path,
+                            bytes: payload.len(),
+                        });
+                        continue;
+                    }
+                }
             }
         };
+
 
         // Materials: the textures this payload names, embedded from the PNGs
         // the `Textures` container produced. Six payloads name theirs and none

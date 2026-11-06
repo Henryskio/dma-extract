@@ -112,7 +112,14 @@ fn u16_at(bytes: &[u8], off: usize) -> u16 {
 /// sections, so a plausibility test has to reject those as well as absurd
 /// magnitudes before anything is believed.
 fn plausible(f: f32) -> bool {
-    f.is_finite() && f.abs() < 1.0e7
+    f.is_finite()
+        && f.abs() < 1.0e7
+        // A denormal is the signature of a **misaligned** read: a shifted
+        // boundary lands inside the mantissa of a neighbouring `f32` and
+        // produces a value around `1e-40` that no coordinate in this game
+        // takes. Admitting them is how a payload whose bytes are not a point
+        // stream was billed as a profile at a phase the payload does not carry.
+        && (f == 0.0 || f.abs() >= f32::MIN_POSITIVE)
 }
 
 /// Parse the mesh chain out of a `.mod` payload.
@@ -456,5 +463,202 @@ mod real_files {
             ui += 1;
         }
         assert!(ui > 0, "no UI records found");
+    }
+}
+
+/// One decoded `createMod` drawing profile.
+///
+/// `docs/DMA3D.md` §11.25: the 443 payloads that carry no mesh chain are a second
+/// shape in the same container — a **`f32` point stream**. Each 16-byte record
+/// holds four little-endian `f32`s in which **one slot is a constant** and the
+/// other three vary, and the constant says which: `1.0` is what a *vertex* of the
+/// mesh chain carries (`src/dma3d/modfile.rs` checks `abs(w - 1.0) < 1e-6`), `0.0`
+/// is what a *normal* carries (`abs(w) < 1e-6`). A drawing profile is a point
+/// stream in a plane, so exactly one of its three coordinates is constant, and
+/// the engine tints and extrudes it at runtime — which is why the payloads are
+/// small and why none of them holds a triangle list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Profile {
+    /// Byte offset the record stream starts at, after the variable-length
+    /// prefix. It is one of 0..8, and it is *measured* from the payload, not
+    /// assumed: the prefix length is what makes every earlier flat-stride scan
+    /// read these payloads as garbage (§11.15) and as high entropy (§11.16).
+    pub phase: usize,
+    /// Which of the four slots holds the constant, 0..4.
+    pub constant_slot: usize,
+    /// The constant itself, `0.0` or `1.0`.
+    pub marker: f32,
+    /// The records, in payload order, as the three varying slots.
+    pub points: Vec<[f32; 3]>,
+}
+
+impl Profile {
+    /// Number of records the stream holds.
+    pub fn record_count(&self) -> usize {
+        self.points.len()
+    }
+}
+
+/// Read a drawing profile out of a payload that carries no mesh chain.
+///
+/// The reader measures the phase and the constant slot rather than assuming
+/// them, because the header's own length is the prefix and it is not in the
+/// payload: `mod II` sits at offset 3 in one resource and at 24 in another
+/// (§11.9, §11.22), and the record stream starts after it. For every
+/// `(phase, slot)` pair the reader asks whether one slot is constant across all
+/// the records the payload leaves room for, whether the other three are
+/// plausible coordinates in at least 70% of them, and whether at least two
+/// records carry a value that is not zero — that last one keeps a payload of
+/// padding from reading as a profile.
+///
+/// A payload that fits no pair is an error, which the caller reports per
+/// resource rather than skipping (`AGENTS.md`).
+pub fn parse_profile(payload: &[u8]) -> Result<Profile> {
+    let mut best: Option<(usize, usize, usize, f32, Vec<[f32; 3]>)> = None;
+    for phase in 0..8usize {
+        if payload.len() < phase + 3 * 16 {
+            continue;
+        }
+        let records = (payload.len() - phase) / 16;
+        for slot in 0..4usize {
+            let mut points = Vec::with_capacity(records);
+            let mut plausible_records = 0usize;
+            let mut nonconstant_records = 0usize;
+            let mut marker = f32::NAN;
+            let mut marker_holds = true;
+            for record in 0..records {
+                let at = phase + 16 * record;
+                let mut quad = [0f32; 4];
+                for j in 0..4 {
+                    quad[j] = f32_at(payload, at + 4 * j);
+                }
+                if record == 0 {
+                    marker = quad[slot];
+                    // The marker is a stored constant, so it is *bit-identical*
+                    // across the records. Comparing within an epsilon let a
+                    // denormal (9.18e-35, 5.51e-34) pass as zero, and the two
+                    // payloads that did carry those are unreadable-name records
+                    // whose bytes are not a point stream at all.
+                    if marker.to_bits() != 0.0f32.to_bits()
+                        && marker.to_bits() != 1.0f32.to_bits()
+                    {
+                        marker_holds = false;
+                    }
+                } else if quad[slot].to_bits() != marker.to_bits() {
+                    marker_holds = false;
+                }
+                let mut point = [0f32; 3];
+                let mut all_plausible = true;
+                let mut any_nonzero = false;
+                for j in 0..3 {
+                    point[j] = quad[if j < slot { j } else { j + 1 }];
+                    if !plausible(point[j]) {
+                        all_plausible = false;
+                    }
+                    if point[j] != 0.0 {
+                        any_nonzero = true;
+                    }
+                }
+                if all_plausible {
+                    plausible_records += 1;
+                    if any_nonzero {
+                        nonconstant_records += 1;
+                    }
+                }
+                points.push(point);
+            }
+            if !marker_holds {
+                continue;
+            }
+            if plausible_records * 10 < records * 7 || nonconstant_records < 2 {
+                continue;
+            }
+            // Prefer the pair that explains the most records, then the one with
+            // the most records carrying real coordinates.
+            let score = records * 100 + nonconstant_records;
+            let better = best
+                .as_ref()
+                .map(|b| score > b.0)
+                .unwrap_or(true);
+            if better {
+                best = Some((score, phase, slot, marker, points));
+            }
+        }
+    }
+    match best {
+        Some((score, phase, slot, marker, points)) => {
+            let _ = score;
+            Ok(Profile {
+                phase,
+                constant_slot: slot,
+                marker,
+                points,
+            })
+        }
+        None => bail!("no f32 point stream fits this payload (`docs/DMA3D.md` §11.25)"),
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    /// A payload the reader accepts is the payload's own bytes at the measured
+    /// phase with the constant slot removed — not a coincidence of thresholds.
+    #[test]
+    fn a_profile_pays_for_its_points() {
+        // Four records of `[1.0, x, y, z]`, the vertex shape: `1.0` is the
+        // constant slot and the other three are the point.
+        let mut payload: Vec<u8> = Vec::new();
+        for k in 0..4u8 {
+            let (x, y, z) = (0.25 * k as f32, -0.5 + 0.25 * k as f32, 0.75 - 0.25 * k as f32);
+            payload.extend_from_slice(&1.0f32.to_le_bytes());
+            payload.extend_from_slice(&x.to_le_bytes());
+            payload.extend_from_slice(&y.to_le_bytes());
+            payload.extend_from_slice(&z.to_le_bytes());
+        }
+        let profile = parse_profile(&payload).expect("the payload reads as a profile");
+        assert_eq!(profile.constant_slot, 0);
+        assert_eq!(profile.marker.to_bits(), 1.0f32.to_bits());
+        assert_eq!(profile.points.len(), 4);
+        for (k, point) in profile.points.iter().enumerate() {
+            assert_eq!(point[0], 0.25 * k as f32);
+            assert_eq!(point[1], -0.5 + 0.25 * k as f32);
+            assert_eq!(point[2], 0.75 - 0.25 * k as f32);
+        }
+    }
+
+    /// The constant must be bit-identical. A denormal in the slot is not a zero,
+    /// and reading it as one was how unreadable-name payloads were billed as
+    /// profiles.
+    #[test]
+    fn a_denormal_in_the_marker_slot_is_not_a_zero() {
+        let mut payload: Vec<u8> = Vec::new();
+        for _ in 0..4 {
+            payload.extend_from_slice(&1.0e-40f32.to_le_bytes()); // a denormal
+            payload.extend_from_slice(&0.5f32.to_le_bytes());
+            payload.extend_from_slice(&0.5f32.to_le_bytes());
+            payload.extend_from_slice(&0.5f32.to_le_bytes());
+        }
+        assert!(
+            parse_profile(&payload).is_err(),
+            "a denormal constant slot was read as 0.0"
+        );
+    }
+
+    /// A payload of padding is not a profile: it has the constant slot, but
+    /// nothing in the varying ones.
+    #[test]
+    fn a_payload_of_padding_is_not_a_profile() {
+        let mut payload = vec![0u8; 64];
+        payload.extend_from_slice(&1.0f32.to_le_bytes());
+        payload.extend_from_slice(&1.0f32.to_le_bytes());
+        assert!(parse_profile(&payload).is_err(), "padding read as a profile");
+    }
+
+    /// Too short to hold the three records the reader requires.
+    #[test]
+    fn a_payload_too_short_for_a_profile_is_reported() {
+        assert!(parse_profile(&[0u8; 8]).is_err());
     }
 }
