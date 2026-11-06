@@ -1360,3 +1360,52 @@ program from `0x3c30` onward. `lean/BINARY-AUDIT.md` measured the loader's own
 strings (`MM2D*`, 109 `DMA3D.exe` hits) in that first stretch, which is what made
 section 0 look like pure data. From `0x3c30` the executable is readable as code,
 and `MM3DTextureResourceFile::ReadData`'s symbol entry is the place to start.
+### How to read it: swap the words, then rizin's `ppc` plugin works
+
+Rizin's `ppc` plugin decodes **little-endian**, and `MMFW` stores PowerPC
+big-endian, so a straight `e asm.arch=ppc` produces byte-reversed instructions
+(`7c 08 02 a6` comes out as `lhzu r16, 0x87c(r2)` — the word read backwards). The
+plugin exposes no endianness variable: `asm.bigendian`, `asm.endian` and `cfg.*`
+all answer `variable ... not found`, and the architecture names `ppc_be` and
+`powerpc` are not registered. So the file, not the tool, has to be swapped:
+
+```sh
+python3 -c "
+d = bytearray(open('DMA3D.exe','rb').read())
+for off in range(0x3c30, 0x1aedb4 - 3, 4):
+    d[off:off+4] = d[off:off+4][::-1]
+open('DMA3D.se.exe','wb').write(bytes(d))"
+rizin -qq -c "e scr.color=0; e asm.arch=ppc; e asm.bits=32; s 0x13d32c; pd 24" DMA3D.se.exe
+```
+
+Every offset in the swapped file is the offset in the original, so the binary
+audit's addresses still apply.
+
+`MM3DTextureResourceFile::ReadData` then reads as itself, and its first
+instructions confirm the audit's field map of `this` (`r30`):
+
+```text
+0x0013d32c  mflr r0 ; stw r31,-4(r1) ; stw r30,-8(r1) ; mr r30,r3 ; stw r0,8(r1)
+0x0013d340  stwu r1,-0x60(r1)
+0x0013d344  bl   0x174fe4        ; the reader core the audit named
+0x0013d348  clrlwi. r0, r3, 0x18  ; one byte of the callee's result
+0x0013d34c  bf   eq, 0x13d352    ; nonzero -> it failed
+0x0013d350  bl   0x10fc50        ; report, and return
+0x0013d354  b    0x13d404
+0x0013d358  li   r0, 1 ; addi r3,r30,0x54 ; sth r0,0x52(r1)     ; this->0x54 = the names table
+0x0013d36c  bl   0x191fd4        ; read the subfile names
+0x0013d370  lwz  r0, 0x2b4(r30)   ; this->0x2b4
+0x0013d374  lha  r5, 0x28c(r30)   ; this->0x28c = N, as a signed halfword
+0x0013d378  cmpwi r0, 0
+0x0013d37c  bf   eq, 0x13d388
+0x0013d380  li   r4, 0
+0x0013d384  b    0x13d38c
+0x0013d388  lwz  r4, 0x2bc(r30)   ; this->0x2bc = the offset table pointer
+```
+
+`bl 0x174fe4` is the next instruction to follow. It is the reader core the symbol
+table already named, and it is where the palette/index split and the width/height
+derivation live — which is what §11.11's six payloads need (their palette is
+demonstrably not in the payload) and what §11.8's order question needs (the bytes
+alone cannot answer it). This is the concrete step, and it is now available: the
+executable is readable, and this is the part of it that reads a texture.
