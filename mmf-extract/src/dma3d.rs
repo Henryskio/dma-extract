@@ -111,6 +111,9 @@ pub struct Extract3DReport {
     /// Payloads written as a glTF line loop, i.e. drawing profiles rather than
     /// meshes (`docs/DMA3D.md` §11.25).
     pub profiles: usize,
+    /// Payloads written as JSON+text, i.e. `mod II` record streams whose record
+    /// schema the bytes do not determine (`docs/DMA3D.md` §11.38).
+    pub records: usize,
     /// Payloads that are neither a mesh nor a drawing profile, and are therefore
     /// written through as the original bytes rather than as modern geometry.
     /// Counted, not skipped: `AGENTS.md` requires a per-resource report.
@@ -321,26 +324,52 @@ fn extract_gltf(
                         continue;
                     }
                     Err(profile_err) => {
-                        report.unconverted += 1;
-                        report.failed.push((
-                            index,
-                            name.to_string(),
-                            format!("{mesh_err:#}; the profile reading also fails ({profile_err})"),
-                        ));
-                        // Nothing modern was produced, so the payload is written
-                        // through unchanged: `--original` is the reference, and a
-                        // resource this build cannot convert must not be lost.
-                        let path = out_dir.join(format!("{index:05}_{stem}.mod"));
-                        std::fs::write(&path, payload)
-                            .with_context(|| format!("writing {}", path.display()))?;
-                        report.written += 1;
-                        report.resources.push(Extracted3D {
-                            index,
-                            name: name.to_string(),
-                            path,
-                            bytes: payload.len(),
-                        });
-                        continue;
+                        // Neither a mesh nor a drawing profile. It may still carry
+                        // a `mod II` record stream, which is written as JSON+text
+                        // the shape is measured (`docs/DMA3D.md` §11.38) and the
+                        // record schema is not, so the document says so rather
+                        // than asserting a meaning the bytes do not carry.
+                        match modfile::parse_magic_record(payload) {
+                            Ok(record) => {
+                                let path = out_dir.join(format!("{index:05}_{stem}.json"));
+                                gltf::write_record_json(&path, name, &record)
+                                    .with_context(|| format!("writing the record of {name}"))?;
+                                report.written += 1;
+                                report.records += 1;
+                                report.resources.push(Extracted3D {
+                                    index,
+                                    name: name.to_string(),
+                                    path,
+                                    bytes: payload.len(),
+                                });
+                                continue;
+                            }
+                            Err(record_err) => {
+                                report.unconverted += 1;
+                                report.failed.push((
+                                    index,
+                                    name.to_string(),
+                                    format!(
+                                        "{mesh_err:#}; the profile reading also fails ({profile_err}); \
+                                         the record reading also fails ({record_err})"
+                                    ),
+                                ));
+                                // Nothing modern was produced, so the payload is
+                                // written through unchanged.
+                                let path = out_dir.join(format!("{index:05}_{stem}.mod"));
+                                std::fs::write(&path, payload).with_context(|| {
+                                    format!("writing {}", path.display())
+                                })?;
+                                report.written += 1;
+                                report.resources.push(Extracted3D {
+                                    index,
+                                    name: name.to_string(),
+                                    path,
+                                    bytes: payload.len(),
+                                });
+                                continue;
+                            }
+                        }
                     }
                 }
             }

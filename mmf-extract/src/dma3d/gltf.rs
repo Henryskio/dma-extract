@@ -22,7 +22,7 @@
 //! `>= 1` and `< V`, and `V` itself never appears), so the writer subtracts
 //! one. glTF's index base is zero.
 
-use crate::dma3d::modfile::{ModelMesh, Profile};
+use crate::dma3d::modfile::{MagicRecord, ModelMesh, Profile};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -1083,5 +1083,73 @@ pub fn write_profile_gltf(
     let bin = path.with_file_name(bin_name);
     std::fs::write(&bin, &buffer)
         .with_context(|| format!("writing {}", bin.display()))?;
+    Ok(())
+}
+
+/// Write a `mod II` record stream as a JSON+text document.
+///
+/// `docs/DMA3D.md` §11.38: 48 of the shipped payloads carry the magic and the `u32`
+/// after it and are read by neither the mesh reader nor the profile reader. Their
+/// record schema is **not derivable from the bytes** — §11.32 measured that no
+/// position in the stream holds a constant across payloads — so this records what
+/// is measured and states what is not, rather than asserting a meaning it does not
+/// have.
+///
+/// JSON+text is the same modern format the scripts decoder emits, because these
+/// are data records rather than geometry: writing them as a glTF would invent a
+/// shape the payload does not carry, which `AGENTS.md` forbids.
+pub fn write_record_json(path: &Path, name: &str, record: &MagicRecord) -> Result<()> {
+    let mut document = String::new();
+    document.push_str("{\n");
+    document.push_str(&format!(
+        "  \"name\": {},\n",
+        json_string(name)
+    ));
+    document.push_str(&format!(
+        "  \"what this is\": \"a mod II record stream the mesh reader and the drawing-profile reader both reject\",\n"
+    ));
+    document.push_str(&format!(
+        "  \"meaning\": \"not determined: no position in the record stream holds a constant across payloads (docs/DMA3D.md 11.32), so the record schema is not read from the bytes\",\n"
+    ));
+    document.push_str("  \"measured\": {\n");
+    document.push_str(&format!(
+        "    \"magic offset\": {},\n",
+        record.magic_offset
+    ));
+    document.push_str(&format!(
+        "    \"record type\": {},\n",
+        record.record_type
+    ));
+    document.push_str(&format!(
+        "    \"stream offset\": {},\n",
+        record.magic_offset + 10
+    ));
+    document.push_str(&format!("    \"pairs\": ["));
+    for (k, v) in record.pairs.iter().enumerate() {
+        if k > 0 {
+            document.push_str(", ");
+        }
+        document.push_str(&v.to_string());
+    }
+    document.push_str("],\n");
+    document.push_str("    \"floats that read as numbers\": [");
+    for (k, v) in record.floats.iter().enumerate() {
+        if k > 0 {
+            document.push_str(", ");
+        }
+        // A float that is not finite is written as its bit pattern, because a
+        // NaN in a document that is then read back is not the same value.
+        if v.is_finite() {
+            document.push_str(&v.to_string());
+        } else {
+            document.push_str(&format!("{}", v.to_bits()));
+        }
+    }
+    document.push_str("]\n");
+    document.push_str("  }\n");
+    document.push_str("}\n");
+
+    std::fs::write(path, document.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }

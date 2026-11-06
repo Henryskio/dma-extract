@@ -279,6 +279,63 @@ def parseMesh (payload : ByteArray) : Except String Mesh := do
       return m
   throw "no mesh chain in the payload"
 
+/-! ## The `mod II` record stream -/
+
+/-- One `mod II` record stream that is neither a mesh nor a drawing profile.
+
+`docs/DMA3D.md` §11.31, §11.32, §11.38: a payload is a header, a list of texture
+names, the `mod II` magic with a `u32` after it, and a record stream. The mesh reader
+and the profile reader each claim the payloads whose records are the shape they read;
+**48 of the shipped payloads carry the magic and the `u32` and neither reader's
+shape**. This is the reader for those, and it deliberately does not guess what the
+records mean: §11.32 measured that no position in the stream holds a constant across
+payloads, so the record schema is not derivable from the bytes.
+-/
+structure MagicRecord where
+  /-- Byte offset of the `mod II` magic. -/
+  magicOffset : Nat
+  /-- The `u32` after the magic: the record type, as the game's own reader treats it
+  (`docs/DMA3D.md` §11.9, §11.20). -/
+  recordType : UInt32
+  /-- The `u16` stream after the magic, in payload order, little-endian. -/
+  pairs : Array UInt16
+  /-- The `f32` values the same bytes hold at four-byte steps from the stream's
+  start, **only** those that read as numbers: a denormal is the signature of a
+  misaligned read (§11.26), so including them would report noise as data. -/
+  floats : Array Float
+  deriving Inhabited
+
+/-- Byte offset just past the last record this read. -/
+def MagicRecord.end (r : MagicRecord) : Nat :=
+  r.magicOffset + 10 + 2 * r.pairs.size
+
+/-- Read a `mod II` record stream that is neither a mesh nor a drawing profile.
+
+The payload must carry the magic and the `u32` after it; a payload that carries
+neither is an error, so the caller reports it rather than writing a document that
+describes nothing.
+-/
+def parseMagicRecord (payload : ByteArray) : Except String MagicRecord := do
+  let some magic := offsetOfMagic payload
+    | throw "no `mod II` magic, so there is no record stream to describe"
+  if magic + 10 > payload.size then
+    throw "the `mod II` magic is too close to the payload's end to carry its u32"
+  let recordType ← leU32At payload (magic + 6)
+  let stream := magic + 10
+  -- Every pair the payload leaves room for: "payload length is ground truth"
+  -- (`AGENTS.md`), the same rule the other readers apply.
+  let mut pairs : Array UInt16 := #[]
+  for k in [0:(payload.size - stream) / 2] do
+    match leU16At payload (stream + 2 * k) with
+    | none => break
+    | some v => pairs := pairs.push v
+  let mut floats : Array Float := #[]
+  for k in [0:(payload.size - stream) / 4] do
+    match leF32 payload (stream + 4 * k) with
+    | Except.error _ => break
+    | Except.ok f => if plausible f then floats := floats.push f
+  return { magicOffset := magic, recordType, pairs, floats }
+
 /-- Read the drawing profile out of a `Models` payload.
 
 The reader measures the phase and the constant slot rather than assuming them. For

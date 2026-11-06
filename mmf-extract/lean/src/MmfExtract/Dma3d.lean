@@ -49,6 +49,9 @@ structure Extract3DReport where
   /-- Payloads written as a glTF line loop, i.e. drawing profiles rather than
   meshes (`docs/DMA3D.md` §11.25, §11.26). -/
   profiles : Nat := 0
+  /-- Payloads written as JSON+text, i.e. `mod II` record streams whose record
+  schema the bytes do not determine (`docs/DMA3D.md` §11.38). -/
+  records : Nat := 0
   deriving Inhabited
 
 /-- The output file name's stem: the resource name, sanitised.
@@ -203,6 +206,46 @@ def extractPngs (container : Container) (outDir : System.FilePath) : IO Extract3
             { index, name, path, bytes := texture.width * texture.height * 4 } }
   return report
 
+/-- Write a `mod II` record stream as a JSON+text document.
+
+`docs/DMA3D.md` §11.38: 48 of the shipped payloads carry the magic and the `u32`
+after it and are read by neither the mesh reader nor the profile reader. Their
+record schema is **not derivable from the bytes** — §11.32 measured that no position
+in the stream holds a constant across payloads — so this records what is measured
+and states what is not, rather than asserting a meaning it does not have.
+
+JSON+text is the same modern format the scripts decoder emits, because these are
+data records rather than geometry: writing them as a glTF would invent a shape the
+payload does not carry, which `AGENTS.md` forbids.
+-/
+def writeRecordJson (path : System.FilePath) (name : String) (r : Modfile.MagicRecord) : IO Unit := do
+  let pairs := String.intercalate ", " (r.pairs.toList.map toString)
+  let floats := String.intercalate ", " (r.floats.toList.map toString)
+  let document :=
+    "{\n" ++
+    s!"  \"name\": {jsonStr name},\n" ++
+    "  \"what this is\": \"a mod II record stream the mesh reader and the drawing-profile reader both reject\",\n" ++
+    "  \"meaning\": \"not determined: no position in the record stream holds a constant across payloads \
+     (docs/DMA3D.md 11.32), so the record schema is not read from the bytes\",\n" ++
+    "  \"measured\": {\n" ++
+    s!"    \"magic offset\": {r.magicOffset},\n" ++
+    s!"    \"record type\": {r.recordType},\n" ++
+    s!"    \"stream offset\": {r.magicOffset + 10},\n" ++
+    s!"    \"pairs\": [{pairs}],\n" ++
+    s!"    \"floats that read as numbers\": [{floats}]\n" ++
+    "  }\n" ++
+    "}\n"
+  IO.FS.writeBinFile path document.toUTF8
+where
+  /-- A JSON string literal: the quotes, and a backslash or quote escaped. -/
+  jsonStr (s : String) : String := Id.run do
+    let mut out := "\""
+    for c in s.toList do
+      if c == '"' || c == '\\' then
+        out := out.push '\\'
+      out := out.push c
+    return out ++ "\""
+
 /-- The modern model path.
 
 The **Rust converter** is the writer of modern models in this pipeline
@@ -239,10 +282,22 @@ def extractGltf (container : Container) (outDir : System.FilePath) :
         -- well would report the same file twice.
         report := { report with profiles := report.profiles + 1 }
       | Except.error e =>
-        -- No mesh chain and no point stream, so what is missing is named
-        -- precisely: the reason a payload fails is part of the output.
-        report := { report with
-          failed := report.failed.push (index, name, s!"{e}") }
+        -- Neither a mesh chain nor a point stream. It may still carry a `mod II`
+        -- record stream, which is written as JSON+text: the shape is measured
+        -- (§11.38) and the record schema is not, so the document says so rather
+        -- than asserting a meaning the bytes do not carry.
+        match Modfile.parseMagicRecord payload with
+        | Except.error recordErr =>
+          report := { report with
+            failed := report.failed.push (index, name,
+              s!"{e}; the record reading also fails ({recordErr})") }
+        | Except.ok _record =>
+          -- Counted in `records` but **not** written, and not in `written`
+          -- either: the Rust converter is the writer of modern models in this
+          -- pipeline (`src/cli.rs::convert_models`), and a file written by both
+          -- halves under the same name would be counted twice. That is the same
+          -- rule the profile reading already follows.
+          report := { report with records := report.records + 1 }
   return report
 
 /-- Extract a `Models` container: the glTF path when modern, the payload when

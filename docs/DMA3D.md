@@ -2660,3 +2660,65 @@ project set for models, and it needs a decision, not a measurement.
 
 The goal's second half is not met: 230 of 460 glTFs, and 80 of the remaining 230 are
 now known to be configuration records rather than models.
+
+## 11.38 The 48 `mod II` records are written as JSON+text, and 278 of 460 have output
+
+`parse_magic_record` reads the record stream the magic announces, and
+`write_record_json` writes it as the same JSON+text format the scripts decoder
+emits. The run now reports:
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 182
+glTF 230   json 48   previews 230   png 935   .mod 182
+```
+
+**17 meshes + 213 profiles + 48 records = 278 of 460 payloads produce modern output**,
+against 230 before. The Lean reader agrees exactly — `mesh 17, profile 213, record 48,
+other 182` — and the harness reports `all checks passed`.
+
+### Why JSON+text and not a glTF
+
+These 48 are **data records, not geometry**. Writing them as a glTF line loop would
+invent a shape the payload does not carry, which `AGENTS.md` forbids as a guess. The
+document carries what is measured and says what is not:
+
+```json
+{
+  "name": "AnimGifS.mod",
+  "what this is": "a mod II record stream the mesh reader and the drawing-profile reader both reject",
+  "meaning": "not determined: no position in the record stream holds a constant across payloads (docs/DMA3D.md 11.32), so the record schema is not read from the bytes",
+  "measured": {
+    "magic offset": 156,
+    "record type": 16,
+    "stream offset": 166,
+    "pairs": [1, 1, 466, 0, 1, 0, 1, 0, 2, 0, 0, 0, ...],
+    "floats that read as numbers": [0, 0, 0, 0, 0, 1, ...]
+  }
+}
+```
+
+The `floats` are **filtered to the ones that read as numbers**. A denormal is the
+signature of a misaligned read — a shifted boundary landing in a neighbouring value's
+mantissa produces about `1e-40`, which no field in this game takes — so including them
+would report noise as data. §11.26 established that rule for the profile reader and the
+same rule applies here; the unit tests assert it in both halves.
+
+The `record type` is the `u32` the game's own reader treats as a version: `16` in 47 of
+the 48, `15` in one. It is recorded and not interpreted, because §11.20 measured that
+it is neither a byte count nor an entry count of what follows.
+
+### What the Lean half does and does not write
+
+The Rust converter is the writer of modern models in this pipeline
+(`src/cli.rs::convert_models`), so the Lean path **counts** the records and reports the
+ones that fit no reader, but does not write them. A first attempt wrote from both halves
+and the run reported `models: 1216` where the converter writes 1165 — the same double
+count §11.26 recorded for the glTF path, and the same reason for not repeating it.
+
+### What is left
+
+**182 payloads** fit no reader, and §11.29's shape census says they are 81 of no
+readable structure, 69 of mid entropy, and the 32 remaining of the alternating-zero
+shape that §11.37 measured as a small-value table rather than geometry. The goal's
+second half is not met at 278 of 460, and the honest description of the remainder is a
+measured shape with no reader yet, not an unknown format.

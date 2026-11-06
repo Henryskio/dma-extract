@@ -675,3 +675,140 @@ mod profile_tests {
         assert!(parse_profile(&[0u8; 8]).is_err());
     }
 }
+
+/// One `mod II` record stream that is not a mesh and not a drawing profile.
+///
+/// `docs/DMA3D.md` §11.31, §11.32: a payload is a header, a list of texture names,
+/// the `mod II` magic with a `u32` after it, and a record stream. The mesh reader
+/// and the profile reader each claim the payloads whose records are the shape they
+/// read; **48 of the shipped payloads carry the magic and the `u32` and neither
+/// reader's shape**. This is the reader for those, and it deliberately does not
+/// guess what the records mean.
+///
+/// What is measured, and therefore what this records: where the magic sits, the
+/// `u32` after it (`16` in 47 of the 48, `15` in one), the `u16` pair stream that
+/// follows, and the `f32` values the stream carries at four-byte steps. §11.32
+/// measured that no position in that stream holds a constant across payloads, so
+/// the record schema is not derivable from the bytes and this says so rather than
+/// asserting one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MagicRecord {
+    /// Byte offset of the `mod II` magic.
+    pub magic_offset: usize,
+    /// The `u32` after the magic: the record type, as the game's own reader treats
+    /// it (`docs/DMA3D.md` §11.9, §11.20).
+    pub record_type: u32,
+    /// The `u16` stream after the magic, in payload order. Read as little-endian
+    /// pairs, which is the alignment §11.22 measured.
+    pub pairs: Vec<u16>,
+    /// The `f32` values the same bytes hold when read at four-byte steps from the
+    /// stream's start. §11.32 measured that these are *inside* the record stream
+    /// rather than after it.
+    pub floats: Vec<f32>,
+}
+
+impl MagicRecord {
+    /// Byte offset just past the last record this read.
+    pub fn end(&self) -> usize {
+        self.magic_offset + 10 + 2 * self.pairs.len()
+    }
+}
+
+/// Read a `mod II` record stream that is neither a mesh nor a drawing profile.
+///
+/// The payload must carry the magic and the `u32` after it; a payload that carries
+/// neither is an error, so the caller reports it rather than writing a document
+/// that describes nothing.
+pub fn parse_magic_record(payload: &[u8]) -> Result<MagicRecord> {
+    let magic = payload
+        .windows(6)
+        .position(|w| w == b"mod II")
+        .ok_or_else(|| anyhow::anyhow!("no `mod II` magic, so there is no record stream to describe"))?;
+    if magic + 10 > payload.len() {
+        bail!("the `mod II` magic is too close to the payload's end to carry its u32");
+    }
+    let record_type = u32_at(payload, magic + 6);
+    let stream = magic + 10;
+    // Every pair the payload leaves room for, which is the same "payload length is
+    // ground truth" rule `AGENTS.md` states.
+    let pairs: Vec<u16> = (0..(payload.len() - stream) / 2)
+        .map(|k| u16_at(payload, stream + 2 * k))
+        .collect();
+    // Only the floats that read as numbers. A denormal is the signature of a
+    // **misaligned** read -- a shifted boundary landing inside a neighbouring
+    // value's mantissa produces about 1e-40, which no field in this game takes
+    // -- so including them would report noise as data. This is the same rule
+    // `plausible` applies, and it is measured, not a preference.
+    let floats: Vec<f32> = (0..(payload.len() - stream) / 4)
+        .map(|k| f32_at(payload, stream + 4 * k))
+        .filter(|f| plausible(*f))
+        .collect();
+    Ok(MagicRecord {
+        magic_offset: magic,
+        record_type,
+        pairs,
+        floats,
+    })
+}
+
+#[cfg(test)]
+mod magic_record_tests {
+    use super::*;
+
+    /// The magic plus the `u32` type plus a pair stream, which is the shape
+    /// `docs/DMA3D.md` §11.31 measured. A payload with no magic is an error.
+    #[test]
+    fn a_payload_without_the_magic_has_no_record_stream() {
+        assert!(parse_magic_record(b"nothing here at all").is_err());
+    }
+
+    /// The measured shape: magic, `u32` type, `u16` pairs.
+    #[test]
+    fn the_magic_and_its_type_and_pairs_are_read() {
+        let mut payload: Vec<u8> = Vec::new();
+        payload.extend_from_slice(b"mod II");
+        payload.extend_from_slice(&16u32.to_le_bytes());
+        for v in [1u16, 1, 466, 0, 1, 0] {
+            payload.extend_from_slice(&v.to_le_bytes());
+        }
+        let record = parse_magic_record(&payload).expect("the payload carries a record");
+        assert_eq!(record.magic_offset, 0);
+        assert_eq!(record.record_type, 16);
+        assert_eq!(record.pairs, vec![1, 1, 466, 0, 1, 0]);
+        // The pairs fill the payload exactly: payload length is ground truth.
+        assert_eq!(record.end(), payload.len());
+    }
+
+    /// The magic is located wherever it sits, not only at offset 0 — which is the
+    /// same rule §11.9 recorded for the mesh chain.
+    #[test]
+    fn the_magic_is_found_behind_a_header() {
+        let mut payload = vec![0u8; 37];
+        payload.extend_from_slice(b"mod II");
+        payload.extend_from_slice(&15u32.to_le_bytes());
+        payload.extend_from_slice(&7u16.to_le_bytes());
+        payload.extend_from_slice(&7u16.to_le_bytes());
+        let record = parse_magic_record(&payload).expect("the payload carries a record");
+        assert_eq!(record.magic_offset, 37);
+        assert_eq!(record.record_type, 15);
+        assert_eq!(record.pairs, vec![7, 7]);
+    }
+
+    /// A denormal is not a number: §11.26 measured that a shifted boundary lands in
+    /// a neighbouring value's mantissa and produces about 1e-40, so the floats this
+    /// records must be only the ones that read as numbers.
+    #[test]
+    fn a_denormal_is_not_a_recorded_float() {
+        let mut payload: Vec<u8> = Vec::new();
+        payload.extend_from_slice(b"mod II");
+        payload.extend_from_slice(&16u32.to_le_bytes());
+        payload.extend_from_slice(&1.0e-40f32.to_le_bytes()); // a denormal
+        payload.extend_from_slice(&0.5f32.to_le_bytes()); // a real value
+        let record = parse_magic_record(&payload).expect("the payload carries a record");
+        assert!(
+            record.floats.iter().all(|f| *f == 0.0 || f.abs() >= f32::MIN_POSITIVE),
+            "a denormal was recorded as a float: {:?}",
+            record.floats
+        );
+    }
+}

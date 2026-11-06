@@ -400,6 +400,7 @@ fn every_3d_payload_round_trips_byte_exactly() {
         .expect("extract models");
         let mut meshes = 0usize;
         let mut profiles = 0usize;
+        let mut records = 0usize;
         let mut passthrough = 0usize;
         for entry in &report.resources {
             let payload = container.payload(entry.index);
@@ -468,15 +469,27 @@ fn every_3d_payload_round_trips_byte_exactly() {
                             continue;
                         }
                         Err(_) => {
-                            passthrough += 1;
-                            assert_eq!(
-                                std::fs::read(&entry.path).expect("read passthrough"),
-                                payload,
-                                "model {}: payload that is neither a mesh nor a \
-                                 profile is not byte-exact",
-                                entry.index
-                            );
-                            continue;
+                            // Neither a mesh chain nor a drawing profile. It may
+                            // still be a `mod II` record stream, written as
+                            // JSON+text (`docs/DMA3D.md` §11.38); if it is not,
+                            // the payload is written through unchanged.
+                            match mmf_extract::dma3d::modfile::parse_magic_record(payload) {
+                                Ok(_record) => {
+                                    records += 1;
+                                    continue;
+                                }
+                                Err(_) => {
+                                    passthrough += 1;
+                                    assert_eq!(
+                                        std::fs::read(&entry.path).expect("read passthrough"),
+                                        payload,
+                                        "model {}: payload that is neither a mesh, a \
+                                         profile nor a record is not byte-exact",
+                                        entry.index
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }
@@ -577,13 +590,17 @@ fn every_3d_payload_round_trips_byte_exactly() {
         // the accounting: every payload is a mesh, a profile, or a
         // passthrough, and the three counts close on the container's own.
         assert_eq!(
-            meshes + profiles + passthrough,
+            meshes + profiles + records + passthrough,
             container.resource_count as usize,
-            "the three model outputs do not account for every payload"
+            "the four model outputs do not account for every payload"
         );
         assert_eq!(
             report.profiles, profiles,
             "the report's profile count differs from what was written"
+        );
+        assert_eq!(
+            report.records, records,
+            "the report's record count differs from what was written"
         );
         assert_eq!(
             report.unconverted, passthrough,
@@ -611,14 +628,16 @@ fn every_3d_payload_round_trips_byte_exactly() {
             Some(&tmp.join("modern/textures")),
         )
         .expect("extract models");
-        // A payload that is neither a mesh nor a drawing profile is reported,
-        // not skipped: `AGENTS.md` requires the run to say what it could not
-        // convert. The count is the ones that fit neither reader, and the
-        // accounting closes on the container's own.
+        // A payload that is neither a mesh, a drawing profile nor a `mod II`
+        // record stream is reported, not skipped: `AGENTS.md` requires the run to
+        // say what it could not convert. The count is the ones that fit no reader,
+        // and the accounting closes on the container's own.
         let neither = (0..container.resource_count as usize)
             .filter(|i| {
-                mmf_extract::dma3d::modfile::parse_mesh(container.payload(*i)).is_err()
-                    && mmf_extract::dma3d::modfile::parse_profile(container.payload(*i)).is_err()
+                let payload = container.payload(*i);
+                mmf_extract::dma3d::modfile::parse_mesh(payload).is_err()
+                    && mmf_extract::dma3d::modfile::parse_profile(payload).is_err()
+                    && mmf_extract::dma3d::modfile::parse_magic_record(payload).is_err()
             })
             .count();
         assert_eq!(report.failed.len(), neither, "the reported failures are not the unconverted");
@@ -721,6 +740,7 @@ fn the_modern_output_is_a_browsable_whole() {
                     .expect("open the model container");
                 mmf_extract::dma3d::modfile::parse_mesh(c.payload(*i)).is_err()
                     && mmf_extract::dma3d::modfile::parse_profile(c.payload(*i)).is_err()
+                    && mmf_extract::dma3d::modfile::parse_magic_record(c.payload(*i)).is_err()
             })
             .count();
         assert_eq!(

@@ -313,7 +313,19 @@ def checkTextures3D (assetDir : String) : IO Bool := do
                     if stored.toBits != v.toBits then
                       IO.eprintln s!"DMA3D.MMM: resource {i} record {j} slot {slot} differs from the payload"
                       ok := false
-      IO.println s!"DMA3D.MMM: {resources} resources, {profiles} of them read as drawing profiles, {unconverted} converted to nothing"
+      -- The third output: a `mod II` record stream that is neither a mesh nor a
+      -- profile, written as JSON+text. The shape is measured and the schema is
+      -- not (`docs/DMA3D.md` §11.31, §11.32, §11.38), so the document says so.
+      let mut nj := 0
+      for i in [0:resources] do
+        match Container.payload models i with
+        | Except.error _ => pure ()
+        | Except.ok p =>
+          if (MmfExtract.Dma3d.Modfile.parseMesh p).toOption.isNone
+              && (MmfExtract.Dma3d.Modfile.parse p).toOption.isNone then
+            if (MmfExtract.Dma3d.Modfile.parseMagicRecord p).toOption.isSome then
+              nj := nj + 1
+      IO.println s!"DMA3D.MMM: {resources} resources, {profiles} of them read as drawing profiles, {nj} of them written as JSON+text records, {unconverted} converted to nothing"
       if resources != 460 then
         IO.eprintln s!"DMA3D.MMM: {resources} resources, expected 460"
         ok := false
