@@ -490,6 +490,15 @@ pub struct Profile {
     pub marker: f32,
     /// The records, in payload order, as the three varying slots.
     pub points: Vec<[f32; 3]>,
+    /// Byte offset just past the last record read, i.e. the start of the part
+    /// the reader did not read.
+    ///
+    /// A payload is a record run followed by whatever else it carries, exactly
+    /// as a mesh payload is a chain followed by a tail
+    /// (`docs/DMA3D.md` §3.4, §11.26). Requiring the constant to hold across
+    /// *every* record the payload leaves room for rejected 100 payloads that
+    /// carry a clean run and then something else.
+    pub tail_offset: usize,
 }
 
 impl Profile {
@@ -521,37 +530,32 @@ pub fn parse_profile(payload: &[u8]) -> Result<Profile> {
         }
         let records = (payload.len() - phase) / 16;
         for slot in 0..4usize {
+            // The marker is a stored constant, so it is *bit-identical* across
+            // the records. Comparing within an epsilon let a denormal
+            // (9.18e-35, 5.51e-34) pass as zero, and the two payloads that did
+            // carry those are unreadable-name records whose bytes are not a
+            // point stream at all.
+            let marker = f32_at(payload, phase + 4 * slot);
+            if marker.to_bits() != 0.0f32.to_bits() && marker.to_bits() != 1.0f32.to_bits() {
+                continue;
+            }
+            // The run is the **prefix** in which the marker is bit-identical and
+            // the other three slots are plausible coordinates. A payload carries
+            // its point stream and then whatever else it holds, so requiring the
+            // constant across every record the payload leaves room for rejected
+            // 100 payloads that carry a clean run followed by something else.
             let mut points = Vec::with_capacity(records);
-            let mut plausible_records = 0usize;
             let mut nonconstant_records = 0usize;
-            let mut marker = f32::NAN;
-            let mut marker_holds = true;
             for record in 0..records {
                 let at = phase + 16 * record;
-                let mut quad = [0f32; 4];
-                for j in 0..4 {
-                    quad[j] = f32_at(payload, at + 4 * j);
-                }
-                if record == 0 {
-                    marker = quad[slot];
-                    // The marker is a stored constant, so it is *bit-identical*
-                    // across the records. Comparing within an epsilon let a
-                    // denormal (9.18e-35, 5.51e-34) pass as zero, and the two
-                    // payloads that did carry those are unreadable-name records
-                    // whose bytes are not a point stream at all.
-                    if marker.to_bits() != 0.0f32.to_bits()
-                        && marker.to_bits() != 1.0f32.to_bits()
-                    {
-                        marker_holds = false;
-                    }
-                } else if quad[slot].to_bits() != marker.to_bits() {
-                    marker_holds = false;
+                if f32_at(payload, at + 4 * slot).to_bits() != marker.to_bits() {
+                    break;
                 }
                 let mut point = [0f32; 3];
                 let mut all_plausible = true;
                 let mut any_nonzero = false;
                 for j in 0..3 {
-                    point[j] = quad[if j < slot { j } else { j + 1 }];
+                    point[j] = f32_at(payload, at + 4 * (if j < slot { j } else { j + 1 }));
                     if !plausible(point[j]) {
                         all_plausible = false;
                     }
@@ -559,27 +563,21 @@ pub fn parse_profile(payload: &[u8]) -> Result<Profile> {
                         any_nonzero = true;
                     }
                 }
-                if all_plausible {
-                    plausible_records += 1;
-                    if any_nonzero {
-                        nonconstant_records += 1;
-                    }
+                if !all_plausible {
+                    break;
+                }
+                if any_nonzero {
+                    nonconstant_records += 1;
                 }
                 points.push(point);
             }
-            if !marker_holds {
+            // Three records to call it a run, two of them carrying a real
+            // coordinate so a payload of padding is not a profile.
+            if points.len() < 3 || nonconstant_records < 2 {
                 continue;
             }
-            if plausible_records * 10 < records * 7 || nonconstant_records < 2 {
-                continue;
-            }
-            // Prefer the pair that explains the most records, then the one with
-            // the most records carrying real coordinates.
-            let score = records * 100 + nonconstant_records;
-            let better = best
-                .as_ref()
-                .map(|b| score > b.0)
-                .unwrap_or(true);
+            let score = points.len() * 100 + nonconstant_records;
+            let better = best.as_ref().map(|b| score > b.0).unwrap_or(true);
             if better {
                 best = Some((score, phase, slot, marker, points));
             }
@@ -588,11 +586,13 @@ pub fn parse_profile(payload: &[u8]) -> Result<Profile> {
     match best {
         Some((score, phase, slot, marker, points)) => {
             let _ = score;
+            let tail_offset = phase + 16 * points.len();
             Ok(Profile {
                 phase,
                 constant_slot: slot,
                 marker,
                 points,
+                tail_offset,
             })
         }
         None => bail!("no f32 point stream fits this payload (`docs/DMA3D.md` §11.25)"),

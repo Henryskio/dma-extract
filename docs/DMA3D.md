@@ -2258,3 +2258,73 @@ counts and reports but does not write, and why its profile count is not added to
 
 Suite: lib 23, the nine asset suites, all green; the Lean harness reports all checks
 passed. Committed in `DMA3D: the drawing-profile reader, and its Lean port`.
+
+## 11.28 The record run is a prefix, and 100 more payloads convert
+
+The reader required the constant slot to hold across **every** record the payload
+leaves room for. That is wrong, and the container shows it in one payload:
+`createModSh*` resource 10 (276 bytes) carries **seven** clean `[1.0, x, y, z]`
+records at phase 3 and then eleven records that are not a point stream at all:
+
+```text
+rec 0 +  3: *1.0* +1.0000 +0.9818 +0.7641 -0.6182
+rec 1 + 19: *1.0* +1.0000 +1.2135 +0.7641 +0.0000
+rec 2 + 35: *1.0* +1.0000 +0.7133 +1.0517 -0.4491
+rec 3 + 51: *1.0* +1.0000 +0.8817 +1.0517 +0.0000
+rec 4 + 67: *1.0* +1.0000 +0.2725 +1.0517 +0.7267
+rec 5 + 83: *1.0* +1.0000 +0.3750 +0.7641 +1.0002
+rec 6 + 99: *1.0* +1.0000 -0.3750 +0.7641 +2966243652811899692646400.0000
+rec 7 +115:       +0.0000 +0.0000 -0.0437 +702181932624496714465984639246794752.0000
+...
+rec16 +259:       +0.0000 -78765888.0000 -5143351735051569263017984.0000 -0.0000
+```
+
+Seven records, then the payload carries something else. That is the **same shape a
+mesh payload has** — a measured chain followed by an undecoded tail, which
+`parse_mesh` already reports as `tail_offset` and which this project already writes
+beside the glTF (§3.4). Requiring the constant across the whole payload rejected 100
+payloads that carry a clean run followed by something else.
+
+So the reader now takes the **longest prefix** in which the marker is bit-identical
+and the other three slots are plausible, and `Profile` gains `tail_offset`:
+
+```rust
+pub struct Profile { phase, constantSlot, marker, points, tail_offset }
+```
+
+The acceptance rule is unchanged in kind and tighter in effect: at least three
+records, at least two of them carrying a coordinate that is not zero, and the marker
+exactly `0.0` or exactly `1.0` in the payload's own bits. Reading the raw `u32` and
+comparing bits — rather than comparing floats within an epsilon — is what keeps the
+two halves identical: an epsilon let a denormal (`9.18e-35`) pass as zero, and the
+payloads carrying those are unreadable-name records whose bytes are not a point
+stream.
+
+### What it converts
+
+| | before | after |
+| --- | --- | --- |
+| profile glTFs | 101 | **212** |
+| total glTFs | 118 | **229** |
+| reported failures | 342 | **231** |
+
+The run now reports `models: 1165 / ambiguous: 696 / total: 1165 / failed: 231` and
+writes 229 glTFs, 229 previews, 231 `.mod`, 934 PNGs.
+
+### What is still open
+
+**231 payloads**, and their shape is not a looser threshold. Measuring why each
+fails: **287 of the 460 have no phase/slot pair whose constant is bit-repeating at
+all**, and the remainder fail the plausibility rule. So the 231 are a *different
+payload shape*, not a near miss of this one. The families among them are the ones
+§11.15 named — `createModShrMaterial*`, `file*` icons, `createModShapePrim*`, UI
+records — and they need readers of their own written against measured bytes.
+
+**One divergence is open and recorded rather than hidden.** The Lean reader accepts
+218 payloads where Rust accepts 212 profiles (229 with the meshes), an 11-payload
+difference. Both halves pass their own byte-level checks — every accepted payload's
+records compare against the payload's own bytes in both languages — so the
+divergence is in *which* payloads each accepts, not in what an accepted one contains.
+That is a difference of tie-breaking between (phase, slot) pairs, and it is not
+resolved here: closing it needs the tie-break made identical in both halves, which is
+the next piece of work on this reader.

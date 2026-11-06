@@ -276,10 +276,17 @@ def checkTextures3D (assetDir : String) : IO Bool := do
             -- at the measured phase, minus the constant slot. Read back
             -- independently so a phase that merely passed the threshold cannot
             -- be billed as geometry.
-            let records := (payload.size - profile.phase) / 16
-            if profile.points.size != records then
-              IO.eprintln s!"DMA3D.MMM: resource {i} holds {profile.points.size} points for {records} records"
+            -- The run is a prefix and `tailOffset` says where it ends, so the
+            -- points fill exactly its records. Asserting the offset rather than
+            -- recomputing it keeps a run that merely passed the threshold from
+            -- being extended by one.
+            if profile.tailOffset != profile.phase + 16 * profile.points.size then
+              IO.eprintln s!"DMA3D.MMM: resource {i}: the profile's points do not fill its records"
               ok := false
+            if profile.tailOffset > payload.size then
+              IO.eprintln s!"DMA3D.MMM: resource {i}: the profile's tail is past the payload"
+              ok := false
+            let records := profile.points.size
             for j in [0:records] do
               let base := profile.phase + 16 * j
               for slot in [0:4] do

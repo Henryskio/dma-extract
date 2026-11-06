@@ -35,9 +35,6 @@ def recordBytes : Nat := 16
 vertex's `w`. -/
 def markers : Array Float := #[0.0, 1.0]
 
-/-- How close a float must be to a marker to count as it. -/
-def markerEpsilon : Float := 1.0e-6
-
 /-! ## Reading the container's little-endian values -/
 
 /-- A little-endian `u32` at `off`, as `src/dma3d/modfile.rs::u32_at` reads it. -/
@@ -88,6 +85,11 @@ structure Profile where
   marker : Float
   /-- The records, in payload order, as the three varying slots. -/
   points : Array (Float × Float × Float)
+  /-- Byte offset just past the last record read, i.e. the start of the part the
+  reader did not read. A payload carries its record run and then whatever else it
+  holds, exactly as a mesh payload is a chain followed by a tail
+  (`docs/DMA3D.md` §3.4, §11.28). -/
+  tailOffset : Nat := 0
   deriving Inhabited, BEq
 
 /-- Read the record at `phase + 16 * record` as four floats, in slot order. -/
@@ -124,43 +126,63 @@ def parse (payload : ByteArray) : Except String Profile := do
   -- The best pair found, as (records explained, phase, slot, marker, points).
   let mut best : Option (Nat × Nat × Nat × Float × Array (Float × Float × Float)) := none
   for phase in [0:8] do
-    if phase + 4 * recordBytes > payload.size then
+    if phase + 3 * recordBytes > payload.size then
       continue
     let records := (payload.size - phase) / recordBytes
     for slot in [0:4] do
+      -- The marker is a stored constant, so it is *bit-identical* across the
+      -- records, and it is exactly `0.0` or exactly `1.0` — the `w` a normal and
+      -- a vertex carry in the mesh chain. Comparing within an epsilon let a
+      -- denormal pass as zero, and the payloads that carry those are
+      -- unreadable-name records whose bytes are not a point stream at all.
+      -- Reading the raw `u32` and comparing bits is what keeps the two halves
+      -- identical to `src/dma3d/modfile.rs`.
+      let markerBits ← leU32At payload (phase + 4 * slot)
+      if markerBits != 0 && markerBits != 0x3f800000 then
+        continue
+      let marker ← f32At payload (phase + 4 * slot)
+      -- The run is the **prefix** in which the marker is bit-identical and the
+      -- other three slots are plausible coordinates. A payload carries its point
+      -- stream and then whatever else it holds, so requiring the constant across
+      -- every record the payload leaves room for rejects payloads that carry a
+      -- clean run followed by something else (`docs/DMA3D.md` §11.28).
       let mut points : Array (Float × Float × Float) := #[]
-      let mut marker : Float := Float.ofBits 0x7f800001  -- a NaN, so it never matches
-      let mut holds := true
-      let mut plausibleRecords := 0
       let mut nonconstantRecords := 0
       for record in [0:records] do
-        let quad ← recordAt payload phase record
-        if record == 0 then
-          marker := quad[slot]!
-          if !(markers.any (fun m => (marker - m).abs < markerEpsilon)) then
-            holds := false
-        else if (quad[slot]! - marker).abs > markerEpsilon then
-          holds := false
-        let rest := others quad slot
-        let (x, y, z) := (rest[0]!, rest[1]!, rest[2]!)
-        points := points.push (x, y, z)
-        if plausible x && plausible y && plausible z then
-          plausibleRecords := plausibleRecords + 1
-          if x != 0.0 || y != 0.0 || z != 0.0 then
-            nonconstantRecords := nonconstantRecords + 1
-      if !holds then
+        let base := phase + 16 * record
+        let heldBits ← leU32At payload (base + 4 * slot)
+        if heldBits != markerBits then
+          break
+        let mut rest : Array Float := #[]
+        let mut plausibleHere := true
+        let mut anyNonzero := false
+        for other in [0:4] do
+          if other != slot then
+            let v ← f32At payload (base + 4 * other)
+            if !(plausible v) then
+              plausibleHere := false
+            if v != 0.0 then
+              anyNonzero := true
+            rest := rest.push v
+        if !plausibleHere then
+          break
+        if anyNonzero then
+          nonconstantRecords := nonconstantRecords + 1
+        points := points.push (rest[0]!, rest[1]!, rest[2]!)
+      -- Three records to call it a run, two of them carrying a real coordinate
+      -- so a payload of padding is not a profile.
+      if points.size < 3 || nonconstantRecords < 2 then
         continue
-      -- 70% plausible, and at least two records carrying a real coordinate.
-      if plausibleRecords * 10 < records * 7 || nonconstantRecords < 2 then
-        continue
+      let score := points.size * 100 + nonconstantRecords
       match best with
       | some (bestRecords, _, _, _, _) =>
-        if records > bestRecords then
-          best := some (records, phase, slot, marker, points)
-      | none => best := some (records, phase, slot, marker, points)
+        if score > bestRecords then
+          best := some (score, phase, slot, marker, points)
+      | none => best := some (score, phase, slot, marker, points)
   match best with
   | some (_, phase, slot, marker, points) =>
-    return { phase, constantSlot := slot, marker, points }
+    return { phase, constantSlot := slot, marker, points,
+             tailOffset := phase + 16 * points.size }
   | none =>
     throw "no f32 point stream fits this payload (`docs/DMA3D.md` §11.25)"
 

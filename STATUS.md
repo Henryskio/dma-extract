@@ -441,13 +441,15 @@ and that naming stays per `AGENTS.md`. Its own document is
   width/height derivation remain open: both orders fit, four resources apart, so
   nothing acts on it.
   **705 of 705 textures now decode, against 3 before, and the run reports no
-  failures at all.** The **models are 118 glTFs from 460 payloads** — 17 meshes plus
-  101 drawing profiles (`docs/DMA3D.md` §11.25, §11.26) — with the remaining 342
-  reported per resource rather than skipped. Before the profile reader the same run
-  wrote 17 glTFs and 443 `.mod` files. The profile reader is ported to Lean
-  (`MmfExtract/Dma3d/Modfile.lean`) and both halves read the same 118 payloads
-  (§11.27), so the 342 failures are now named with the reader's own reason rather
-  than as "not ported to Lean yet". The nine that used to fail are **8-bit coverage masks** —
+  failures at all.** The **models are 229 glTFs from 460 payloads** — 17 meshes plus
+  212 drawing profiles (`docs/DMA3D.md` §11.25, §11.26, §11.28) — with the remaining
+  231 reported per resource rather than skipped. Before the profile reader the same
+  run wrote 17 glTFs and 443 `.mod` files. The reader takes the longest prefix of
+  records whose constant slot is bit-repeating, because a payload carries its record
+  run and then something else, exactly as a mesh payload is a chain plus a tail
+  (§11.28). The profile reader is ported to Lean (`MmfExtract/Dma3d/Modfile.lean`) and
+  both halves pass their own byte-level checks (§11.27); an 11-payload difference in
+  which payloads each accepts is open and recorded in §11.28 rather than hidden. The nine that used to fail are **8-bit coverage masks** —
   the sub-format `docs/PICTURES.md` §4.2 documents for the picture containers,
   where an 8-bit payload with no 1024-byte prefix is an alpha mask rather than a
   palette image. That is why §11.11 could not find a palette in them: they have

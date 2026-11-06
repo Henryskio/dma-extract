@@ -417,14 +417,20 @@ fn every_3d_payload_round_trips_byte_exactly() {
                             // them back independently is what stops a phase or
                             // slot that happens to pass the reader's threshold
                             // from being emitted as geometry.
-                            let records = (payload.len() - profile.phase) / 16;
+                            // The run is a prefix, and `tail_offset` says where
+                            // it ends. Asserting the offset rather than
+                            // recomputing it is what keeps a run that merely
+                            // passed the threshold from being extended by one.
                             assert_eq!(
-                                profile.points.len(),
-                                records,
-                                "model {}: the profile holds {} points for {} records",
-                                entry.index,
-                                profile.points.len(),
-                                records
+                                profile.tail_offset,
+                                profile.phase + 16 * profile.points.len(),
+                                "model {}: the profile's points do not fill its records",
+                                entry.index
+                            );
+                            assert!(
+                                profile.tail_offset <= payload.len(),
+                                "model {}: the profile's tail is past the payload",
+                                entry.index
                             );
                             for (k, point) in profile.points.iter().enumerate() {
                                 let at = profile.phase + 16 * k;
