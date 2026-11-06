@@ -3320,3 +3320,66 @@ container's own reader.
 The goal's second half is not met at 345 of 460, and the residue is now characterised
 as payloads whose name records are interleaved with records this repository cannot yet
 read.
+
+## 11.49 Twenty-five payloads carry little-endian `u16` runs of small values
+
+The three unprobed structures the reviewer named — per-record tag/width encodings,
+odd-stride integer streams, delta-encoded runs — were measured over the 115. The
+middle one is the one that finds something.
+
+### What was measured
+
+Reading each of the 115 payloads for its longest run of little-endian `u16` values
+below 4096:
+
+| structure probed | payloads with a run ≥ 16 |
+| --- | --- |
+| big-endian `u16` (the shape §11.37 read) | 0 new |
+| **little-endian `u16`** | **25** |
+| little-endian 24-bit | 0 |
+| big-endian 24-bit | 1 |
+
+And reading the runs themselves splits the 25 into two groups with different shapes.
+
+**`createModBtSize*`** — `createModBtSize03` (160 values), `createModBtSize04` (213),
+`createModBtProp` (57) — runs whose values sit in a narrow band:
+
+```text
+createModBtSize03:  117, 118, 119, 120, 118, 120, 121, 118, 121, 122, ...
+createModBtSize04:  115, 115, 152, 117, 152, 123, 117, 153, 154, 119, ...
+createModBtProp:    31, 25, 27, 32, 14, 13, 13, 29, 32, 33, 34, 14, 15, ...
+```
+
+Those bytes are `75 00 76 00 77 00 78 00` — an ASCII character followed by a zero,
+which is exactly the alternating-zero shape §11.37 named as a table of small values
+with zero fill. So this group is the *same* shape §11.37 already measured, reached by a
+different probe, and the reader §11.39 wrote for it rejects them because its 80% fill
+threshold does not hold: these payloads carry a value in *every* slot, so there is no
+fill to measure.
+
+**`r19 nter.mod` (62 values), `r156` (312)** — runs that are two interleaved
+increasing sequences:
+
+```text
+r19:  83, 85, 84, 49, 86, 50, 87, 88, 89, 88, 90, 89, 91, 92, 93, 92, 94, 93, 53, 95
+      -> 83, 84, 86, 87, 89, 90, 91, 93, 94, ... and 85, 49, 50, 88, 88, 89, 92, 92, 93, 95
+```
+
+Two monotone columns is a table, not noise, and it is the shape a **delta-encoded** run
+has. But the second column breaks monotonicity (`85, 49, 50, 88`), so it is not a clean
+delta run either, and reading it as one would invent the deltas.
+
+### What this does and does not give
+
+It gives 25 payloads whose bytes are `u16` with small values, and it re-derives §11.37's
+shape from a second direction. It does not give a reader: the `createModBtSize*` group
+is already the shape §11.39 reads, and §11.39's threshold rejects them because they have
+no fill — which is a *measured* reason, and lowering the threshold would admit payloads
+whose slots are not all small.
+
+The `r19`/`r156` group is the one genuinely new shape, and its second column is not
+monotone, so no delta reading is established.
+
+The goal's second half is not met at 345 of 460. What this turn adds is that the third
+probe the reviewer named runs, and its result is that the payloads it finds are either
+already-read shapes or shapes whose columns are not monotone.
