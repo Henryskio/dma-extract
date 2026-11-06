@@ -1409,30 +1409,6 @@ derivation live — which is what §11.11's six payloads need (their palette is
 demonstrably not in the payload) and what §11.8's order question needs (the bytes
 alone cannot answer it). This is the concrete step, and it is now available: the
 executable is readable, and this is the part of it that reads a texture.
-### One level traced: `bl 0x174fe4` is a constructor, not the pixel decoder
-
-`MM3DTextureResourceFile::ReadData`'s `bl 0x174fe4` lands mid-instruction; the
-callee's own prologue (`lis r16,0 ; mflr r0 ; stmw r26,-0x18(r1) ; li r31,0 ; stw
-r0,8(r1) ; stwu r1,-0xa0(r1)`) is at **`0x175000`**. Read from there it is a
-**constructor for a texture record**, not a pixel decoder:
-
-* two virtual calls (`lwz r12,0(r28) ; lwz r12,0x10(r12) ; bl 0x1c8574`, and the
-  same pattern again on `this->0x50`) — it drives an interface it is handed;
-* it reads **four consecutive halfwords from a pointer** (`lha r0,0(r30)` …
-  `2(r30)` … `4(r30)` … `6(r30)`) and stores them as consecutive halfwords
-  (`sth r0,0x64(r1)` … `0x66` … `0x68` … `0x6a`), then a call, then two more from
-  another pointer — a pair of four-halfword tuples, which is the shape of a
-  rectangle;
-* it validates them (`cmpw` / `bf lt`), derives **fixed-point scale factors**
-  (`sub`, `slwi …,0x10`, `divw`) and stores them at `this->0x8`, `0xc`, `0x10`,
-  `0x14`, and sets a success byte at `this->0x4c`.
-
-So the dimension tuple the container's records carry is read here as halfwords,
-and the numbers that decide how a payload splits are further in. This is the
-trace's state, recorded so it is not repeated: the reader core is the constructor
-of the resource object, and the palette decision is in the routines it drives or
-is driven by (`ReadData`'s other calls at `0x191fd4` for the names, `0x1c8574`
-for the interface dispatch, and `0x147d44`).
 ### What the nine share, measured
 
 Enumerating every `(prefix, power-of-two area)` pair — the payload split at a
@@ -1474,3 +1450,34 @@ is deeper than the constructor §11.12 traced. The immediate next step is the
 payload-consuming half of `MM3DTextureResourceFile::ReadData`, whose `bl` targets
 (`0x191fd4`, `0x1c8574`, `0x147d44`) §11.12 lists — and a palette bank of 1024
 bytes is what to look for in it, since five of the nine need exactly one.
+### `ReadData` is only the container reader; the payload is consumed elsewhere
+
+The whole of `MM3DTextureResourceFile::ReadData` (`0x13d32c`..`0x13d418`) is:
+
+```text
+0x0013d344  bl    0x174fe4        ; the constructor of §11.12 (dims from halfwords)
+0x0013d348  clrlwi. r0, r3, 0x18  ; one byte of its result\n0x0013d34c  bf    eq, 0x13d352    ; nonzero -> failed\n0x0013d350  bl    0x10fc50        ; report, return\n0x0013d358  li    r0, 1\n0x0013d35c  addi  r3, r30, 0x54\n0x0013d360  sth   r0, 0x52(r1)     ; this->0x54 = the names subfile object\n0x0013d36c  bl    0x191fd4        ; read the subfile names\n0x0013d370  lwz   r0, 0x2b4(r30)\n0x0013d374  lha   r5, 0x28c(r30)   ; N\n0x0013d378  cmpwi r0, 0\n0x0013d37c  bf    eq, 0x13d388\n0x0013d380  li    r4, 0            ; if this->0x2b4 != 0 use NULL, else\n0x0013d384  b     0x13d38c\`0x0013d388  lwz   r4, 0x2bc(r30)   ; this->0x2bc = the offsets subfile\n0x0013d38c  addi  r31, r30, 0x54\n0x0013d39c  bl    0x1c1244         ; a virtual call on the names object\n0x0013d3a4  lwz   r0, 0x2c0(r30)   ; a second pair of pointers, chosen the same way\n0x0013d3bc  lwz   r4, 0x2c8(r30)\n0x0013d3cc  bl    0x1c1244\n0x0013d3d4  lwz   r12, 0x50(r30)   ; a vtable at this->0x50\n0x0013d3e0  bl    0x1c1244         ; virtual call, 0x0c slot\n0x0013d3e8  cmpwi r3, 0\n0x0013d3f0  addi  r3, r30, 0 ; li r4, 7 ; bl 0x1749bc   ; error 7\n0x0013d400  li    r3, 1            ; success
+```
+
+So `ReadData` sets the resource object up, reads the **names** subfile (`bl 0x191fd4`),
+dispatches two more subfile pointers through the names object, and makes one virtual
+call on `this->0x50`. **There is no payload-decoding loop in it at all**, and the
+offsets table it reads is `this->0x2bc` — the same field the audit's map named. The
+code that turns a payload into a mesh or a texture is a routine this function
+*drives*, and the candidates are `0x191fd4` (the names), the virtual method at
+`this->0x50`, and `0x1749bc` (the error reporter `li r4, 7`).
+
+The next function begins at `0x13d458` (`mr r31, r3 ; bl 0x174c1c`) and reads
+`lha r5, 0x28c(r31)` — `N` again — with `this->0x2b4` and `this->0x2c0`, and passes
+string constants resolved through the TOC (`addi r6, r2, -0x5ea1`). That is the
+**per-resource accessor**, and it is where the payload's own header and palette
+bank will be. That is the next step, and it is now named rather than guessed:
+
+* `0x13d458` — the per-resource reader that takes a resource index,
+* `0x174c1c` — the constructor of what it returns,
+* `this->0x2b4`, `this->0x2c0`, `this->0x2bc`, `this->0x2c8` — the four subfile
+  pointers, of which the payload is one.
+
+A 1024-byte palette bank and the 4/36/72-byte header §11.13 measured are what to
+look for there, since five of the nine failing textures need a full 256-entry
+palette that cannot fit in the payload.
