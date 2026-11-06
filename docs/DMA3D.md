@@ -2435,3 +2435,43 @@ records' *meaning*, and §11.20 already measured that the `u32` is not a byte co
 not an entry count of what follows, so the record schema has to come from the routine
 `src/dma3d/modfile.rs` has not read. That is a bounded, named piece of work: one
 payload layout, located, with a `u16` record schema to determine.
+
+## 11.32 The `u16` record stream is a `u32` stream with floats inside it
+
+§11.31 located the layout: header, names, `mod II` + `u32`, records, trailing
+floats. Reading `createModBrush`'s record stream as `u32` rather than `u16` resolves
+the schema much further, and it is the same hex run §11.22 measured from a different
+offset:
+
+```text
+`mod II` at 92, the u32 after it = 16
+u32 stream from 102:
+  0x00010001  0x00000171  1  1  0  0  1  4  5  1  0  0  1  0  0
+  2           6           0  1  0  0  5  0  0  0  6.08  0  0  0.034  0.20  0  0
+```
+
+`0x00010001` is `1, 1` as two `u16`s — which is why the `u16` reading of §11.22 looked
+plausible — and `0x00000171` is `369`, the one value that is not small. The last three
+entries are `0x40c29bd1` = **6.08**, `0x3d088889` = **0.034**, `0x3e4fdf3b` = **0.20**:
+the trailing floats are *inside* the record stream, not after it.
+
+So the payload's record stream is a `u32` array whose elements mix small integers with
+`f32` bit patterns, headed by `16` after the magic. That is a **tagged record stream**
+where the `u32` `16` is the record type and the elements are fields, and the small
+integers — `1, 1, 1, 4, 5, 1, 1, 2, 6, 5` — are the ones that vary between payloads
+while the `369` is constant, which is the signature of a *count* of something this
+payload does not carry rather than a field value.
+
+What this does not give is the records' meaning. §11.20 measured that the `u32` is
+neither a byte count nor an entry count of what follows, and the mixed
+small-integer/float elements mean a reader has to know which field is which before it
+can emit anything: reading them all as numbers produces a list of numbers, and reading
+them all as geometry produces wrong geometry. The routine that names the fields is the
+one at `this->0x50` slot `0x0c`, which §11.23 and §11.24 established is not reachable
+from the carved `DMA3D.exe` — its dispatch thunk is at `0x1c60a4`, an address no
+mapping of the three PEF sections lands inside.
+
+So the residue is now four measured shapes (§11.29), one of them located to a `u32`
+record stream with the floats inside it (§11.32), and the schema that would make it a
+reader is in a section of the executable this workspace does not hold. That is a
+blocker with a named location, not an open-ended one.
