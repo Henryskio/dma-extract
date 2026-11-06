@@ -1637,3 +1637,38 @@ it is recorded as one rather than as a gap in the port.
 from 460 payloads, byte-exact `--original` for all 460, the textures at 705 of 705
 with nothing reported, and all 1,165 payloads recovered byte for byte. The block
 is the 443, and it is encryption.
+
+## 11.17 The model resource reader, traced, and what it does with a payload
+
+`MM3DModelResourceFile::ReadData` is at **`0x1632c8`**, found the same way the
+texture reader was: the CodeWarrior symbol `ReadData__21MM3DModelResourceFileFv`
+at `0x1632a3`, and the `7c 08 02 a6` (`mflr r0`) prologue 37 bytes later. Reading
+the whole function (`0x1632c8`..`0x163424`) settles what the earlier "encrypted"
+note inferred.
+
+It is a **container reader, and it contains no payload loop and no decompression
+call**. In full:
+
+```text
+0x001632c8  mflr r0 ; stw r31,-4(r1) ; mr r31,r3 ; stw r30,-8(r1) ; stw r0,8(r1)\n0x001632dc  stwu r1,-0x70(r1)\n0x001632e0  bl    0x179e44        ; the constructor of the resource object\n0x001632e4  clrlwi. r0, r3, 0x18   ; its result, one byte\n0x001632e8  bf    eq, 0x1632f4     ; nonzero -> failed\n0x001632ec  bl    0x114ab0         ; report\n0x001632f4  li    r0, 2             ; *** 2, not 1: a version-2 resource ***\n0x001632f8  addi  r3, r31, 0x54\n0x001632fc  sth   r0, 0x5c(r1)\n0x00163300  addi  r4, r1, 0x5c\n0x00163304  li    r5, 1\n0x00163308  bl    0x196e34         ; read one subfile (the names)\n0x0016330c  addi  r3, r31, 0x54\n0x00163310  addi  r4, r31, 0x2b4\n0x00163314  li    r5, 1\n0x00163318  bl    0x196e34\n0x0016331c  lha   r5, 0x2b4(r31)    ; N\n0x00163320  extsh. r0, r5\n0x00163324  bt    eq, 0x1633e0\n0x00163328  lwz   r0, 0x2b8(r31)    ; four further subfile pointers, chosen\n0x0016333c  lwz   r4, 0x2c0(r31)    ; the same way (a zero field means NULL)\n0x00163364  lwz   r4, 0x2cc(r31)\n0x00163384  lwz   r4, 0x2d8(r31)\n0x0016338c  addic. r3, r31, 0x50\n0x00163394  lha   r5, 0x2b4(r31)\n0x00163398  bl    0x17a014\n0x0016339c  lha   r4, 0x28c(r31)    ; a second count\n0x001633a0  lha   r3, 0x2b4(r31)    ; N\n0x001633a4  lwz   r0, 0x2dc(r31)\n0x001633a8  mullw r3, r4, r3        ; (N * something) / 8, plus one: a row\n0x001633b0  addi  r0, r3, 7         ; stride for a bit-packed subfile\n0x001633b4  srawi r5, r0, 3\n0x001633b8  addze r5, r5\n0x001633c8  lwz   r4, 0x2e4(r31)\n0x001633d8  bl    0x1c60a4         ; a virtual call on the names object\n0x001633e0  lwz   r12, 0x50(r31)    ; a vtable at this->0x50\n0x001633e8  lwz   r12, 0xc(r12)\n0x001633ec  bl    0x1c60a4         ; its slot 0x0c -- the payload routine\n0x001633f4  cmpwi r3, 0\n0x00163400  li    r4, 7\n0x00163404  bl    0x17981c          ; error 7\n```
+
+**What this establishes, and what it does not.**
+
+The version constant is the finding. The texture reader's `ReadData` writes **`li
+r0, 1`** (`0x13d358`); the model reader writes **`li r0, 2`** (`0x1632f4`). So the
+game's own loader treats the two resources as **different format versions**, which
+is consistent with the payloads behaving differently and is the first evidence
+from the executable rather than from the bytes: the models payload is not the
+texture payload layout re-read.
+
+The function does **not** contain a de-chiffrement call. Its `bl` targets are a
+constructor (`0x179e44`), two subfile readers (`0x196e34`, `0x196ef4`), a virtual
+call on the names object, a virtual call on `this->0x50` slot 0x0c, and an error
+reporter (`0x114ab0`, `0x17981c`). None of them is a key schedule, a checksum
+table or a block cipher. So §11.16's "encrypted or compressed" is confirmed only
+in the weak sense that nothing here decrypts either; the payload reader is the
+**virtual method at `this+0x50` slot 0x0c**, and that routine is reachable but has
+not been read.
+
+That is the honest boundary of what this trace gives, and it is where the reading
+stops rather than where it concludes.
