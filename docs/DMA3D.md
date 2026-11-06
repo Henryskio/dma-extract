@@ -1184,3 +1184,29 @@ open, with the size of the difference now recorded: three resources, not four.
 Nothing in this section should be read as having resolved them. What it does
 establish is the shape of the residue: 6 + 3, in two payload classes, against an
 order question that the English build answers and this one cannot.
+### The order cannot be settled from the shipped bytes, and this is why
+
+The two tables above could leave a reader thinking one order is right and the
+evidence merely weak. It is not: over the whole container, **695 resources decode
+under both orders**, and
+
+* **642** give the *same* reading under both — same palette size and same
+  dimensions, so the order does not matter for them;
+* **53** give a *different* reading, with the palette size and the dimensions both
+  changing;
+* **1** decodes only under the documented palette-first order;
+* **4** decode only under indices-first — which is where the whole 699-vs-696
+  difference comes from.
+
+So each order uniquely rescues resources the other cannot read, and the resources
+where they agree are the vast majority. A reading that discriminates them would
+have to come from outside the payload: either the executable's own texture reader
+(`docs/DMA3D.md` §11.3 records that `DMA3D.exe` is a PowerPC CodeWarrior PEF and
+the binary audit found no disassembler for it), or a build whose textures decode
+cleanly under one order and not the other — which is what the English disc's
+705/705 does for palette-first, and which is why the documented order is the one
+the code keeps.
+
+This is the honest answer to §11.4's question, and it is a negative result rather
+than an unfinished one: the measurement says the shipped bytes do not contain the
+discriminator, so no further measurement of these payloads can produce it.
