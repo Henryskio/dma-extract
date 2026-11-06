@@ -1257,7 +1257,6 @@ The **9 textures of §11.8 are resolved** in §11.14 as coverage masks, and the
 container now decodes 705 of 705 with nothing reported. What remains on the
 Italian disc:
 
-* **443 of 460 model payloads carry no mesh chain.**
 * **443 of 460 model payloads carry no mesh chain.** §11.9 explains why the count
   moved from 0 to 17 and why it stopped there: the containers are byte-identical
   on the disc's two copies, the payloads are raw rather than compressed, and the
