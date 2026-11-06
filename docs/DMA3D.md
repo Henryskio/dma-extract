@@ -2186,3 +2186,75 @@ through `convert_models`, which is the Rust half, so the counts above are what a
 run produces; but `AGENTS.md` requires both halves, and the Lean core still reports
 every model payload as "not ported to Lean yet". That is the next piece of work, not
 a caveat about the numbers above.
+
+## 11.27 The reader is ported to Lean, and the two halves now read the same thing
+
+`lean/src/MmfExtract/Dma3d/Modfile.lean` implements `parse`, and `lean/test/Test.lean`
+checks it against the shipped container. The Lean harness reports:
+
+```text
+DMA3D.MMM: 460 files checked, 460 byte-exact
+DMA3D.MMM: 460 resources, 118 of them read as drawing profiles, 342 converted to nothing
+all checks passed
+```
+
+**Lean and Rust agree.** The Rust reader accepts 101 payloads; Lean accepts 118. That
+is not a divergence, and it is the same number the Rust pipeline writes: Rust tries
+`parse_mesh` first, so its 17 mesh payloads never reach `parse_profile`, while Lean
+has no mesh reader and reads all 118 as point streams. `17 + 101 = 118`, and the
+extraction on the Italian disc writes exactly 118 glTFs — so both halves name the
+same payloads.
+
+The Lean reader is checked at the byte level, the same way `tests/dma3d.rs` checks the
+Rust one: for every accepted payload, every record's four slots are read back from the
+payload and compared with what the reader produced, and the constant slot is compared
+against the reader's own marker. A phase that merely passed the threshold therefore
+cannot be billed as geometry in either half.
+
+### One bug the port caught, in the port
+
+`Float.ofBits` takes the **64-bit pattern of a double**, so it reads a
+single-precision pattern as a denormal and returns zero for `0x3f800000` — the bytes
+of `1.0f`. The first version of the Lean reader accepted nothing at all, which is what
+the shipped-container check caught immediately. `Float32.ofBits` is the
+single-precision reading, and `.toFloat` widens it exactly.
+
+The check's own first two versions were also wrong, and both were caught by the same
+run: it compared the point's **second** component against every slot, and it compared
+with `!=` where a `-0.0` and a `0.0` are the same number and different bits. The
+component mapping follows the reader's own rule (slot `k` is component `k` when it
+precedes the constant, `k - 1` when it follows), and the comparison is bit equality,
+because the reader's promise is that the point **is** the payload's bytes.
+
+### What `extractGltf` does now
+
+The Rust converter is the writer of modern models in this pipeline
+(`src/cli.rs::convert_models`), so the Lean path does not write: it reads each payload
+with `Modfile.parse`, counts the point streams, and reports the payloads that fit
+neither reader with the reader's own reason. The run now says
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 342
+  ...: 3D resource 0 'createAmbientLight.mod': no f32 point stream fits this
+       payload (`docs/DMA3D.md` §11.25)
+```
+
+which replaces the old, uninformative "the 3D model decode ... is not ported to Lean
+yet" for all 460. A first attempt did write the glTFs from Lean as well, and the run
+reported `models: 1283` with 145 files on disk where the converter writes 118: two
+writers of the same file under the same name, counted twice. That is why the Lean path
+counts and reports but does not write, and why its profile count is not added to
+`written`.
+
+### State after the port
+
+| | |
+| --- | --- |
+| glTFs written | 118 (17 mesh + 101 profile) |
+| previews | 118 |
+| `.mod` written through | 342, each reported |
+| textures | 705 PNGs, nothing reported |
+| files | 1419 |
+
+Suite: lib 23, the nine asset suites, all green; the Lean harness reports all checks
+passed. Committed in `DMA3D: the drawing-profile reader, and its Lean port`.

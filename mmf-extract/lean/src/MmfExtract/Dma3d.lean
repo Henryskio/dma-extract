@@ -1,6 +1,7 @@
 import MmfExtract.Bytes
 import MmfExtract.Container
 import MmfExtract.Dma3d.Texfile
+import MmfExtract.Dma3d.Modfile
 import MmfExtract.Path
 import MmfExtract.Picture
 import MmfExtract.Png
@@ -25,6 +26,7 @@ A port of `src/dma3d.rs` and `src/dma3d/texfile.rs`. Two output modes:
 namespace MmfExtract.Dma3d
 
 open MmfExtract.Container (Container)
+open MmfExtract.Dma3d.Modfile (Profile)
 
 /-- One file the 3D output produced, as the index page lists it. -/
 structure Extracted3D where
@@ -44,6 +46,9 @@ structure Extract3DReport where
   measurement. They are counted rather than failed: the pixels are right and only
   the count of unused palette entries is undetermined (`docs/DMA3D.md` §11). -/
   ambiguous : Nat := 0
+  /-- Payloads written as a glTF line loop, i.e. drawing profiles rather than
+  meshes (`docs/DMA3D.md` §11.25, §11.26). -/
+  profiles : Nat := 0
   deriving Inhabited
 
 /-- The output file name's stem: the resource name, sanitised.
@@ -80,6 +85,98 @@ def extract (container : Container) (outDir : System.FilePath) : IO Extract3DRep
         resources := report.resources.push { index, name, path, bytes := payload.size } }
   return report
 
+/-! ## The profile's glTF line loop -/
+
+/-- The little-endian `f32` bytes of one float. -/
+private def leF32 (f : Float) : ByteArray := Id.run do
+  let u := f.toBits.toUInt32
+  let mut out := ByteArray.emptyWithCapacity 4
+  out := out.push (UInt8.ofNat (u &&& 0xff).toNat)
+  out := out.push (UInt8.ofNat ((u >>> 8) &&& 0xff).toNat)
+  out := out.push (UInt8.ofNat ((u >>> 16) &&& 0xff).toNat)
+  out := out.push (UInt8.ofNat ((u >>> 24) &&& 0xff).toNat)
+  return out
+
+/-- The binary buffer of a profile's glTF: `0 … n-1, 0` as `u32`, padded, then the
+positions as `f32`.
+
+The loop closes, because a profile is a closed outline the game tints and extrudes,
+so the last edge back to the first point is part of the shape.
+-/
+def profileBuffer (profile : Profile) : ByteArray := Id.run do
+  let n := profile.points.size
+  let mut out := ByteArray.emptyWithCapacity (4 * (n + 1) + 12 * n)
+  for i in [0:n] do
+    let u : UInt32 := i.toUInt32
+    out := out.append (leU32 u)
+  out := out.append (leU32 0)
+  while out.size % 4 != 0 do
+    out := out.push 0
+  for (x, y, z) in profile.points do
+    out := out.append (leF32 x)
+    out := out.append (leF32 y)
+    out := out.append (leF32 z)
+  while out.size % 4 != 0 do
+    out := out.push 0
+  return out
+where
+  /-- A `u32` as four little-endian bytes. -/
+  leU32 (u : UInt32) : ByteArray := Id.run do
+    let mut out := ByteArray.emptyWithCapacity 4
+    out := out.push (UInt8.ofNat (u &&& 0xff).toNat)
+    out := out.push (UInt8.ofNat ((u >>> 8) &&& 0xff).toNat)
+    out := out.push (UInt8.ofNat ((u >>> 16) &&& 0xff).toNat)
+    out := out.push (UInt8.ofNat ((u >>> 24) &&& 0xff).toNat)
+    return out
+
+/-- The glTF 2.0 document of a profile, as `src/dma3d/gltf.rs::write_profile_gltf`
+spells it: one primitive of mode `2` (`LINES`) whose indices close the loop.
+
+The engine's profile-to-surface tessellation is not in the payload, so the document
+is a line loop and never a surface — emitting one would be invented geometry
+(`docs/DMA3D.md` §11.26).
+-/
+def profileGltf (name bufferName : String) (profile : Profile) : String := Id.run do
+  let n := profile.points.size
+  let binName := bufferName
+  let mut min : Array Float := #[Float.inf]
+  let mut max : Array Float := #[-Float.inf]
+  for (x, y, z) in profile.points do
+    for v in [x, y, z] do
+      if v < min.back! then min := min.set! (min.size - 1) v
+      if v > max.back! then max := max.set! (max.size - 1) v
+  let document :=
+    "{\"asset\":{\"version\":\"2.0\",\"generator\":\"mmf-extract (DMA3D §11.25)\"},\n" ++
+    "\"scene\": 0,\n" ++
+    "\"scenes\": [{\"nodes\": [0]}],\n" ++
+    "\"nodes\": [{\"name\": \"" ++ escapeJson name ++ "\", \"mesh\": 0}],\n" ++
+    "\"meshes\": [{\"name\": \"" ++ escapeJson name ++ "\", \"primitives\": [" ++
+      "{\"attributes\": {\"POSITION\": 1}, \"indices\": 0, \"mode\": 2}]}],\n" ++
+    "\"accessors\": [" ++
+      "{\"bufferView\": 0, \"componentType\": 5125, \"count\": " ++ toString (n + 1) ++
+        ", \"type\": \"SCALAR\"}," ++
+      "{\"bufferView\": 1, \"componentType\": 5126, \"count\": " ++ toString n ++
+        ", \"type\": \"VEC3\", \"min\": [" ++ joinFloats min ++
+        "], \"max\": [" ++ joinFloats max ++ "]}],\n" ++
+    "\"bufferViews\": [" ++
+      "{\"buffer\": 0, \"byteOffset\": 0, \"byteLength\": " ++ toString (4 * (n + 1)) ++
+        ", \"target\": 34963}," ++
+      "{\"buffer\": 0, \"byteOffset\": " ++ toString (4 * (n + 1)) ++
+        ", \"byteLength\": " ++ toString (12 * n) ++ ", \"target\": 34962}],\n" ++
+    "\"buffers\": [{\"byteLength\": " ++ toString (4 * (n + 1) + 12 * n) ++
+      ", \"uri\": \"" ++ escapeJson binName ++ "\"}]}\n"
+  return document
+where
+  joinFloats (xs : Array Float) : String :=
+    String.intercalate ", " (xs.toList.map toString)
+  escapeJson (s : String) : String := Id.run do
+    let mut out := ""
+    for c in s.toList do
+      if c == '"' || c == '\\' then
+        out := out.push '\\'
+      out := out.push c
+    return out
+
 /-- The modern texture path: decode each payload and write a PNG. -/
 def extractPngs (container : Container) (outDir : System.FilePath) : IO Extract3DReport := do
   IO.FS.createDirAll outDir
@@ -108,21 +205,44 @@ def extractPngs (container : Container) (outDir : System.FilePath) : IO Extract3
 
 /-- The modern model path.
 
-The Rust extractor writes a glTF per payload that carries the measured mesh
-chain and the payload verbatim for the rest, with a `.tail` file and an
-`.anim.txt` beside each glTF. That writer is not ported yet, so every model is
-reported as a failure — the run continues, and the reason says precisely what is
-missing, rather than a silent format change.
+The **Rust converter** is the writer of modern models in this pipeline
+(`src/cli.rs::convert_models`), so this does not write: it reads each payload with
+`Modfile.parse` and reports the ones that fit neither the mesh chain nor the
+drawing profile, which is the same set the converter reports
+(`docs/DMA3D.md` §11.25, §11.26).
+
+The reading is ported so the two halves cannot drift: the Lean core's count of
+payloads carrying a `f32` point stream is checked against the Rust reader's in
+`test/Test.lean`, and a payload both accept is the one the converter writes. A
+payload that fits neither is reported with the reader's own reason, so the run
+says what is missing rather than silently skipping it.
 -/
-def extractGltf (container : Container) (_outDir : System.FilePath) :
+def extractGltf (container : Container) (outDir : System.FilePath) :
     IO Extract3DReport := do
+  IO.FS.createDirAll outDir
   let mut report : Extract3DReport := {}
   let n := container.resourceCount.toNat
   for index in [0:n] do
     let name := container.name index
-    report := { report with
-      failed := report.failed.push (index, name,
-        "the 3D model decode (glTF, mesh, animation records, texture coordinates) is not ported to Lean yet; use --original for the verbatim payload") }
+    match Container.payload container index with
+    | Except.error e =>
+      report := { report with failed := report.failed.push (index, name, e) }
+    | Except.ok payload =>
+      match Modfile.parse payload with
+      | Except.ok _ =>
+        -- A drawing profile, which the Rust converter writes as a glTF line
+        -- loop. Counted here so the Lean core's own accounting agrees with what
+        -- the converter writes, and not written, because writing it here as well
+        -- would produce the same file twice under the same name.
+        -- Not counted in `written`: this path writes no file, and the Rust
+        -- converter's count is the one `src/cli.rs` adds. Counting it here as
+        -- well would report the same file twice.
+        report := { report with profiles := report.profiles + 1 }
+      | Except.error e =>
+        -- No mesh chain and no point stream, so what is missing is named
+        -- precisely: the reason a payload fails is part of the output.
+        report := { report with
+          failed := report.failed.push (index, name, s!"{e}") }
   return report
 
 /-- Extract a `Models` container: the glTF path when modern, the payload when

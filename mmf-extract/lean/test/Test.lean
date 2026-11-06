@@ -3,6 +3,7 @@ import MmfExtract.Container
 import MmfExtract.Lz77
 import MmfExtract.Sound
 import MmfExtract.Dma3d.Texfile
+import MmfExtract.Dma3d.Modfile
 import MmfExtract.Dma3d.Verify
 
 
@@ -20,6 +21,7 @@ LEAN_PATH=.lake/build/lib/lean lean --run test/Test.lean
 
 open MmfExtract
 open MmfExtract.Dma3d.Texfile
+open MmfExtract.Dma3d.Modfile
 open MmfExtract.Container
 
 /-- A payload long enough to need the extended literal-run form. -/
@@ -250,6 +252,65 @@ def checkTextures3D (assetDir : String) : IO Bool := do
       IO.eprintln s!"DMA3D.MMX: the first payload starts at {payloadStart}, expected 29654"
       ok := false
 
+    -- The model container's own reading, the one this port added: a payload is
+    -- either the measured mesh chain, or the `f32` record stream of a drawing
+    -- profile (`docs/DMA3D.md` §11.25, §11.26), or neither -- and neither is a
+    -- failure the run reports rather than skipping.
+    match ← Container.read (System.FilePath.mk (assetDir ++ "/DMA3D.MMM")) with
+    | .error e =>
+      IO.eprintln s!"DMA3D.MMM: {e}"
+      ok := false
+    | .ok models =>
+      let resources := models.resourceCount.toNat
+      let mut profiles := 0
+      let mut unconverted := 0
+      for i in [0:resources] do
+        match Container.payload models i with
+        | Except.error _ => unconverted := unconverted + 1
+        | Except.ok payload =>
+          match MmfExtract.Dma3d.Modfile.parse payload with
+          | Except.error _ => unconverted := unconverted + 1
+          | Except.ok profile =>
+            profiles := profiles + 1
+            -- The reader's own promise: every point is the payload's own bytes
+            -- at the measured phase, minus the constant slot. Read back
+            -- independently so a phase that merely passed the threshold cannot
+            -- be billed as geometry.
+            let records := (payload.size - profile.phase) / 16
+            if profile.points.size != records then
+              IO.eprintln s!"DMA3D.MMM: resource {i} holds {profile.points.size} points for {records} records"
+              ok := false
+            for j in [0:records] do
+              let base := profile.phase + 16 * j
+              for slot in [0:4] do
+                match MmfExtract.Dma3d.Modfile.leF32 payload (base + 4 * slot) with
+                | Except.error e =>
+                  IO.eprintln s!"DMA3D.MMM: resource {i} record {j}: {e}"
+                  ok := false
+                | Except.ok v =>
+                  if slot == profile.constantSlot then
+                    if !((v - profile.marker).abs < 1.0e-6) then
+                      IO.eprintln s!"DMA3D.MMM: resource {i} record {j} slot {slot} is not the marker"
+                      ok := false
+                  else
+                    -- Slot `k` of the record is component `k` of the point when
+                    -- `k` precedes the constant slot, and component `k - 1`
+                    -- when it follows it, because the reader removes the
+                    -- constant and keeps the other three in order.
+                    let component := if slot < profile.constantSlot then slot else slot - 1
+                    let (x, y, z) := profile.points[j]!
+                    let stored := if component == 0 then x else if component == 1 then y else z
+                    -- Bit equality, not `!=`: a `-0.0` and a `0.0` are different
+                    -- bits and the same number, and the reader's promise is that
+                    -- the point *is* the payload's bytes.
+                    if stored.toBits != v.toBits then
+                      IO.eprintln s!"DMA3D.MMM: resource {i} record {j} slot {slot} differs from the payload"
+                      ok := false
+      IO.println s!"DMA3D.MMM: {resources} resources, {profiles} of them read as drawing profiles, {unconverted} converted to nothing"
+      if resources != 460 then
+        IO.eprintln s!"DMA3D.MMM: {resources} resources, expected 460"
+        ok := false
+
     let mut decoded := 0
     let mut ambiguous := 0
     let mut outside := 0
@@ -258,12 +319,12 @@ def checkTextures3D (assetDir : String) : IO Bool := do
       match Container.payload container i with
       | .error _ => outside := outside + 1
       | .ok payload =>
-        match parse payload with
-        | .ok texture =>
+        match MmfExtract.Dma3d.Texfile.parse payload with
+        | Except.ok texture =>
           decoded := decoded + 1
           if texture.ambiguous then
             ambiguous := ambiguous + 1
-        | .error _ => noSplit := noSplit + 1
+        | Except.error _ => noSplit := noSplit + 1
     IO.println s!"DMA3D.MMX: {decoded} textures decoded ({ambiguous} of them with an unpinned palette split), {outside} offsets entries outside the container, {noSplit} with no split"
     if decoded != 705 then
       IO.eprintln s!"DMA3D.MMX: {decoded} textures decoded, expected 705"
