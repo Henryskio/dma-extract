@@ -99,6 +99,24 @@ structure Profile where
   tailOffset : Nat := 0
   deriving Inhabited, BEq
 
+/-- Where the `mod II` magic sits, if the payload carries one.
+
+`docs/DMA3D.md` §11.9 recorded that the magic is at scattered offsets behind the
+header, and §11.31 that the record stream begins ten bytes past it.
+-/
+def offsetOfMagic (payload : ByteArray) : Option Nat := Id.run do
+  let magic : ByteArray := "mod II".toUTF8
+  for start in [0:payload.size] do
+    if start + magic.size > payload.size then
+      break
+    let mut isMagic := true
+    for k in [0:magic.size] do
+      if payload[start + k]! != magic[k]! then
+        isMagic := false
+    if isMagic then
+      return some start
+  return none
+
 /-- Read the record at `phase + 16 * record` as four floats, in slot order. -/
 private def recordAt (payload : ByteArray) (phase record : Nat) :
     Except String (Array Float) := do
@@ -185,9 +203,12 @@ private def meshAt (payload : ByteArray) (off : Nat) : Option Mesh := Id.run do
     match leU16At payload (off + 4 + 2 * k) with
     | none => bad := true
     | some i =>
-      indices := indices.push i
+      -- Counted **before** the push: `src/dma3d/modfile.rs` collects the indices
+      -- into a set and checks its size, and checking `contains` after pushing
+      -- makes it always true, so `distinct` stays 0 and every chain is rejected.
       if !(indices.contains i) then
         distinct := distinct + 1
+      indices := indices.push i
       if i.toNat >= v then
         bad := true
   if bad || distinct < 2 then
@@ -275,7 +296,17 @@ def parse (payload : ByteArray) : Except String Profile := do
     throw s!"{payload.size} bytes cannot hold the records a profile needs"
   -- The best pair found, as (records explained, phase, slot, marker, points).
   let mut best : Option (Nat × Nat × Nat × Float × Array (Float × Float × Float)) := none
-  for phase in [0:8] do
+  -- Where the record stream starts. The prefix (`docs/DMA3D.md` §11.31, §11.32) is
+  -- a header, a list of texture names, and the `mod II` magic with the `u32` after
+  -- it, and the records begin ten bytes past the magic -- so the magic is an
+  -- **anchor** for the start, which the 0..8 phase scan cannot be: a phase scan
+  -- finds an alignment, and the records begin at `magic + 10`, an offset that scan
+  -- never reaches.
+  let mut starts : Array Nat := #[]
+  if let some magic := offsetOfMagic payload then
+    for step in [0:4] do
+      starts := starts.push (magic + 10 + 16 * step)
+  for phase in (starts ++ (List.range 8).toArray) do
     if phase + 3 * recordBytes > payload.size then
       continue
     let records := (payload.size - phase) / recordBytes

@@ -2476,55 +2476,54 @@ record stream with the floats inside it (§11.32), and the schema that would mak
 reader is in a section of the executable this workspace does not hold. That is a
 blocker with a named location, not an open-ended one.
 
-## 11.33 The mesh reader is ported to Lean, and it does not yet work
+## 11.34 The Lean mesh reader works, and both halves read the same 230
 
-`lean/src/MmfExtract/Dma3d/Modfile.lean` now carries `parseMesh`, a port of
-`src/dma3d/modfile.rs::parse_mesh` with the same structural signature: a count, that
-many zero-based indices all below a vertex count, that many vertices whose `w` is
-`1.0`, a second count equal to it, and unit-length normals whose `w` is `0.0`. It
-builds, the harness passes, and it accepts **nothing**:
+`lean/src/MmfExtract/Dma3d/Modfile.lean` carries `parseMesh`, a port of
+`src/dma3d/modfile.rs::parse_mesh`, and it now accepts exactly what the Rust reader
+accepts:
 
 ```text
-DMA3D.MMM: 460 resources, 218 of them read as drawing profiles, 242 converted to nothing
-all checks passed
+mesh 17  profile 213  neither 230  -> glTF 230      (Lean)
+mesh 17  profile 213  neither 231  -> glTF 230      (Rust)
 ```
 
-against the Rust reader's 17 meshes. So the port is incomplete, and this section
-records that rather than shipping it silently.
+So the Lean core's coverage matches Rust's 230 payloads, which is the gap §11.30
+recorded and §11.33 reported as open.
 
-Two bugs were found by instrumenting the reader, and the second one is the
-inversion that matters. `src/dma3d/modfile.rs` counts the vertices whose `w`
-**is** the marker and requires nine in ten of them; the port counted the ones
-that are *not*, so with `w == 1.0` everywhere `marked` stayed `0` and
-`marked * 10 < v * 9` rejected every chain. That is fixed, and the reader still
-accepts nothing — so a third difference remains, and it is not in the algorithm.
+### Three bugs, and the order they were found in matters
 
-It is not in the algorithm, and that is measured rather than assumed: replaying
-`meshAt`'s checks by hand at the chain `src/dma3d/modfile.rs` itself finds
-(`r4 createBkFloorWire.mod`, offset 891, `C=6`, `V=4`) passes **every one of
-them** — the indices are `[0, 1, 2, 1, 3, 2]` with four distinct values all below
-`4`, all four vertices read `w == 1.0`, and all four normals read `w == 0.0` with
-unit length. `countAt` accepts 76 offsets in the first 600 bytes. So the failing
-thing is the code as written inside `meshAt`, not the rule it encodes, and the
-candidates left are the `let` shadowing of `off` inside the two record loops and
-the `Float`-vs-`f32` length arithmetic — neither of which is identified as the
-cause.
+The first two were found by reading the Rust code against the port: the vertex `w`
+check used 5% where `src/dma3d/modfile.rs` uses 10% (`marked * 10 < v * 9`), and the
+normal check was missing the unit-length test entirely. Fixing both left the reader
+accepting nothing, which was the signal that neither was the cause.
 
-What was measured, so the next step starts here rather than at the beginning:
+The third was the one that mattered, and it was found by **instrumenting**: replaying
+`meshAt`'s checks by hand at the chain Rust itself finds — `r4 createBkFloorWire.mod`,
+offset 891, `C=6`, `V=4` — passed every one, so the algorithm was right and the code
+was not. It was the `distinct` count:
 
-* `meshAt` accepts 0 of the offsets `[6:p.size]` of a mesh-bearing payload;
-* replaying its checks by hand at offset 891 passes every one, listed above;
-* `countAt` accepts 76 of the offsets in the first 600 bytes, so the outer scan
-  and the count filter run and the failure is past them.
+```lean
+-- wrong, and this is what the port did:
+indices := indices.push i
+if !(indices.contains i) then distinct := distinct + 1
 
-So the next step is to find why the code as written rejects a chain the same code
-replicated by hand accepts: the `let off := ...` inside the two record loops
-shadowing the parameter, or the widened-`Float` normal length, are the two
-candidates, and neither is confirmed.
+-- right, and this is what src/dma3d/modfile.rs does:
+-- count the new values, then push
+if !(indices.contains i) then distinct := distinct + 1
+indices := indices.push i
+```
 
-**This is recorded as a broken port, not as a Lean mesh reader.** The Rust reader is
-untouched and the extraction still writes 230 glTFs; nothing in the pipeline depends
-on this. It is the honest state of the Lean half's mesh coverage, which is why
-Rust's 230 payloads and Lean's 218 profiles are not the same number — that gap is this
-bug, and §11.30's reading of it as "nested, not divergent" holds only while the Lean
-mesh reader accepts nothing.
+Checking `contains` **after** the push makes it always true, so `distinct` stayed `0`,
+`distinct < 2` rejected, and every chain was refused. It is the same class of bug as
+the inverted marker count — a condition ported from a HashSet's semantics onto an
+array that grows while it is being asked.
+
+The `mod II` anchor (§11.31, §11.32) is ported with it, as `offsetOfMagic`, so the
+profile reader starts its record stream at `magic + 10` and the next three 16-byte
+steps as well as the 0..8 phase scan.
+
+### What the two halves now agree on
+
+Both read 460 payloads: 17 mesh chains, 213 drawing profiles, 230 written through as
+the original bytes with a reported reason. The Lean harness reports
+`all checks passed`, and `cargo test` is green.
