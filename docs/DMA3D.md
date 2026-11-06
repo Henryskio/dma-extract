@@ -3261,3 +3261,62 @@ non-name slots hold.
 The goal's second half is still not met at 345 of 460, and the residue is now
 characterised as **115 payloads, 24 of which cannot be named because the name table is
 read short**.
+
+## 11.48 The name table is interleaved, so the fix is not safe to make blind
+
+§11.47 measured the `Models` container's name table as 520 × 32-byte slots from
+`0x75a`, of which 390 hold a `.mod` name, and left the reader reading only `32 * n`.
+Measuring the *spacing* between the name runs shows why that is not a bug with a
+one-line fix.
+
+### What the spacing says
+
+| | |
+| --- | --- |
+| printable name runs in `0x75a..0x486e` | 467 |
+| runs spaced exactly 32 bytes apart | 446 |
+| runs spaced anything else | 20 |
+
+The first five runs are at `0x75a, 0x77a, 0x79a, 0x7ba, 0x7da` — slots 0..4, 32 bytes
+apart. Then comes a **310-byte gap** to `0x930`, and the runs continue 32 bytes apart
+from there. Later gaps are 160, 18, 43, 89, 48, 86, 176 bytes.
+
+A 310-byte gap is 9.7 slots. So the region is **not a contiguous block of name slots**:
+it is names interleaved with records that are not names, and the drift accumulates —
+after the first gap the run at `0x930` sits at slot 14 by straight-line counting while
+the resource it belongs to, if the mapping is sequential, is slot 6.
+
+### Why the fix was not made
+
+`src/container.rs` reads `32 * n` bytes and indexes names by resource index. To read
+more names correctly, one must know **which slot belongs to which resource**, and the
+spacing measurement says that mapping is not sequential — it has 20 gaps whose meaning
+is not in the bytes. Options:
+
+* assume the names are sequential and the gaps are empty slots — then `name(455)` would
+  be read from a slot that belongs to a different resource, and every name from the
+  first gap onward would be shifted;
+* derive the mapping from the executable's own reader, which §11.17 located at
+  `0x1632c8` and §11.19 established is not statically reachable.
+
+The first is a guess that would silently rename 460 resources and change every output
+filename. `AGENTS.md` forbids a guess of exactly this shape — a payload that matches no
+known layout is reported, not made to fit — and a name that names the wrong resource is
+worse than a missing name, because it is *wrong* rather than *absent*.
+
+### What this leaves
+
+The 115 unconverted payloads are still 115, and 24 of them still cannot be named by the
+current reader. The reader is not made worse by leaving it: `name(0)` through
+`name(100)` are correct today, which is what §11.15 and §11.29 classified by.
+
+What the measurement adds is that the name table is **interleaved with non-name
+records**, which is the same structure the payload region itself has (§11.37's
+alternating-zero tables, §11.31's magic-then-u16 streams) and which the executable's
+reader decodes. So the 115 are not a bucket of unnamed leftovers: they are the
+resources whose names live in the 130 non-name slots, and reading both needs the
+container's own reader.
+
+The goal's second half is not met at 345 of 460, and the residue is now characterised
+as payloads whose name records are interleaved with records this repository cannot yet
+read.
