@@ -3144,3 +3144,69 @@ format: **where do the 26 offset bits sit across the two blocks?** Answering it 
 the spec's figure, or one known-good sample — a `RelocSetPosition` whose target offset
 can be read back from the code — and then the stream can be replayed to settle whether
 the `bl` at `0x1633ec` is patched at all.
+
+## 11.46 The `bl` at `0x1633ec` is not relocated, so it was a misaligned read
+
+Ghidra's `RelocSetPosition` source (`Ghidra/Features/Base/src/main/java/ghidra/app/util/bin/format/pef/RelocSetPosition.java`) settles the operand split that §11.45 left open, and settling it settles the branch:
+
+```java
+RelocSetPosition(BinaryReader reader) {
+    int value = reader.readNextShort() & 0xffff;
+    opcode = ((value & 0xfc00) >> 10) & 0x3f;   // the high SIX bits
+    offset =  (value & 0x03ff) << 16;           // the low TEN bits
+    offset |=  (reader.readNextShort() & 0xffff);
+}
+```
+
+So the opcode is the high **six** bits — not the seven §11.45's reading of *Inside
+Macintosh* implied — and the offset is the **low ten** bits shifted by 16. The two
+splits §11.45 tried (nine and ten) were the two candidates, and Ghidra's source
+confirms the second; the reason §11.45's values were out of range is not the split but
+that it had not yet confirmed the opcode width either.
+
+### Applying it: two of the seventeen candidates are real
+
+Section 0 is `0x194f74` (1,658,740) bytes, so a `RelocSetPosition` whose offset exceeds
+that is not a section-0 relocation at all. Recomputing all seventeen candidates with
+the documented split:
+
+| | |
+| --- | --- |
+| offsets past section 0 | **15** |
+| offsets inside section 0 | **2** — `0x1038b8` and `0x1ed3c` |
+| equal to the branch's `0x15fedc` | **0** |
+
+The fifteen are **mid-instruction false positives**: §11.44 read sec2 as a flat array
+of `u16` words, and a stream whose instructions are two bytes each and four bytes each
+and which repeats blocks has words that are not instruction starts. Filtering a flat
+array by opcode finds opcodes inside operands. That is the same mistake §11.44 made
+reading `0x0200` as an offset, and §11.45's opcode histogram is wrong for the same
+reason.
+
+The two real anchors are `0x1038b8` (1,069,752) and `0x1ed3c` (126,264). For the branch
+at `0x15fedc` (1,441,500) to be relocated, `relocAddress` would have to be advanced
+from `0x1038b8` by 371,748 bytes after the second anchor — and every instruction in the
+set other than `RelocSetPosition` advances it by at most a few hundred bytes, so no
+sequence of them spans that gap.
+
+**So the relocation stream does not reach section-0 offset `0x15fedc`, and the `bl` at
+`0x1633ec` is not patched.** Its encoded target of `0x1c60a4` stands, and since §11.24
+established that no mapping of the three PEF sections lands inside `0x1c60a4`, the
+reading cannot be right — which means the `bl` itself is a **misaligned instruction
+read**, exactly like the fifteen false positives, and not a relocated dispatch.
+
+Four turns of tracing a branch turn out to have been tracing a byte pattern inside an
+operand. §11.9's "the payload-consuming routine at `0x1633ec`" rests on that read, and
+this section withdraws it.
+
+### What this changes about the 115 payloads
+
+The 115 are no longer waiting on a relocated dispatch. Everything known about them is
+what the probes measured — no period ≥ 90%, no constant-slot `f32` stream, no magic,
+no `u16` table, no `f64` stream, no name table — and the one remaining lead is the
+executable's own reader, which §11.24 established is reachable in a section whose
+dispatch thunk is at `0x1c60a4`. That conclusion now stands without the relocation
+argument, because the relocation argument was wrong.
+
+The goal's second half is still not met at 345 of 460, and it is now not met with one
+fewer lead rather than one more.
