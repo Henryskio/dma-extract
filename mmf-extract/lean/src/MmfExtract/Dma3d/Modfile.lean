@@ -435,6 +435,14 @@ the payloads it did not look at.
 structure NameTable where
   /-- The names, in payload order. -/
   names : Array String
+  /-- The names the container's slice cut off at the payload's end.
+
+  Measured rather than assumed: 8 of the 19 name tables this reader already accepts
+  end with a printable run that has no NUL before the payload ends, which is the
+  container slicing a payload mid-record. Those runs are real names whose last
+  characters were not carried, so they are recorded and marked rather than dropped
+  or padded (`docs/DMA3D.md` §11.54). -/
+  truncated : Array String
   deriving Inhabited
 
 /-- Read a table of texture names out of a payload.
@@ -470,9 +478,32 @@ def parseNameTable (payload : ByteArray) : Except String NameTable := Id.run do
       k := j + 1
     else
       k := if j > k then j else k + 1
-  if names.size < 3 then
-    return .error s!"{names.size} names is fewer than the 3 a table needs"
-  return .ok { names }
+  -- The last record the container carried was cut: a run of printable characters
+  -- that reaches the payload's end with no NUL after it is a name whose tail was
+  -- not carried, not a gap in the table. 8 of the 19 tables this reader already
+  -- accepts have exactly that shape, so it is a property of the format and not a
+  -- special case (`docs/DMA3D.md` §11.54).
+  let mut truncated : Array String := #[]
+  -- The last non-printable byte in the payload, found by scanning backwards: a
+  -- NUL terminates a name, and anything else that stops the scan starts the run
+  -- that reaches the payload's end.
+  let mut last : Option Nat := none
+  for pos in [0:payload.size] do
+    let b := payload[pos]!
+    if b == 0 || b < 0x21 || b > 0x7e then
+      last := some pos
+  match last with
+  | some pos =>
+    let start := pos + 1
+    if payload.size - start >= minNameLen then
+      let mut cut := ""
+      for m in [start:payload.size] do
+        cut := cut.push (Char.ofNat (payload[m]!).toNat)
+      truncated := truncated.push cut
+  | none => pure ()
+  if names.size + truncated.size < 3 then
+    return .error s!"{names.size + truncated.size} names is fewer than the 3 a table needs"
+  return .ok { names, truncated }
 
 /-! ## The `f32` value stream -/
 

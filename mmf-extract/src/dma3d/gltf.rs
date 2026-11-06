@@ -1283,7 +1283,16 @@ pub fn write_name_json(path: &Path, name: &str, table: &NameTable) -> Result<()>
         .iter()
         .map(|n| json_string(n))
         .collect();
-    document.push_str(&format!("    \"names\": [{}]\n", quoted.join(", ")));
+    document.push_str(&format!("    \"names\": [{}],\n", quoted.join(", ")));
+    // The names the container's slice cut off. Written separately because they are
+    // names whose last characters were not carried, and a reader of this document
+    // must not treat `createBtSelect.38.tg` as a complete name (`docs/DMA3D.md`
+    // §11.54).
+    let cut: Vec<String> = table.truncated.iter().map(|n| json_string(n)).collect();
+    document.push_str(&format!(
+        "    \"names the slice cut off\": {}\n",
+        if cut.is_empty() { String::new() } else { format!("[{}]", cut.join(", ")) }
+    ));
     document.push_str("  }\n");
     document.push_str("}\n");
     std::fs::write(path, document.as_bytes())

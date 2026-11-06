@@ -3595,3 +3595,68 @@ magic under another spelling.
 The goal's second half is not met at 418 of 460. The 42 are characterized by what they
 are *not* against every shape this project has read, which is the first time the residue
 has been characterized that completely — and it is characterization, not conversion.
+
+## 11.54 Names the container's slice cut off are names, and 420 of 460 have output
+
+§11.53 characterized the 42 unconverted payloads and stopped. Two of them were already
+half-read and did not convert only because of how the reader counts, and this section is
+that fix.
+
+### What the four "signature" payloads actually are
+
+§11.26's lead — a repeated 5-byte signature `00 05 45 XX 01` before a texture name — is
+**withdrawn as a signature**. Scanning the whole container for it finds 23 occurrences
+across 5 payloads, with the tag byte incrementing monotonically (`0x20, 0x21, 0x22 …`),
+which is the shape of coincidental matches inside structured data rather than a format
+tag. In `r33` the same offset holds `65 74 2e` — the bytes `et.` of a name — not a
+signature at all.
+
+What the four payloads do carry is the thing inside the signature:
+
+| payload | complete names | cut off at the payload's end |
+| --- | --- | --- |
+| `r33 od` | `net.18.tga`, `createBtMagnet.19.tga` | `createBtMagnet.2` |
+| `r58 lect.mod` | `ct.36.tga`, `createBtSelect.37.tga` | `createBtSelect.38.tg` |
+| `r76`, `r80` | none | none |
+
+The container slices its payloads, so a name table's last record can end without its
+NUL. `r58`'s payload ends at `createBtSelect.38.tg` — 20 printable characters and then
+the boundary. That is a name whose tail was not carried, not a gap in the table.
+
+### The measurement that makes it a rule and not an exception
+
+Runs of printable characters reaching the payload's end with no NUL after them:
+
+* **8 of the 19 name tables this reader already accepts** have one, so the sliced tail
+  is a property of the format, not of these two payloads;
+* **only 2 of the 460 payloads** have one at all while carrying two complete names, so
+  the new reading admits exactly those two and nothing else;
+* the 19 accepted tables carry **min 3 names each**, so the reader's three-name
+  threshold already has a measured floor — which is why the cut name counts toward it
+  rather than replacing a complete one.
+
+### What the reader does now
+
+`parse_name_table` records the sliced tail in a `truncated` field and counts it toward
+the three-name minimum. `write_name_json` writes it under `names the slice cut off`,
+separately, so a reader of the document cannot mistake `createBtSelect.38.tg` for a
+complete name. Two unit tests pin it: `a_table_whose_last_record_was_sliced_is_read`
+and `two_names_with_no_sliced_tail_is_rejected`.
+
+The run now reports:
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 40
+glTF 230   json 190   previews 230   png 935   .mod 40
+```
+
+**17 meshes + 213 profiles + 190 JSON+text = 420 of 460**, against 418 before. The Lean
+reader agrees exactly — `mesh 17, profile 213, record 48, param 9, names 21, streams
+112, other 40` → `output 420` — and the harness reports `all checks passed`.
+
+### What is left
+
+**40 payloads** fit no reader. §11.53's calibration stands: the 21 short-`f32` payloads
+have runs of 8–15 values against an accepted minimum of 16, the 11 narrow ones have a
+spread of 0.05–0.35 against an accepted minimum of 0.519, and 10 have no run. `r76` and
+`r80` carry no names at all. The goal's second half is not met at 420 of 460.

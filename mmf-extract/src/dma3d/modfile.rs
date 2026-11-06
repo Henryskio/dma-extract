@@ -975,7 +975,14 @@ mod param_table_tests {
 pub struct NameTable {
     /// The names, in payload order.
     pub names: Vec<String>,
-
+    /// The names the container's slice cut off at the payload's end.
+    ///
+    /// Measured rather than assumed: 8 of the 19 name tables this reader already
+    /// accepts end with a printable run that has no NUL before the payload ends,
+    /// which is the container slicing a payload mid-record. Those runs are real
+    /// names whose last characters were not carried, so they are recorded and
+    /// marked rather than dropped or padded.
+    pub truncated: Vec<String>,
 }
 
 /// The shortest run of printable characters that counts as a name.
@@ -1008,10 +1015,25 @@ pub fn parse_name_table(payload: &[u8]) -> Result<NameTable> {
             k = if j > k { j } else { k + 1 };
         }
     }
-    if names.len() < 3 {
+    // The last record the container carried was cut: a run of printable characters
+    // that reaches the payload's end with no NUL after it is a name whose tail was
+    // not carried, not a gap in the table. 8 of the 19 tables this reader already
+    // accepts have exactly that shape, so it is a property of the format and not a
+    // special case (`docs/DMA3D.md` §11.54).
+    let mut truncated: Vec<String> = Vec::new();
+    if let Some(at) = payload
+        .iter()
+        .rposition(|&b| b == 0 || !(b as char).is_ascii_graphic())
+    {
+        let start = at + 1;
+        if payload.len() - start >= MIN_NAME_LEN {
+            truncated.push(payload[start..].iter().map(|b| *b as char).collect());
+        }
+    }
+    if names.len() + truncated.len() < 3 {
         bail!(
             "{} names is fewer than the 3 a table needs",
-            names.len()
+            names.len() + truncated.len()
         );
     }
     // No `first_is_truncated` field, and that is deliberate. Some payloads do
@@ -1020,7 +1042,7 @@ pub fn parse_name_table(payload: &[u8]) -> Result<NameTable> {
     // first byte is the name's first byte whether or not the name is cut, so the
     // bytes cannot tell the two apart. Asserting either way would be a guess, and
     // `AGENTS.md` sets the payload aside rather than guessing it.
-    Ok(NameTable { names })
+    Ok(NameTable { names, truncated })
 }
 
 #[cfg(test)]
@@ -1277,5 +1299,43 @@ mod stream_position_tests {
         }
         let stream = parse_value_stream(&payload).expect("read");
         assert_eq!(stream.values.len(), 60);
+    }
+}
+
+#[cfg(test)]
+mod name_tail_tests {
+    use super::*;
+
+    /// A table whose last record the container sliced is still a table.
+    ///
+    /// `r58 lect.mod` carries `ct.36.tga` and `createBtSelect.37.tga` complete, and
+    /// then `createBtSelect.38.tg` cut off at the payload's end — the container
+    /// sliced the payload mid-record (`docs/DMA3D.md` §11.54).
+    #[test]
+    fn a_table_whose_last_record_was_sliced_is_read() {
+        let mut payload: Vec<u8> = Vec::new();
+        payload.extend_from_slice(b"ct.36.tga\0");
+        payload.extend_from_slice(&[0xcc; 8]);
+        payload.extend_from_slice(b"createBtSelect.37.tga\0");
+        payload.extend_from_slice(&[0xcc; 6]);
+        // The third name, cut: 20 printable characters and no NUL after them.
+        payload.extend_from_slice(b"createBtSelect.38.tg");
+        let table = parse_name_table(&payload).expect("the payload is a table");
+        assert_eq!(table.names, vec!["ct.36.tga", "createBtSelect.37.tga"]);
+        assert_eq!(table.truncated, vec!["createBtSelect.38.tg"]);
+    }
+
+    /// A payload with only two names and no sliced tail is still rejected: the
+    /// third name must be there, either whole or cut, and `r58`/`r33` are the only
+    /// two of 460 payloads whose tail is at least eight printable characters.
+    #[test]
+    fn two_names_with_no_sliced_tail_is_rejected() {
+        let mut payload: Vec<u8> = Vec::new();
+        payload.extend_from_slice(b"createBtFill.00.TGA\0");
+        payload.extend_from_slice(&[0xcc; 32]);
+        payload.extend_from_slice(b"createBtFill.01.TGA\0");
+        payload.extend_from_slice(&[0xcc; 32]);
+        payload.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        assert!(parse_name_table(&payload).is_err());
     }
 }
