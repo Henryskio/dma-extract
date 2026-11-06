@@ -2475,3 +2475,50 @@ So the residue is now four measured shapes (§11.29), one of them located to a `
 record stream with the floats inside it (§11.32), and the schema that would make it a
 reader is in a section of the executable this workspace does not hold. That is a
 blocker with a named location, not an open-ended one.
+
+## 11.33 The mesh reader is ported to Lean, and it does not yet work
+
+`lean/src/MmfExtract/Dma3d/Modfile.lean` now carries `parseMesh`, a port of
+`src/dma3d/modfile.rs::parse_mesh` with the same structural signature: a count, that
+many zero-based indices all below a vertex count, that many vertices whose `w` is
+`1.0`, a second count equal to it, and unit-length normals whose `w` is `0.0`. It
+builds, the harness passes, and it accepts **nothing**:
+
+```text
+DMA3D.MMM: 460 resources, 218 of them read as drawing profiles, 242 converted to nothing
+all checks passed
+```
+
+against the Rust reader's 17 meshes. So the port is incomplete, and this section
+records that rather than shipping it silently.
+
+The cause was found and is not where it was first looked. Two thresholds were ported
+from the wrong reading of the Rust code — the vertex `w` check used 5% where
+`src/dma3d/modfile.rs` uses 10% (`marked * 10 < v * 9`, not `marked * 20 > v`), and the
+normal `w` check was missing the unit-length test entirely. Both are now matched
+exactly, and the reader *still* accepts nothing, so the remaining difference is
+elsewhere and is not identified.
+
+What was measured, so the next step starts here rather than at the beginning:
+
+* `countAt` accepts 325 of the offsets in the first 600 bytes of a mesh-bearing
+  payload, so the outer scan and the count filter run;
+* `meshAt` accepts none of them, so one of its returns fires for every offset;
+* the port's checks are `indicesEnd + 4 > size`, `vRaw` outside `1..=100_000`,
+  `normalsCountOffset + 4 > size`, the second count, `normalsStart + 16 * v > size`,
+  an index at or above `v`, fewer than two distinct indices, a vertex failing
+  `plausible` or the `w` rule, or a normal failing `plausible`, unit length or the
+  `w` rule.
+
+So the bug is in one of those, most likely in the vertex or normal `w` test, since
+those are where the Rust and Lean arithmetic differ by more than a rounding: Rust
+computes the normal's length in `f32`, and the port computes it in the widened
+`Float`, and Rust counts `marked` as "`w` is not exactly `1.0`" while the port counts
+it the same way but divides differently. Neither is identified as the cause.
+
+**This is recorded as a broken port, not as a Lean mesh reader.** The Rust reader is
+untouched and the extraction still writes 230 glTFs; nothing in the pipeline depends
+on this. It is the honest state of the Lean half's mesh coverage, which is why
+Rust's 230 payloads and Lean's 218 profiles are not the same number — that gap is this
+bug, and §11.30's reading of it as "nested, not divergent" holds only while the Lean
+mesh reader accepts nothing.

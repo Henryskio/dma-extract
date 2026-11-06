@@ -37,6 +37,13 @@ def markers : Array Float := #[0.0, 1.0]
 
 /-! ## Reading the container's little-endian values -/
 
+/-- A little-endian `u16` at `off`, as `src/dma3d/modfile.rs::u16_at` reads it. -/
+def leU16At (payload : ByteArray) (off : Nat) : Option UInt16 :=
+  if off + 2 > payload.size then
+    none
+  else
+    some ((payload[off]!.toUInt16 <<< 0) ||| (payload[off + 1]!.toUInt16 <<< 8))
+
 /-- A little-endian `u32` at `off`, as `src/dma3d/modfile.rs::u32_at` reads it. -/
 def leU32At (payload : ByteArray) (off : Nat) : Except String UInt32 := do
   if off + 4 > payload.size then
@@ -107,6 +114,143 @@ private def others (quad : Array Float) (slot : Nat) : Array Float := Id.run do
     if i != slot then
       rest := rest.push quad[i]!
   return rest
+
+/-! ## The mesh chain -/
+
+/-- Bytes per vertex record: three `f32`s and the `w` of `1.0`. -/
+def vertexRecordBytes : Nat := 16
+/-- Bytes per normal record: three `f32`s and the `w` of `0.0`. -/
+def normalRecordBytes : Nat := 16
+
+/-- One decoded mesh chain, the same shape `src/dma3d/modfile.rs::ModelMesh`
+carries. -/
+structure Mesh where
+  /-- Where the index count was read from, for diagnostics. -/
+  indexCountOffset : Nat
+  /-- The index list, zero-based exactly as stored. -/
+  indices : Array UInt16
+  /-- World-space positions, `[x, y, z]` per vertex. -/
+  positions : Array (Float × Float × Float)
+  /-- Unit-length normals, `[nx, ny, nz]` per vertex. -/
+  normals : Array (Float × Float × Float)
+  /-- The three `u32`s that open the tail, when they are `[0, 1, V]`. -/
+  tailHeader : Option (UInt32 × UInt32 × UInt32)
+  deriving Inhabited
+
+/-- The index count at `off`, if it can start a chain that fits the payload.
+
+`src/dma3d/modfile.rs::count_at`, and the bound is the one it uses.
+-/
+private def countAt (payload : ByteArray) (off : Nat) : Option UInt32 :=
+  if off + 4 > payload.size then
+    none
+  else
+    match leU32At payload off with
+    | Except.error _ => none
+    | Except.ok c => if c < 1 || c > 400000 then none else some c
+
+/-- The mesh chain that starts at `off`, if the structural signature holds there.
+
+`src/dma3d/modfile.rs::parse_mesh` reads the chain **structurally**, because the counts
+are not in the header: a count, that many zero-based indices all below a vertex
+count, that many vertices whose `w` is `1.0`, and a second count equal to it.
+-/
+private def meshAt (payload : ByteArray) (off : Nat) : Option Mesh := Id.run do
+  let some c := countAt payload off | return none
+  let someC := c.toNat
+  let indicesEnd := off + 4 + 2 * someC
+  if indicesEnd + 4 > payload.size then
+    return none
+  let .ok vRaw := leU32At payload indicesEnd | return none
+  if vRaw < 1 || vRaw > 100000 then
+    return none
+  let v := vRaw.toNat
+  let verticesStart := indicesEnd + 4
+  let normalsCountOffset := verticesStart + vertexRecordBytes * v
+  if normalsCountOffset + 4 > payload.size then
+    return none
+  let .ok second := leU32At payload normalsCountOffset | return none
+  if second != vRaw then
+    return none
+  let normalsStart := normalsCountOffset + 4
+  if normalsStart + normalRecordBytes * v > payload.size then
+    return none
+  -- Every index must name a vertex, and they must not all be the same value: a
+  -- table of one repeated index is not an index list.
+  let mut indices : Array UInt16 := #[]
+  let mut distinct := 0
+  let mut bad := false
+  for k in [0:someC] do
+    match leU16At payload (off + 4 + 2 * k) with
+    | none => bad := true
+    | some i =>
+      indices := indices.push i
+      if !(indices.contains i) then
+        distinct := distinct + 1
+      if i.toNat >= v then
+        bad := true
+  if bad || distinct < 2 then
+    return none
+  -- The vertices: w == 1.0 for all but a few, and every coordinate real.
+  let mut positions : Array (Float × Float × Float) := #[]
+  let mut marked := 0
+  let mut badVertex := false
+  for k in [0:v] do
+    let off := verticesStart + vertexRecordBytes * k
+    match leF32 payload off, leF32 payload (off + 4), leF32 payload (off + 8), leF32 payload (off + 12) with
+    | _, _, _, Except.error _ => badVertex := true
+    | Except.error _, _, _, _ => badVertex := true
+    | _, Except.error _, _, _ => badVertex := true
+    | _, _, Except.error _, _ => badVertex := true
+    | Except.ok x, Except.ok y, Except.ok z, Except.ok w =>
+      if !(plausible x) || !(plausible y) || !(plausible z) then
+        badVertex := true
+      else if (w - 1.0).abs > 1.0e-6 then
+        marked := marked + 1
+      positions := positions.push (x, y, z)
+  if badVertex || marked * 10 < v * 9 then
+    return none
+  -- The normals: `w == 0.0` for at least nine in ten, unit length, real.
+  let mut normals : Array (Float × Float × Float) := #[]
+  let mut unit := 0
+  let mut badN := false
+  for k in [0:v] do
+    let off := normalsStart + normalRecordBytes * k
+    match leF32 payload off, leF32 payload (off + 4), leF32 payload (off + 8), leF32 payload (off + 12) with
+    | _, _, _, Except.error _ => badN := true
+    | Except.error _, _, _, _ => badN := true
+    | _, Except.error _, _, _ => badN := true
+    | _, _, Except.error _, _ => badN := true
+    | Except.ok x, Except.ok y, Except.ok z, Except.ok w =>
+      let length := (x * x + y * y + z * z).sqrt
+      if !(plausible x) || !(plausible y) || !(plausible z) || (length - 1.0).abs > 1.0e-3 then
+        badN := true
+      else
+        if w.abs <= 1.0e-6 then
+          unit := unit + 1
+        normals := normals.push (x, y, z)
+  if badN || normals.size != v || unit * 10 < v * 9 then
+    return none
+  -- The tail's opening words, read when they are the shape most payloads carry.
+  -- A measurement, not a requirement (`docs/DMA3D.md` §3.4).
+  let tailAt := normalsStart + normalRecordBytes * v
+  let mut tailHeader : Option (UInt32 × UInt32 × UInt32) := none
+  if tailAt + 12 <= payload.size then
+    match leU32At payload tailAt, leU32At payload (tailAt + 4), leU32At payload (tailAt + 8) with
+    | .ok a, .ok b, .ok c2 =>
+      if a == 0 && b == 1 && c2 == vRaw then
+        tailHeader := some (a, b, c2)
+    | _, _, _ => pure ()
+  return some { indexCountOffset := off, indices, positions, normals, tailHeader }
+
+def parseMesh (payload : ByteArray) : Except String Mesh := do
+  -- 6000 is well past every measured header (163-263) and keeps a corrupt file
+  -- from being scanned end to end, exactly as the Rust reader bounds it.
+  let limit := min 6000 payload.size
+  for off in [6:limit] do
+    if let some m := meshAt payload off then
+      return m
+  throw "no mesh chain in the payload"
 
 /-- Read the drawing profile out of a `Models` payload.
 
