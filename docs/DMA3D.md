@@ -1481,3 +1481,25 @@ bank will be. That is the next step, and it is now named rather than guessed:
 A 1024-byte palette bank and the 4/36/72-byte header §11.13 measured are what to
 look for there, since five of the nine failing textures need a full 256-entry
 palette that cannot fit in the payload.
+### The metadata region holds no dimension table either
+
+§11.13's nine share a `(prefix, area)` split whose area is a power of two, which
+only works because the format derives the width and height *from the pixel count*
+— the rule `docs/DMA3D.md` §4.2 validated on the English build's 678 squares. If
+this container instead carried a dimension table, the area would not have to be a
+power of two at all and the whole picture would change.
+
+It does not. The region between the names table and the first payload is
+`[25,726, 29,654)` = **3,928 bytes** for 705 resources — 5.57 bytes each, which is
+too short for the `15*N + 4` picture layout (a `4*N` u32 array plus `N` attribute
+bytes, `N` flags, a `4*N` dimension table and a `4*N` size table) and too short for
+any table that names a shared palette. And scanning the region for a run of
+consecutive `{u16 height, u16 width}` pairs that are plausible dimensions finds
+**none**: the bytes are high-entropy throughout (`7d 5f 3d 30 58 82 45 54 ...`),
+which is the shape of a checksum/hash array rather than a table of small integers.
+
+So a fourth hypothesis is closed. What the nine need — a palette of 76..256
+entries, held somewhere other than the payload — is not in the container's
+metadata region either, and `ReadData` (§11.12) does not read a palette. The
+palette bank is in a routine the container reader drives, which is the last
+unnamed place it can be, and it is where the trace now has to go.
