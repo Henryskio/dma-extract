@@ -3421,3 +3421,60 @@ is doing so for a stated reason.
 The goal's second half is not met at 345 of 460, and the residue is now down to
 **111 payloads**, four of which are §11.37's shape behind a fill threshold that does not
 fit them and 107 of which no probe reaches.
+
+## 11.51 `r19` and `r156` are not the alternating-zero shape, and §11.50 said they were
+
+§11.50 concluded that the four UTF-16BE-looking payloads were "§11.37's
+alternating-zero shape read as text". Measuring the fill directly says that is
+wrong, and the reviewer's next step was built on it.
+
+### The measurement
+
+For each payload: the fraction of odd-indexed bytes that are zero (the shape's
+signature), the fraction of even ones, and the fraction of each half below 128.
+
+| payload | odd bytes zero | even bytes zero | even < 128 | odd < 128 |
+| --- | --- | --- | --- | --- |
+| `r19 nter.mod` (4,028 B) | **17%** | 21% | 64% | 57% |
+| `r156` (24,328 B) | **33%** | 25% | 65% | 66% |
+| `r6` (137 B) | 80% | 79% | 89% | **100%** |
+| `r154` (376 B) | **90%** | 51% | 94% | **98%** |
+
+`r19` and `r156` have **under a third** of their bytes zero in either half. The shape
+§11.37 named needs at least 80% of one parity zero, and §11.39's reader requires it.
+These payloads are not that shape behind a threshold — they are a shape with no
+dominant zero parity at all.
+
+`r6` and `r154` *are* the shape, and §11.39 already reads them.
+
+### Relaxing the threshold does not reach `r19`/`r156`
+
+Lowering §11.39's fill threshold and re-running over the 115:
+
+| fill threshold | payloads accepted |
+| --- | --- |
+| ≥ 80% (today) | 0 more |
+| ≥ 70% | 1 more (`r6`) |
+| ≥ 60% | 1 more (`r6`) |
+| ≥ 50% | 2 more (`r6`, `r154`) |
+| ≥ 40% | 2 more |
+
+So the threshold buys one payload, and it buys it by reading `r6`, which §11.39
+already reads at 80%. `r19` and `r156` never appear at any threshold, because
+lowering the fill requirement does not raise their zero fraction — the bytes simply
+are not half zeros.
+
+### What this means
+
+The reviewer's step — "generalise `parse_param_table` so a payload whose every slot
+carries a value is accepted" — is not available, because the payloads it names do not
+have the alternating-zero shape to generalise. §11.50's classification was the error,
+and it is withdrawn.
+
+What `r19` and `r156` are is still open: little-endian `u16` values in the 0x20-0x7F
+range (§11.49), not UTF-16 text (§11.50), and not alternating-zero (this section).
+They are two payloads of 115 with an unidentified shape.
+
+The goal's second half is not met at 345 of 460. The residue is **115 payloads**, of
+which 2 have a `u16`-valued shape that three probes have now read three different
+ways, and none of the three is established.
