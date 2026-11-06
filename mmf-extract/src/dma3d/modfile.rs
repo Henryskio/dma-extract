@@ -524,7 +524,20 @@ impl Profile {
 /// resource rather than skipping (`AGENTS.md`).
 pub fn parse_profile(payload: &[u8]) -> Result<Profile> {
     let mut best: Option<(usize, usize, usize, f32, Vec<[f32; 3]>)> = None;
-    for phase in 0..8usize {
+    // Where the record stream starts. The prefix (`docs/DMA3D.md` §11.31,
+    // §11.32) is a header, a list of texture names, and the `mod II` magic with
+    // the `u32` after it, and the records begin ten bytes past the magic — so the
+    // magic is an **anchor** for the start, which is what the 0..8 phase scan
+    // alone cannot be: a phase scan finds an alignment, and the records here
+    // begin at `magic + 10`, an offset the 0..8 scan never reaches.
+    let mut starts: Vec<usize> = Vec::new();
+    if let Some(magic) = payload.windows(6).position(|w| w == b"mod II") {
+        for step in 0..4 {
+            starts.push(magic + 10 + 16 * step);
+        }
+    }
+    starts.extend(0..8usize);
+    for phase in starts {
         if payload.len() < phase + 3 * 16 {
             continue;
         }
