@@ -2492,29 +2492,35 @@ all checks passed
 against the Rust reader's 17 meshes. So the port is incomplete, and this section
 records that rather than shipping it silently.
 
-The cause was found and is not where it was first looked. Two thresholds were ported
-from the wrong reading of the Rust code — the vertex `w` check used 5% where
-`src/dma3d/modfile.rs` uses 10% (`marked * 10 < v * 9`, not `marked * 20 > v`), and the
-normal `w` check was missing the unit-length test entirely. Both are now matched
-exactly, and the reader *still* accepts nothing, so the remaining difference is
-elsewhere and is not identified.
+Two bugs were found by instrumenting the reader, and the second one is the
+inversion that matters. `src/dma3d/modfile.rs` counts the vertices whose `w`
+**is** the marker and requires nine in ten of them; the port counted the ones
+that are *not*, so with `w == 1.0` everywhere `marked` stayed `0` and
+`marked * 10 < v * 9` rejected every chain. That is fixed, and the reader still
+accepts nothing — so a third difference remains, and it is not in the algorithm.
+
+It is not in the algorithm, and that is measured rather than assumed: replaying
+`meshAt`'s checks by hand at the chain `src/dma3d/modfile.rs` itself finds
+(`r4 createBkFloorWire.mod`, offset 891, `C=6`, `V=4`) passes **every one of
+them** — the indices are `[0, 1, 2, 1, 3, 2]` with four distinct values all below
+`4`, all four vertices read `w == 1.0`, and all four normals read `w == 0.0` with
+unit length. `countAt` accepts 76 offsets in the first 600 bytes. So the failing
+thing is the code as written inside `meshAt`, not the rule it encodes, and the
+candidates left are the `let` shadowing of `off` inside the two record loops and
+the `Float`-vs-`f32` length arithmetic — neither of which is identified as the
+cause.
 
 What was measured, so the next step starts here rather than at the beginning:
 
-* `countAt` accepts 325 of the offsets in the first 600 bytes of a mesh-bearing
-  payload, so the outer scan and the count filter run;
-* `meshAt` accepts none of them, so one of its returns fires for every offset;
-* the port's checks are `indicesEnd + 4 > size`, `vRaw` outside `1..=100_000`,
-  `normalsCountOffset + 4 > size`, the second count, `normalsStart + 16 * v > size`,
-  an index at or above `v`, fewer than two distinct indices, a vertex failing
-  `plausible` or the `w` rule, or a normal failing `plausible`, unit length or the
-  `w` rule.
+* `meshAt` accepts 0 of the offsets `[6:p.size]` of a mesh-bearing payload;
+* replaying its checks by hand at offset 891 passes every one, listed above;
+* `countAt` accepts 76 of the offsets in the first 600 bytes, so the outer scan
+  and the count filter run and the failure is past them.
 
-So the bug is in one of those, most likely in the vertex or normal `w` test, since
-those are where the Rust and Lean arithmetic differ by more than a rounding: Rust
-computes the normal's length in `f32`, and the port computes it in the widened
-`Float`, and Rust counts `marked` as "`w` is not exactly `1.0`" while the port counts
-it the same way but divides differently. Neither is identified as the cause.
+So the next step is to find why the code as written rejects a chain the same code
+replicated by hand accepts: the `let off := ...` inside the two record loops
+shadowing the parameter, or the widened-`Float` normal length, are the two
+candidates, and neither is confirmed.
 
 **This is recorded as a broken port, not as a Lean mesh reader.** The Rust reader is
 untouched and the extraction still writes 230 glTFs; nothing in the pipeline depends

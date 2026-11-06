@@ -165,6 +165,7 @@ private def meshAt (payload : ByteArray) (off : Nat) : Option Mesh := Id.run do
   if vRaw < 1 || vRaw > 100000 then
     return none
   let v := vRaw.toNat
+  let chainAt := off
   let verticesStart := indicesEnd + 4
   let normalsCountOffset := verticesStart + vertexRecordBytes * v
   if normalsCountOffset + 4 > payload.size then
@@ -205,9 +206,14 @@ private def meshAt (payload : ByteArray) (off : Nat) : Option Mesh := Id.run do
     | Except.ok x, Except.ok y, Except.ok z, Except.ok w =>
       if !(plausible x) || !(plausible y) || !(plausible z) then
         badVertex := true
-      else if (w - 1.0).abs > 1.0e-6 then
-        marked := marked + 1
-      positions := positions.push (x, y, z)
+      else
+        -- Rust counts the vertices whose `w` **is** the marker, and requires
+        -- nine in ten of them: `marked * 10 < v * 9` rejects. Counting the
+        -- ones that are *not* inverts the test, and with `w == 1.0` everywhere
+        -- `marked` stays 0 and every chain is rejected.
+        if (w - 1.0).abs <= 1.0e-6 then
+          marked := marked + 1
+        positions := positions.push (x, y, z)
   if badVertex || marked * 10 < v * 9 then
     return none
   -- The normals: `w == 0.0` for at least nine in ten, unit length, real.
@@ -241,7 +247,7 @@ private def meshAt (payload : ByteArray) (off : Nat) : Option Mesh := Id.run do
       if a == 0 && b == 1 && c2 == vRaw then
         tailHeader := some (a, b, c2)
     | _, _, _ => pure ()
-  return some { indexCountOffset := off, indices, positions, normals, tailHeader }
+  return some { indexCountOffset := chainAt, indices, positions, normals, tailHeader }
 
 def parseMesh (payload : ByteArray) : Except String Mesh := do
   -- 6000 is well past every measured header (163-263) and keeps a corrupt file
