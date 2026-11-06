@@ -1794,6 +1794,21 @@ payload region and the mesh region share an endianness, so a reader for one is
 not blocked by a byte-order conversion, and the 2D-profile reading is not
 disqualified on that ground. It is disqualified on entropy instead (§11.16).
 
+**The version-1 layout does not fit them either.** Forcing each of the 74 through
+`mod II` + `u32 C` + `2C` index bytes + `u32 V` + `16V` vertices + `u32 V` +
+`16V` normals leaves a consistent `V` for only **18 of the 74**, and every one of
+those 18 needs a tail of 1 to 6 bytes, which is the signature of a coincidental
+fit rather than a real one: a payload that is genuinely this layout leaves its
+own remainder, not a near-zero one. The magic's offset inside the payload spans
+`3` to `23271` (`mod`, 23,390 bytes, magic at +23,271 — the last 119 bytes), so
+these are not a mesh record at the start of a payload with a header in front of
+it.
+
+So the 74 are **not** the version-1 mesh layout with a different count, and they
+are **not** a missing magic: they carry the magic, they carry the `16`, and what
+follows is a layout this reader has not identified. That is a narrower and more
+useful statement than either "encrypted" (§11.16, walked back) or "no mesh chain"
+(§11.9), and it is the one the docs now make.
 ## Where the 3D goal stands, unchanged in state and clearer in cause
 
 | | state | evidence |
