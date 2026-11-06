@@ -1758,3 +1758,53 @@ session located (`0x1632c8`), named the payload routine of (`this->0x50` slot
 `0x0c`), and then found to be reachable only at run time. That is the honest
 boundary, and it is written down so the next person does not have to re-derive
 it.
+
+## 11.20 The magic is common to the whole container, and only one payload repeats
+
+Three measurements this session, each of which closes a wrong turn the earlier
+sections took.
+
+**The `mod II` magic is not a version marker.** 74 of the 460 payloads contain it,
+and **every one of them carries the `u32` `16` immediately after the magic** — 72
+carry exactly `0x10`, two carry `0x0f`. `BmpPict.mod`, which *does* decode as a
+mesh, carries the same `mod II` + `16`. So the magic and the 16 are common to the
+container rather than discriminating between its payloads, and §11.9's "no mesh
+chain" phrasing is misleading: 443 payloads have no chain *that the reader
+accepts*, and 74 of them carry the chain's own magic.
+
+What the reader accepts is a narrow case: a count small enough that its indices
+name vertices that exist, and vertices whose `w` is exactly `1.0` and whose
+normals are unit-length. In the 74 the count after the magic is `16`, and the
+bytes that follow are not the shape that satisfies those rules. So the blockage
+is a *layout difference after a shared magic*, not a missing magic.
+
+**Exactly one payload is a repetition, and it proves nothing about the rest.**
+Scanning all 460 for an exact run of a fixed-size record covers only
+`createModDrawProfile5Star3.mod` (320 bytes, 20 identical 16-byte records, 11
+distinct byte values). The other 459 have a mean of **118 distinct byte values**,
+minimum 6, maximum 256, and a median of 376 bytes. So the 443 are not degenerate
+default records, and a "the game generates it at runtime" answer does not cover
+them either.
+
+**§11.15's endianness was an artefact.** The `80 3f` and `00 00 80 3f` sequences
+that section read as *big-endian* `f32` values are the **little-endian** encoding
+of `1.0f` (`0x3f800000` stored low byte first) — the same endianness
+`src/dma3d/modfile.rs` reads its vertices in. That matters because it means the
+payload region and the mesh region share an endianness, so a reader for one is
+not blocked by a byte-order conversion, and the 2D-profile reading is not
+disqualified on that ground. It is disqualified on entropy instead (§11.16).
+
+## Where the 3D goal stands, unchanged in state and clearer in cause
+
+| | state | evidence |
+| --- | --- | --- |
+| textures, modern | **met** | 705/705 decoded, 0 reported, no `failed` line |
+| textures, `--original` | **met** | 705/705 byte-exact, checked in Lean |
+| models, `--original` | **met** | 460/460 byte-exact, checked in Lean |
+| models, modern | **not met** | 17 glTFs from 460 payloads |
+| container integrity | **met** | 705 payload boundaries, 0 out of range |
+
+The named byte-level blocker is the shape *after* a shared `mod II` + `16`
+header, and the executables' `li r0, 2` against the texture reader's `li r0, 1`
+(§11.17) says that shape is a version-2 layout. That is where the next reader
+has to start, and it is a decoder question rather than an encryption one.
