@@ -2010,3 +2010,50 @@ What would close it, in order of cost:
    which §11.19 already named.
 
 Neither is a disassembly step, and neither has been done.
+
+## 11.24 The PEF is correctly carved, and §11.23's "not in this file" was wrong
+
+§11.23 concluded that the dispatch thunk at `0x1c60a4` was "not in this artifact at
+all", on the grounds that the target is past the file's end. That conclusion was
+wrong, and parsing the PEF sections from the disc image shows why.
+
+There are **six** PEF containers on `Disney Creazioni in 3D (Italy).bin`, at
+`0x5fc758`, `0x608218`, `0x64912e`, `0x7eb7a0`, `0x15099a0` and `0x1ee1460`; the last
+carries the same date-time stamp (`b6 c5 68 52`) as the carved `DMA3D.exe`, so the
+carve is of the right container. Its three section headers are:
+
+| | kind | containerOffset | packedSize | unpackedSize | totalSize |
+| --- | --- | --- | --- | --- | --- |
+| sec0 | 0 code | `0x03510` | `0x194f74` | `0x194f74` | `0x194f74` |
+| sec1 | 2 data | `0x198490` | `0x16a4b` | `0x1f959` | `0x21430` |
+| sec2 | 4 loader | `0x000080` | `0x0003490` | 0 | 0 |
+
+The three ranges are `[0x80, 0x3510)`, `[0x3510, 0x198484)` and
+`[0x198490, 0x1aeedb)` — non-overlapping, and the last ends **exactly** at the
+file's size, `0x1aeedb`. So the carve is complete and correctly bounded, and §11.23's
+"a PEF section the carve did not take" is false. What §11.23 actually measured was a
+branch target that does not land in the **code** section, which is a different
+statement and a much weaker one.
+
+The one thing the sections do establish is that **sec1 is packed**: `0x16a4b` bytes
+on the disc expand to `0x1f959` in memory, a ratio of 1.39. That is the only
+compressed section in the container, it is the *data* section rather than the code
+one, and it sits at the end of the file — which is where the libjpeg routines
+(`.jpeg_make_c_derived_tbl`, `.forward_DCT`, `.encode_mcu_huff`) and the CodeWarrior
+export entries (`2e 63 6f 6d 70 72 65 73 73 5f 6f 75 74 70 75 74`, i.e.
+`.compress_output`) live in the carved file. So the tail of the file is the runtime
+library interleaved with the export table, not missing code.
+
+What is still open is the address space the `bl` targets live in. A linear sweep of
+the code section finds 3,407 `bl`s whose targets are past EOF, but a linear sweep
+decodes constants and jump-table entries as instructions, so that number says
+nothing. The two targets that *are* verifiable — the paired dispatches at
+`0x1633d8` and `0x1633ec`, each followed by `lwz r2, 0x14(r1)`, which is the
+CodeWarrior TOC-restore after a call — both give `0x1c60a4`, and no mapping of the
+three sections onto memory that I can construct puts that address inside any of
+them: the code section ends at `0x194f74` and the data section at
+`0x194f74 + 0x1f959 = 0x1b48cd`, both short of `0x1c60a4`.
+
+So the honest state is: the container is intact, the section the thunk should be in
+has not been located, and the branch target's address space is unresolved. That is a
+narrower claim than "not in this artifact", which is withdrawn.
