@@ -961,3 +961,112 @@ mod param_table_tests {
         );
     }
 }
+
+/// One table of texture names: the payload's list of the textures it references.
+///
+/// `docs/DMA3D.md` §11.40: 39 of the shipped payloads that no other reader claims
+/// carry a table of NUL-terminated ASCII names in 32-byte records, each padded with
+/// `0xcc` fill. `createBtFill.18.TGA`, `createBtShape.09.TGA`,
+/// `createBtMagnet.20.tga` — a payload's own list of what it references. It is the
+/// same field `src/dma3d.rs::texture_names_in` already reads out of mesh payloads to
+/// embed their materials, so this is not a new layout: it is the field the reader
+/// already knows, in the payloads it did not look at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NameTable {
+    /// The names, in payload order.
+    pub names: Vec<String>,
+
+}
+
+/// The shortest run of printable characters that counts as a name.
+///
+/// Eight, not four: at four the reading picks up noise — `DDD?`, `fff?`,
+/// `>1:A?` are all four printable characters terminated by a NUL, and the 39
+/// payloads it accepted included 20 whose "names" were that. At eight it takes
+/// the 19 payloads carrying real ones, `createBtFill.00.TGA`,
+/// `ParentalBtCheckboxY.mod`, and reports the rest.
+const MIN_NAME_LEN: usize = 8;
+
+/// Read a table of texture names out of a payload.
+///
+/// A name is a run of printable ASCII terminated by a NUL; the shortest run that
+/// counts is four characters, so a stray byte inside padding is not a name. A
+/// payload carrying fewer than three names is an error, so the caller reports it
+/// rather than writing a document that describes nothing.
+pub fn parse_name_table(payload: &[u8]) -> Result<NameTable> {
+    let mut names: Vec<String> = Vec::new();
+    let mut k = 0usize;
+    while k < payload.len() {
+        let mut j = k;
+        while j < payload.len() && payload[j] != 0 && (payload[j] as char).is_ascii_graphic() {
+            j += 1;
+        }
+        if j >= k + MIN_NAME_LEN && j < payload.len() && payload[j] == 0 {
+            names.push(payload[k..j].iter().map(|b| *b as char).collect());
+            k = j + 1;
+        } else {
+            k = if j > k { j } else { k + 1 };
+        }
+    }
+    if names.len() < 3 {
+        bail!(
+            "{} names is fewer than the 3 a table needs",
+            names.len()
+        );
+    }
+    // No `first_is_truncated` field, and that is deliberate. Some payloads do
+    // begin inside a name -- `teBtFill.18.TGA` for `createBtFill.18.TGA`, because
+    // the container's slice starts three bytes into a record -- but a payload's
+    // first byte is the name's first byte whether or not the name is cut, so the
+    // bytes cannot tell the two apart. Asserting either way would be a guess, and
+    // `AGENTS.md` sets the payload aside rather than guessing it.
+    Ok(NameTable { names })
+}
+
+#[cfg(test)]
+mod name_table_tests {
+    use super::*;
+
+    /// The measured shape: NUL-terminated names in 32-byte records.
+    #[test]
+    fn a_table_of_texture_names_is_read() {
+        let mut payload: Vec<u8> = Vec::new();
+        for n in ["createBtFill.00.TGA", "createBtFill.01.TGA", "createBtFill.02.TGA"] {
+            payload.extend_from_slice(n.as_bytes());
+            payload.push(0);
+            while payload.len() % 32 != 0 {
+                payload.push(0xcc);
+            }
+        }
+        let table = parse_name_table(&payload).expect("the payload carries names");
+        assert_eq!(table.names, vec![
+            "createBtFill.00.TGA".to_string(),
+            "createBtFill.01.TGA".to_string(),
+            "createBtFill.02.TGA".to_string(),
+        ]);
+        assert_eq!(table.names.len(), 3);
+    }
+
+    /// Four printable characters are not a name: `DDD?`, `fff?` and `>1:A?` are
+    /// all that, and 20 of the 39 payloads a four-character threshold accepts
+    /// carry nothing else.
+    #[test]
+    fn four_printable_characters_are_not_a_name() {
+        let mut payload: Vec<u8> = Vec::new();
+        for n in ["DDD?", "fff?", "UUU?", "333?"] {
+            payload.extend_from_slice(n.as_bytes());
+            payload.push(0);
+            payload.extend_from_slice(&[0xcc; 8]);
+        }
+        assert!(
+            parse_name_table(&payload).is_err(),
+            "four-character noise was read as a table of names"
+        );
+    }
+
+    /// A payload with too few names is reported, not padded.
+    #[test]
+    fn a_payload_with_too_few_names_is_reported() {
+        assert!(parse_name_table(b"nothing here").is_err());
+    }
+}

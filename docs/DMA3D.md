@@ -2769,3 +2769,66 @@ ships with a test that reads its output back — and this section is where it wa
 structure and the rest of mid entropy, and the alternating-zero shape now takes only
 the payloads whose fill is genuinely dominant. The goal's second half is not met at 287
 of 460.
+
+## 11.40 The texture-name tables are written as JSON+text, and 306 of 460 have output
+
+Measuring the 173 unconverted payloads for a repeat-period — which nobody had done —
+found the group that mattered. **11 of them carry an exact period of 32 explaining 96%
+of their bytes**, and reading one settles what they are:
+
+```text
++  0: 74 65 42 74 46 69 6c 6c 2e 31 38 2e 54 47 41 00 cc cc cc cc cc cc cc cc cc cc cc cc 63 72 65 61
++ 32: 74 65 42 74 46 69 6c 6c 2e 31 39 2e 54 47 41 00 cc cc cc cc cc cc cc cc cc cc cc cc 63 72 65 61
+```
+
+`createBtFill.18.TGA`, `createBtFill.19.TGA`, `createBtFill.20.TGA` — a **table of
+texture names** in 32-byte records padded with `0xcc` fill, 30 of the 32 columns
+constant because only the number in the name varies. `parse_name_table` reads them and
+`write_name_json` writes them:
+
+```json
+"measured": { "count": 11, "names": ["createBtSelect.25.tga", "createBtSelect.26.tga", ...] }
+```
+
+The run now reports:
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 154
+glTF 230   json 76   previews 230   png 935   .mod 154
+```
+
+**17 meshes + 213 profiles + 48 records + 9 tables + 19 name tables = 306 of 460**,
+against 287 before. The Lean reader agrees exactly — `mesh 17, profile 213, record 48,
+param 9, names 19, other 154` — and the harness reports `all checks passed`.
+
+This is not a new layout. `src/dma3d.rs::texture_names_in` has always read exactly this
+field out of *mesh* payloads to embed their materials; what changed is that the reader
+now looks for it in the payloads it did not look at.
+
+### The threshold, and the noise it rejected first
+
+A name is a run of printable ASCII terminated by a NUL, **at least eight characters**
+long. At four the reading took 39 payloads, and 20 of those carried nothing but
+`DDD?`, `fff?`, `UUU?`, `333?` — four printable characters and a NUL, which is noise in
+a 32-byte record rather than a name. Eight takes the 19 payloads carrying real ones and
+reports the rest, and `name_table_tests::four_printable_characters_are_not_a_name` pins
+it.
+
+### One field I removed rather than guessed
+
+The first version carried `first_is_truncated`, set by asking whether the payload's
+first byte is the name's first byte. That test is unfalsifiable: it is true both when
+the name is cut and when it is not, because a payload that begins with a name begins
+with its first byte either way. Some of these payloads *do* start inside a name —
+`teBtFill.18.TGA` for `createBtFill.18.TGA`, because the container's slice starts three
+bytes into a record — and the bytes cannot tell that from a whole name. So the field is
+gone and the names are recorded verbatim. `AGENTS.md` sets a payload aside rather than
+guessing it, and a struct field that can only be filled by guessing is the same mistake
+one level down.
+
+### What is left
+
+**154 payloads** fit no reader, and the entropy figure §11.29 reported as a census is
+wrong: measured directly, the 173 spread continuously from 1.1 to 6.2 bits per byte
+rather than falling into buckets, and 48 of them have no period explaining even 30% of
+their bytes. The goal's second half is not met at 306 of 460.

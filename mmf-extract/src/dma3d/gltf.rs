@@ -22,7 +22,7 @@
 //! `>= 1` and `< V`, and `V` itself never appears), so the writer subtracts
 //! one. glTF's index base is zero.
 
-use crate::dma3d::modfile::{MagicRecord, ModelMesh, ParamTable, Profile};
+use crate::dma3d::modfile::{MagicRecord, ModelMesh, NameTable, ParamTable, Profile};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -1258,4 +1258,35 @@ mod param_json_tests {
             );
         }
     }
+}
+
+/// Write a table of texture names as a JSON+text document.
+///
+/// `docs/DMA3D.md` §11.40: these payloads carry the textures they reference, and a
+/// JSON list of the names is the honest modern form — it is exactly what the
+/// extractor already reads out of mesh payloads to embed their materials.
+pub fn write_name_json(path: &Path, name: &str, table: &NameTable) -> Result<()> {
+    let what = "a table of texture names: the payload's list of what it references";
+    let meaning = "the names themselves are determined; the payload carries no lengths \\
+                   and no field types, so what each reference means is not read from \\
+                   the bytes";
+    let meaning = meaning.replace('\n', " ");
+    let mut document = String::new();
+    document.push_str("{\n");
+    document.push_str(&format!("  \"name\": {},\n", json_string(name)));
+    document.push_str(&format!("  \"what this is\": {},\n", json_string(what)));
+    document.push_str(&format!("  \"meaning\": {},\n", json_string(&meaning)));
+    document.push_str("  \"measured\": {\n");
+    document.push_str(&format!("    \"count\": {},\n", table.names.len()));
+    let quoted: Vec<String> = table
+        .names
+        .iter()
+        .map(|n| json_string(n))
+        .collect();
+    document.push_str(&format!("    \"names\": [{}]\n", quoted.join(", ")));
+    document.push_str("  }\n");
+    document.push_str("}\n");
+    std::fs::write(path, document.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }

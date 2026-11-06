@@ -410,6 +410,70 @@ def parseParamTable (payload : ByteArray) : Except String ParamTable := do
     throw s!"only {small} of {values.size} values are below 128, so the carrying half is not small values"
   return { evenIsFill, values, zeroPercent, smallPercent := small * 100 / values.size }
 
+/-! ## The texture-name table -/
+
+/-- The shortest run of printable characters that counts as a name.
+
+Eight, not four: at four the reading picks up noise -- `DDD?`, `fff?`, `>1:A?` are
+all four printable characters terminated by a NUL, and 20 of the 39 payloads a
+four-character threshold accepts carry nothing else. At eight it takes the payloads
+carrying real ones, `createBtFill.00.TGA`, `ParentalBtCheckboxY.mod`
+(`docs/DMA3D.md` §11.40).
+-/
+def minNameLen : Nat := 8
+
+/-- One table of texture names: the payload's list of the textures it references.
+
+`docs/DMA3D.md` §11.40: 19 of the shipped payloads that no other reader claims carry
+a table of NUL-terminated ASCII names in 32-byte records, each padded with `0xcc`
+fill. `createBtFill.00.TGA`, `createBtShape.09.TGA`, `createBtSelect.25.tga` -- a
+payload's own list of what it references. It is the same field
+`src/dma3d.rs::texture_names_in` already reads out of mesh payloads to embed their
+materials, so this is not a new layout: it is the field the reader already knows, in
+the payloads it did not look at.
+-/
+structure NameTable where
+  /-- The names, in payload order. -/
+  names : Array String
+  deriving Inhabited
+
+/-- Read a table of texture names out of a payload.
+
+A name is a run of printable ASCII terminated by a NUL, at least `minNameLen`
+characters long so a stray byte inside padding is not a name. A payload carrying
+fewer than three names is an error, so the caller reports it rather than writing a
+document that describes nothing.
+
+No `firstIsTruncated` field, and that is deliberate: some payloads do begin inside
+a name -- `teBtFill.18.TGA` for `createBtFill.18.TGA`, because the container's
+slice starts three bytes into a record -- but a payload's first byte is the name's
+first byte either way, so the bytes cannot tell the two apart. `AGENTS.md` sets a
+payload aside rather than guessing it.
+-/
+def parseNameTable (payload : ByteArray) : Except String NameTable := Id.run do
+  let mut names : Array String := #[]
+  let mut k := 0
+  while k < payload.size do
+    let mut j := k
+    let mut printable := true
+    while j < payload.size && printable do
+      let b := payload[j]!
+      if b == 0 || b < 0x21 || b > 0x7e then
+        printable := false
+      else
+        j := j + 1
+    if j >= k + minNameLen && j < payload.size && payload[j]! == 0 then
+      let mut s := ""
+      for m in [k:j] do
+        s := s.push (Char.ofNat (payload[m]!).toNat)
+      names := names.push s
+      k := j + 1
+    else
+      k := if j > k then j else k + 1
+  if names.size < 3 then
+    return .error s!"{names.size} names is fewer than the 3 a table needs"
+  return .ok { names }
+
 /-- Read the drawing profile out of a `Models` payload.
 
 The reader measures the phase and the constant slot rather than assuming them. For

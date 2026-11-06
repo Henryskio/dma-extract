@@ -402,6 +402,7 @@ fn every_3d_payload_round_trips_byte_exactly() {
         let mut profiles = 0usize;
         let mut records = 0usize;
         let mut params = 0usize;
+        let mut names = 0usize;
         let mut passthrough = 0usize;
         for entry in &report.resources {
             let payload = container.payload(entry.index);
@@ -490,6 +491,18 @@ fn every_3d_payload_round_trips_byte_exactly() {
                                             continue;
                                         }
                                         Err(_) => {
+                                            // It may still carry a table of texture
+                                            // names, written as JSON+text (§11.40);
+                                            // if it does not, the payload is written
+                                            // through unchanged.
+                                            match mmf_extract::dma3d::modfile::parse_name_table(
+                                                payload,
+                                            ) {
+                                                Ok(_table) => {
+                                                    names += 1;
+                                                    continue;
+                                                }
+                                                Err(_) => {
                                             passthrough += 1;
                                             assert_eq!(
                                                 std::fs::read(&entry.path).expect("read passthrough"),
@@ -499,6 +512,8 @@ fn every_3d_payload_round_trips_byte_exactly() {
                                                 entry.index
                                             );
                                             continue;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -603,9 +618,9 @@ fn every_3d_payload_round_trips_byte_exactly() {
         // the accounting: every payload is a mesh, a profile, or a
         // passthrough, and the three counts close on the container's own.
         assert_eq!(
-            meshes + profiles + records + params + passthrough,
+            meshes + profiles + records + params + names + passthrough,
             container.resource_count as usize,
-            "the five model outputs do not account for every payload"
+            "the six model outputs do not account for every payload"
         );
         assert_eq!(
             report.profiles, profiles,
@@ -618,6 +633,10 @@ fn every_3d_payload_round_trips_byte_exactly() {
         assert_eq!(
             report.params, params,
             "the report's parameter-table count differs from what was written"
+        );
+        assert_eq!(
+            report.names, names,
+            "the report's name-table count differs from what was written"
         );
         assert_eq!(
             report.unconverted, passthrough,
@@ -656,6 +675,7 @@ fn every_3d_payload_round_trips_byte_exactly() {
                     && mmf_extract::dma3d::modfile::parse_profile(payload).is_err()
                     && mmf_extract::dma3d::modfile::parse_magic_record(payload).is_err()
                     && mmf_extract::dma3d::modfile::parse_param_table(payload).is_err()
+                    && mmf_extract::dma3d::modfile::parse_name_table(payload).is_err()
             })
             .count();
         assert_eq!(report.failed.len(), neither, "the reported failures are not the unconverted");
@@ -760,6 +780,7 @@ fn the_modern_output_is_a_browsable_whole() {
                     && mmf_extract::dma3d::modfile::parse_profile(c.payload(*i)).is_err()
                     && mmf_extract::dma3d::modfile::parse_magic_record(c.payload(*i)).is_err()
                     && mmf_extract::dma3d::modfile::parse_param_table(c.payload(*i)).is_err()
+                    && mmf_extract::dma3d::modfile::parse_name_table(c.payload(*i)).is_err()
             })
             .count();
         assert_eq!(

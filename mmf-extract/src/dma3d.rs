@@ -117,6 +117,9 @@ pub struct Extract3DReport {
     /// Payloads written as JSON+text, i.e. parameter tables of small values at
     /// alternating byte positions with zero fill (`docs/DMA3D.md` §11.37, §11.39).
     pub params: usize,
+    /// Payloads written as JSON+text, i.e. tables of the texture names they
+    /// reference (`docs/DMA3D.md` §11.40).
+    pub names: usize,
     /// Payloads that are neither a mesh nor a drawing profile, and are therefore
     /// written through as the original bytes rather than as modern geometry.
     /// Counted, not skipped: `AGENTS.md` requires a per-resource report.
@@ -373,32 +376,58 @@ fn extract_gltf(
                                         continue;
                                     }
                                     Err(table_err) => {
-                                        report.unconverted += 1;
-                                        report.failed.push((
-                                            index,
-                                            name.to_string(),
-                                            format!(
-                                                "{mesh_err:#}; the profile reading also fails \
-                                                 ({profile_err}); the record reading also fails \
-                                                 ({record_err}); the parameter-table reading also \
-                                                 fails ({table_err})"
-                                            ),
-                                        ));
-                                        // Nothing modern was produced, so the
-                                        // payload is written through unchanged.
-                                        let path =
-                                            out_dir.join(format!("{index:05}_{stem}.mod"));
-                                        std::fs::write(&path, payload).with_context(|| {
-                                            format!("writing {}", path.display())
-                                        })?;
-                                        report.written += 1;
-                                        report.resources.push(Extracted3D {
-                                            index,
-                                            name: name.to_string(),
-                                            path,
-                                            bytes: payload.len(),
-                                        });
-                                        continue;
+                                            // Neither a table of parameters, a mesh, a
+                                            // profile nor a record stream. It may still carry a
+                                            // table of texture names, which is the field the
+                                            // extractor already reads out of mesh payloads to
+                                            // embed materials (`docs/DMA3D.md` §11.40).
+                                            match modfile::parse_name_table(payload) {
+                                                Ok(table) => {
+                                                    let path = out_dir
+                                                        .join(format!("{index:05}_{stem}.json"));
+                                                    gltf::write_name_json(&path, name, &table)
+                                                        .with_context(|| {
+                                                            format!("writing the names of {name}")
+                                                        })?;
+                                                    report.written += 1;
+                                                    report.names += 1;
+                                                    report.resources.push(Extracted3D {
+                                                        index,
+                                                        name: name.to_string(),
+                                                        path,
+                                                        bytes: payload.len(),
+                                                    });
+                                                    continue;
+                                                }
+                                                Err(name_err) => {
+                                            report.unconverted += 1;
+                                            report.failed.push((
+                                                index,
+                                                name.to_string(),
+                                                format!(
+                                                    "{mesh_err:#}; the profile reading also fails \
+                                                     ({profile_err}); the record reading also fails \
+                                                     ({record_err}); the parameter-table reading also \
+                                                     fails ({table_err}); the name-table reading also fails ({name_err})"
+                                                ),
+                                            ));
+                                            // Nothing modern was produced, so the
+                                            // payload is written through unchanged.
+                                            let path =
+                                                out_dir.join(format!("{index:05}_{stem}.mod"));
+                                            std::fs::write(&path, payload).with_context(|| {
+                                                format!("writing {}", path.display())
+                                            })?;
+                                            report.written += 1;
+                                            report.resources.push(Extracted3D {
+                                                index,
+                                                name: name.to_string(),
+                                                path,
+                                                bytes: payload.len(),
+                                            });
+                                            continue;
+                                                }
+                                            }
                                     }
                                 }
                             }
