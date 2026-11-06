@@ -1556,3 +1556,51 @@ entries, held somewhere other than the payload — is not in the container's
 metadata region either, and `ReadData` (§11.12) does not read a palette. The
 palette bank is in a routine the container reader drives, which is the last
 unnamed place it can be, and it is where the trace now has to go.
+
+## 11.15 The 443 are not meshes, and the container is mixed
+
+§11.9 moved the mesh count from 0 to 17 by removing the magic-at-offset-0 gate.
+The remaining 443 are not a single failed decode, and measuring them says so.
+
+**The seventeen that decode are the big ones**: mean payload 158,413 bytes against
+3,222 for the rest, median 376. They are `BmpPict.mod` (8,824 B),
+`createModDrawProfileSquare5/Tri4/UIdmnd/UIsqr`, `createModShrColorHB` (14,645 B),
+`e.mod`, `mod` — and each carries the §3 chain with `C = 6` indices naming
+`V = 4` vertices, the small quad that is this build's mesh primitive.
+
+**The 443 are small**, and 90% of them are under 500 bytes: 205 of them are
+300-399 bytes, 89 are 200-299, 89 are 100-199. A mesh needs `16 * V` bytes of
+vertices and `16 * V` of normals, so the median payload cannot hold one.
+
+**They are other resource types, and the bytes say which.** The names split into
+families that do not overlap the decoders:
+
+| family | count | what it is |
+| --- | --- | --- |
+| `createModDrawProfile4Point/5Star/Diamnd*` | 36 | 2D drawing profiles |
+| `createModShrMaterial*` | 10 | material records |
+| `fileAxCreationSlot*`, `fileCreationSlot*`, `fileDirectorySlot*` | 26 | file icons |
+| `createModShapePrim*` | 10 | primitive definitions |
+| `createModShrBtSize*`, `createModShrBright*`, `createModShrTexture*` | 11+ | UI/brush records |
+| (no readable name) | 52 | the container is cut |
+
+The 2D profiles are visible in their first bytes: `r111` opens `2a 36 00 00 80 3f
+8c 86`, `r110` `80 3f df 77 ab 3f 92 b1`, `r114` `03 3f 00 00 00 00 d5 d7` — those
+are big-endian `f32` values (`0x3f80…` = 0.75, `0x3f03…` = 0.51), not a `u32`
+count followed by `u16` indices. A profile is a list of 2D points; a mesh is a
+count, an index list, and two `16 * V` arrays. The reader is looking for the
+second in payloads that hold the first.
+
+**So the count is not a decoder bug.** The English build's 144 of 460 and this
+disc's 17 of 460 are different container compositions, not two readings of one
+format: the two discs' containers agree byte for byte on their headers and their
+whole offset tables (§11.6), so the payloads are what the game shipped. What the
+443 need is a reader per family — a 2D profile reader, a material reader, a file
+icon reader — and that is several decoders, not one. None of them is started
+here, and nothing in this section should be read as having started one.
+
+What does remain actionable is the split inside the `createModDrawProfile`
+family itself: five of its 41 payloads carry the chain at 422-584 bytes, and the
+36 that do not are 282-472 bytes — the same range. Five decoders and 36 near
+misses in one family is a decoder question, not a container-composition one, and
+it is the lead worth pulling next.
