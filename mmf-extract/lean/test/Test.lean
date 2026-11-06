@@ -174,16 +174,26 @@ def checkTextures : IO Bool := do
     if texture.axis != Dma3d.Texfile.TextureAxis.square then
       IO.eprintln s!"texture axis is {reprStr texture.axis}, expected square"
       ok := false
-    -- A payload whose index bytes are not a power of two must be reported, not
-    -- factored into a width no texture in this engine can have.
+    -- A payload whose index bytes are not a power of two must not be read as a
+    -- palette image, factored into a width no texture in this engine can have.
+    -- It may still be a coverage mask, so the negative belongs to the paletted
+    -- reading and the router takes both (`docs/DMA3D.md` 11.14).
     let mut odd := ByteArray.emptyWithCapacity (4 * 4 + 63)
     for _entry in [0:4] do
       odd := odd.append (ByteArray.mk #[255, 0, 0, 255])
     for _ in [0:63] do
       odd := odd.push 1
-    match (Dma3d.Texfile.parse odd : Except String Dma3d.Texfile.Texture) with
-    | .ok _ => IO.eprintln "a 63-byte index area was accepted"; ok := false
+    match (Dma3d.Texfile.parsePaletted odd : Except String Dma3d.Texfile.Texture) with
+    | .ok _ => IO.eprintln "a 63-byte index area was accepted as a palette image"; ok := false
     | .error _ => pure ()
+    -- And the mask reading of the same bytes is the 64-byte area behind a
+    -- 15-byte header, which is what the router returns.
+    match (Dma3d.Texfile.parse odd : Except String Dma3d.Texfile.Texture) with
+    | .ok texture =>
+      if texture.indices.size != 64 || !texture.palette.isEmpty then
+        IO.eprintln s!"the mask reading of the odd payload is {texture.indices.size} bytes with {texture.palette.size} palette entries"
+        ok := false
+    | .error e => IO.eprintln s!"the mask reading of the odd payload was rejected: {e}"; ok := false
   return ok
 
 /-- Whether `dir` can be read, so "nothing to check yet" can be told apart from

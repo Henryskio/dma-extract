@@ -545,6 +545,25 @@ mod tests {
         assert!(parse(&[0xff; 64]).is_err());
     }
 
+    /// A payload whose area is not a power of two is not a palette image, but it
+    /// may still be a coverage mask: the negative belongs to the paletted reading
+    /// and the router takes both (`docs/DMA3D.md` §11.14).
+    #[test]
+    fn a_63_byte_index_area_is_a_mask_not_a_palette_image() {
+        let mut odd = Vec::new();
+        for _ in 0..4 {
+            odd.extend_from_slice(&[255, 0, 0, 255]);
+        }
+        odd.extend(std::iter::repeat(1u8).take(63));
+        assert!(
+            parse_paletted(&odd).is_err(),
+            "a 63-byte index area was accepted as a palette image"
+        );
+        let t = parse(&odd).expect("the same bytes read as a coverage mask");
+        assert_eq!(t.indices.len(), 64);
+        assert!(t.palette.is_empty());
+    }
+
     /// The simplest palette texture: one colour, 8x8, every index zero.
     #[test]
     fn one_palette_entry_and_a_grid_of_zero_indices() {
