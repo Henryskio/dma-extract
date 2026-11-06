@@ -325,7 +325,6 @@ impl Container {
         } else {
             read_u16(&data, 0x22, big_endian)
         };
-        let declared = declared_count as usize;
 
         let off_base = if version == 1 { 0x20 } else { 0x24 };
         // The count and the boundaries come from the table itself, not from the
