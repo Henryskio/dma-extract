@@ -2395,3 +2395,43 @@ misaligned lines and reported twelve payloads as disagreeing when three of them
 (`14`, `15`, `10`) are accepted by both — which the direct check confirmed. A tool
 contract that is not checked produces a confident wrong answer, and the check is
 `comm` needing lexicographic input.
+
+## 11.31 The 61 are a `u16` record stream behind the magic, not an `f32` one
+
+The structured groups are not a near miss of the profile reader, and one payload shows
+why. `createModBrush` (376 bytes, `ush.mod`) reads, byte for byte:
+
+```text
++  0  00 00 00 00 | 01 00 00 00 | 02 00 00 00        three u32 counters: 0, 1, 2
++ 12  cc cc cc cc cc cc cc cc cc cc cc cc             twelve pad bytes
++ 24  .....createBtPrint.1.tga\0                     a texture name
++ 46  .....createBtPrint.2.tga\0                     another
++ 80  ....................                           padding
++ 88  6d 6f 64 20 49 49 | 10 00 00 00               `mod II` and the u32 16
++ 98  01 00 | 01 00 | 71 01 | 00 00 | 01 00 | ...    the record stream
++194  ........d1 9b c2 40 | 00 00 | 00 00            6.08, then padding
++208  00 00 89 88 08 3d | 23 95 4f 3e | 00 00        0.034, 0.20
+```
+
+So the payload is a **header, a list of names, the `mod II` magic with the `u32` §11.20
+measured, a `u16`-based record stream, and `f32` values at the end.**
+
+That last part is what decides the reader. `Modfile.parse` looks for an `f32` record
+whose one slot is a constant, and this payload's records are `u16` pairs — so no
+`f32` reader can read them, at any phase or slot. The `mod II` magic that
+§11.9/§11.20/§11.22 kept finding *is* the record stream's marker, and the reader has
+never used it, because the payloads that worked did not need it.
+
+It also explains §11.22's measurement exactly: the `u16` stream that "pairs cleanly from
+offset 13" — `1, 1, 369, 0, 1, 0, 1, 0, 2, 0, 0, 0, 1, 0, 0, 4, 0, 5, 0` — is the
+`71 01` = 369 length-carrying record followed by small counts, in the same payload
+layout. And it explains why the "odd bytes span the full range" probe found nothing:
+every other byte of a `u16` stream *is* a zero for small values, and the other half is
+the value, so the probe was measuring the format rather than failing to.
+
+What this gives the 231 is a concrete, located reader: find `mod II`, read the `u32`
+after it, then decode the `u16` records from there. What it does not give is the
+records' *meaning*, and §11.20 already measured that the `u32` is not a byte count and
+not an entry count of what follows, so the record schema has to come from the routine
+`src/dma3d/modfile.rs` has not read. That is a bounded, named piece of work: one
+payload layout, located, with a `u16` record schema to determine.
