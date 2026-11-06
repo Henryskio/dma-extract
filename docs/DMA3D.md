@@ -2057,3 +2057,54 @@ them: the code section ends at `0x194f74` and the data section at
 So the honest state is: the container is intact, the section the thunk should be in
 has not been located, and the branch target's address space is unresolved. That is a
 narrower claim than "not in this artifact", which is withdrawn.
+
+## 11.25 The 443 are f32 point streams, not the mesh chain, and the slot that is always 0.0 is the discriminator
+
+Searching the non-converting payloads for where the chain check fails, rather than
+whether it fails, finds the format. `createModDrawProfile5Star1` (396 B) and
+`createModDrawProfileDiamnd1` (320 B) both admit a plausible `C` and `V`
+(`62`/`63` and `62`/`62`) at a fixed phase, which is what made earlier sections
+think a chain was nearly there. It is not: the values that follow are not `u16`
+indices at all.
+
+Read as **little-endian `f32` at a 2-byte phase**, both payloads are clean streams
+in which every fourth value is exactly `0.0`:
+
+| resource | values from the phase | |
+| --- | --- | --- |
+| `5Star1` | `0.0, -0.0748, -0.9807, 0.1803` | then `0.0, ..., -0.9236, 0.3799` |
+| `Diamnd1` | `0.2710, -0.0, 0.5519, 0.8262` | then `0.1099, -0.0, 0.5140, 0.8316` |
+
+The period is 16 bytes and the phase is one of 0..7, which is the same phase spread
+§11.21 measured from the `1.0f` slot — because it is the same thing seen from the
+other side: **the `1.0f` of §11.21 and the `0.0f` here are the two halves of one
+record.** A record is four `f32`s in which **one slot is a constant** (`0.0` in
+these two payloads, `1.0` in `UIdmnd`), and the other three vary.
+
+That is a **3-component point stream with a fixed fourth component**, and the fixed
+component says which:
+
+* `0.0` is what a **normal** carries in the mesh chain `src/dma3d/modfile.rs`
+  reads — its `w` is checked `abs(t[3]) < 1e-6`, against `1.0` for a vertex;
+* `1.0` is what a **vertex** carries, checked `abs(t[3] - 1.0) < 1e-6`.
+
+`createModDrawProfile*` payloads are 2D drawing profiles, and a 2D profile is a
+point stream in a plane — one coordinate constant across every record. The engine
+tints and extrudes it at runtime; that is why the payloads are small and why the
+shared `mod II` + `16` header sits in front of them.
+
+So the 443 are **not** the mesh layout with a different count (§11.20), **not**
+encrypted (§11.16, already withdrawn), and **not** missing the magic (§11.9): they
+are a second, simpler payload shape in the same container — a `f32` point stream
+whose per-record constant slot is the type tag. A reader for it is a prefix skip, a
+phase determination from the constant slot, and a list of `f32` triples; the
+geometry is that list as a line strip, and the constant slot distinguishes a
+profile's points from its normals.
+
+What this does **not** yet give is the conversion to `glTF`, because the reader
+would have to emit a line strip rather than a triangle mesh, and the engine's own
+tessellation of a profile into a surface is not in the payload. That is the next
+decision, and it is a format decision rather than a decoding one: a `createMod`
+profile emitted as a `glTF` line loop is honest and lossless about what the payload
+holds, whereas emitting it as a surface would invent geometry the payload does not
+contain.
