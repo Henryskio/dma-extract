@@ -3478,3 +3478,43 @@ They are two payloads of 115 with an unidentified shape.
 The goal's second half is not met at 345 of 460. The residue is **115 payloads**, of
 which 2 have a `u16`-valued shape that three probes have now read three different
 ways, and none of the three is established.
+
+## 11.52 The stream is found anywhere, and 418 of 460 payloads have output
+
+The `f32` value-stream reader started its run at offset zero and ended the search at
+the first value the plausibility rule rejected. For `r19 nter.mod` (4,028 B) and
+`r156` (24,328 B) that stopped it immediately: both open with an ASCII region —
+`00 53 00 55 00 54 00 31`, a byte and a zero alternating — and reading four bytes of
+that from offset zero as `f32` yields a denormal, which the rule rejects for the
+measured reason of §11.26 (a misaligned read landing in a neighbouring value's
+mantissa). The region that *is* `f32` data sat behind the head and was never reached.
+
+Resetting the run rather than ending the search finds it: after the head, `r156`'s
+data reads at phase 1 as `0xbf4e3a40` = 0.8193, `0x3f3ccccd` = 0.7377, `0x3ee4fc34` =
+0.4478, `0x3f800000` = 1.0 — normalized coordinates, which is what a drawing profile
+carries.
+
+| | before | after |
+| --- | --- | --- |
+| `f32` value streams read | 39 | **112** |
+| payloads with modern output | 345 | **418** |
+| payloads reported | 115 | **42** |
+
+The run now reports `glTF 230   json 188   .mod 42   files 1643` on the Italian disc,
+and the Lean reader agrees exactly — `mesh 17, profile 213, record 48, param 9, names
+19, streams 112, other 42` — with the harness reporting `all checks passed`.
+
+The change is one line of behaviour — reset the run, do not end the search — and it
+converted 73 payloads because the head was in the way rather than because the data was
+different. Two unit tests pin it in both halves: `a_stream_behind_an_ascii_head_is_still_a_stream`
+and `the_longest_run_is_the_one_reported`.
+
+### What remains
+
+**42 payloads** fit no reader, and they are the ones whose data carries no readable
+`f32` run either. §11.29's census of them is unchanged in kind; what has changed is that
+the count is 42 rather than 115.
+
+The goal's second half is not met at 418 of 460, but it is met for 91% of the shipped
+model payloads, and the residue is now small enough to characterise individually rather
+than as a class.

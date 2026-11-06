@@ -1117,37 +1117,49 @@ pub fn parse_value_stream(payload: &[u8]) -> Result<ValueStream> {
         if phase + 4 > payload.len() {
             continue;
         }
-        let mut values: Vec<f32> = Vec::new();
-        let mut lo = f32::INFINITY;
-        let mut hi = f32::NEG_INFINITY;
-        let mut k = 0usize;
-        while phase + 4 * (k + 1) <= payload.len() {
-            let at = phase + 4 * k;
-            let v = f32_at(payload, at);
-            // The same plausibility rule the other readers use, and for the same
-            // measured reason: a denormal is a misaligned read landing in a
-            // neighbouring value's mantissa (§11.26), and writing one would report
-            // noise as data.
-            let ok = v.is_finite()
-                && v.abs() < MAX_STREAM_VALUE
-                && (v == 0.0 || v.abs() >= f32::MIN_POSITIVE);
-            if !ok {
-                break;
+        // The run is found **anywhere in the payload**, not only from its start.
+        // `r19 nter.mod` and `r156` open with an ASCII region -- `00 53 00 55 00
+        // 54 00 31`, a byte and a zero alternating -- and reading that as `f32`
+        // from offset zero yields denormals, which the plausibility rule rejects,
+        // so a reader that starts at zero stops before it reaches the region that
+        // is `f32` data. Resetting the run rather than ending the search is what
+        // separates the two (`docs/DMA3D.md` §11.52).
+        let mut start = phase;
+        while start + 4 <= payload.len() {
+            let mut values: Vec<f32> = Vec::new();
+            let mut lo = f32::INFINITY;
+            let mut hi = f32::NEG_INFINITY;
+            let mut k = start;
+            while k + 4 <= payload.len() {
+                let v = f32_at(payload, k);
+                // The same plausibility rule the other readers use, and for the
+                // same measured reason: a denormal is a misaligned read landing in
+                // a neighbouring value's mantissa (§11.26), and writing one would
+                // report noise as data.
+                let ok = v.is_finite()
+                    && v.abs() < MAX_STREAM_VALUE
+                    && (v == 0.0 || v.abs() >= f32::MIN_POSITIVE);
+                if !ok {
+                    break;
+                }
+                if v < lo {
+                    lo = v;
+                }
+                if v > hi {
+                    hi = v;
+                }
+                values.push(v);
+                k += 4;
             }
-            if v < lo {
-                lo = v;
+            if hi - lo > MIN_STREAM_SPREAD
+                && values.len() >= MIN_STREAM_VALUES
+                && best.as_ref().map(|b| values.len() > b.0).unwrap_or(true)
+            {
+                best = Some((values.len(), phase, lo, hi, values));
             }
-            if v > hi {
-                hi = v;
-            }
-            values.push(v);
-            k += 1;
-        }
-        if hi - lo > MIN_STREAM_SPREAD
-            && values.len() >= MIN_STREAM_VALUES
-            && best.as_ref().map(|b| values.len() > b.0).unwrap_or(true)
-        {
-            best = Some((values.len(), phase, lo, hi, values));
+            // Resume just past the end of this attempt; a run that failed on its
+            // first value cannot start inside itself.
+            start = k + 4;
         }
     }
     match best {
@@ -1216,5 +1228,54 @@ mod value_stream_tests {
             payload.extend_from_slice(&(k as f32 * 0.01).to_le_bytes());
         }
         assert!(parse_value_stream(&payload).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stream_position_tests {
+    use super::*;
+
+    /// A stream that begins after a non-stream region is still a stream.
+    ///
+    /// `r19 nter.mod` and `r156` open with an ASCII region — `00 53 00 55 00 54 00
+    /// 31`, a byte and a zero alternating — and reading that as `f32` from offset
+    /// zero yields denormals, which the plausibility rule rejects. A reader that
+    /// starts at zero stops before it reaches the region that *is* `f32` data
+    /// (`docs/DMA3D.md` §11.52).
+    #[test]
+    fn a_stream_behind_an_ascii_head_is_still_a_stream() {
+        let mut payload: Vec<u8> = Vec::new();
+        // The head: 96 bytes of alternating zero and a printable byte.
+        for b in b"SUT1V2WXYXZY[\\]\\^]" {
+            payload.push(0);
+            payload.push(*b);
+        }
+        // Then the stream: 40 normalized values with a real spread.
+        for k in 0..40 {
+            payload.extend_from_slice(&((k as f32) / 39.0).to_le_bytes());
+        }
+        let stream = parse_value_stream(&payload).expect("the stream behind the head is read");
+        assert_eq!(stream.phase, 0);
+        assert_eq!(stream.values.len(), 40);
+        assert_eq!(stream.values[0], 0.0);
+        assert!((stream.values[39] - 1.0).abs() < 1.0e-6);
+    }
+
+    /// The run is the longest one, wherever it starts.
+    #[test]
+    fn the_longest_run_is_the_one_reported() {
+        let mut payload: Vec<u8> = Vec::new();
+        // A short run first.
+        for k in 0..20 {
+            payload.extend_from_slice(&((k as f32) * 0.05).to_le_bytes());
+        }
+        // A break, so the two runs do not join into one.
+        payload.extend_from_slice(&0x7f800001u32.to_le_bytes()); // a NaN
+        // Then a long one.
+        for k in 0..60 {
+            payload.extend_from_slice(&((k as f32) * 0.1).to_le_bytes());
+        }
+        let stream = parse_value_stream(&payload).expect("read");
+        assert_eq!(stream.values.len(), 60);
     }
 }

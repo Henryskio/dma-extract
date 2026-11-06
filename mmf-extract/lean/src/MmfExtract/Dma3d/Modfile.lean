@@ -523,37 +523,48 @@ def parseValueStream (payload : ByteArray) : Except String ValueStream := Id.run
   for phase in [0:4] do
     if phase + 4 > payload.size then
       continue
-    let mut values : Array Float := #[]
-    let mut lo := Float.inf
-    let mut hi := -Float.inf
-    let mut k := 0
-    let mut stop := false
-    while !stop do
-      let offset := phase + 4 * k
-      if offset + 4 > payload.size then
-        stop := true
-      else
-        match leF32 payload offset with
-        | Except.error _ => stop := true
-        | Except.ok v =>
-          -- The same plausibility rule the other readers use, and for the same
-          -- measured reason: a denormal is a misaligned read landing in a
-          -- neighbouring value's mantissa (§11.26), and writing one would report
-          -- noise as data.
-          if !(v.isFinite) || !(v.abs < maxStreamValue)
-              || !(v == 0.0 || v.abs >= 1.1754943508222875e-38) then
-            stop := true
-          else
-            if v < lo then lo := v
-            if v > hi then hi := v
-            values := values.push v
-            k := k + 1
-    if hi - lo > minStreamSpread && values.size >= minStreamValues then
-      match best with
-      | some (bestCount, _, _, _) =>
-          if values.size > bestCount then
-            best := some (values.size, lo, hi, values)
-      | none => best := some (values.size, lo, hi, values)
+    -- The run is found **anywhere in the payload**, not only from its start.
+    -- `r19 nter.mod` and `r156` open with an ASCII region -- `00 53 00 55 00 54
+    -- 00 31`, a byte and a zero alternating -- and reading that as f32 from
+    -- offset zero yields denormals, which the plausibility rule rejects, so a
+    -- reader that starts at zero stops before it reaches the region that is f32
+    -- data (`docs/DMA3D.md` §11.52).
+    let mut start := phase
+    while start + 4 <= payload.size do
+      let mut values : Array Float := #[]
+      let mut lo := Float.inf
+      let mut hi := -Float.inf
+      let mut k := start
+      let mut stop := false
+      while !stop do
+        let offset := k
+        if offset + 4 > payload.size then
+          stop := true
+        else
+          match leF32 payload offset with
+          | Except.error _ => stop := true
+          | Except.ok v =>
+            -- The same plausibility rule the other readers use, and for the same
+            -- measured reason: a denormal is a misaligned read landing in a
+            -- neighbouring value's mantissa (§11.26), and writing one would report
+            -- noise as data.
+            if !(v.isFinite) || !(v.abs < maxStreamValue)
+                || !(v == 0.0 || v.abs >= 1.1754943508222875e-38) then
+              stop := true
+            else
+              if v < lo then lo := v
+              if v > hi then hi := v
+              values := values.push v
+              k := k + 4
+      if hi - lo > minStreamSpread && values.size >= minStreamValues then
+        match best with
+        | some (bestCount, _, _, _) =>
+            if values.size > bestCount then
+              best := some (values.size, lo, hi, values)
+        | none => best := some (values.size, lo, hi, values)
+      -- Resume just past the end of this attempt.
+      if k + 4 > start then start := k + 4 else start := start + 4
+
   match best with
   | some (_, lo, hi, values) =>
     return .ok { phase := 0, values, range := (lo, hi) }
