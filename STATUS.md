@@ -441,10 +441,11 @@ and that naming stays per `AGENTS.md`. Its own document is
   width/height derivation remain open: both orders fit, four resources apart, so
   nothing acts on it.
   **705 of 705 textures now decode, against 3 before, and the run reports no
-  failures at all.** The **models are 230 glTFs from 460 payloads** — 17 meshes plus
-  213 drawing profiles (`docs/DMA3D.md` §11.25, §11.26, §11.28) — with the remaining
-  230 reported per resource rather than skipped. Before the profile reader the same
-  run wrote 17 glTFs and 443 `.mod` files. The reader takes the longest prefix of
+  failures at all.** The **models are 278 payloads with modern output from 460** — 17
+  mesh glTFs, 213 drawing-profile glTFs, and 48 `mod II` record streams written as
+  JSON+text (`docs/DMA3D.md` §11.38) — with the remaining 182 reported per resource
+  rather than skipped. Before the profile reader the same run wrote 17 glTFs and 443
+  `.mod` files. The reader takes the longest prefix of
   records whose constant slot is bit-repeating, because a payload carries its record
   run and then something else, exactly as a mesh payload is a chain plus a tail
   (§11.28). The profile reader is ported to Lean (`MmfExtract/Dma3d/Modfile.lean`) and
