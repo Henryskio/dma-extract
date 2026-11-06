@@ -2994,3 +2994,53 @@ the 115 payloads are waiting on, and it is not a step this workspace can take.
 Every byte of the 3D game's shipped resources is recovered byte-exactly. The modern
 conversion of the last 115 needs the schema that lives in a routine this workspace
 cannot reach statically and cannot run.
+
+## 11.44 The relocation stream is found, and its entries do not reach the branch
+
+§11.43 concluded the raw search was inconclusive because the stream is a compact
+encoding. Decoding what can be decoded without guessing: sec2 holds **6,728 BE `u16`
+words, 2,084 of them with a nonzero opcode nibble**, and the structure shows where the
+relocation instructions are.
+
+From `0x67e` the words come in a strict 4-byte pattern — an increasing word followed by
+a constant `0x0200`:
+
+```text
++0x67e: 0x100b   +0x680: 0x0200
++0x682: 0x101c   +0x684: 0x0200
++0x686: 0x1032   +0x688: 0x0200
++0x68a: 0x1044   +0x68c: 0x0200
++0x68e: 0x1051   +0x690: 0x0200
+```
+
+and the same shape recurs through the section to `0x2ddc`. The increasing word runs
+**`0x100b` to `0x1fed`** across those entries, with `0x41` (1,534 occurrences) and
+`0x83` (484) as the section's two most common words — a fixed relocation repeated for
+many similar sites, which is the shape a relocation stream has.
+
+### What that establishes, and what it does not
+
+The values in the whole stream span **`0x100b` to `0x1fed`** — at most 8,173. The
+branch being chased is at section-0 offset **`0x15fedc` = 1,441,500**, which is 87% of
+the way into a 1,658,740-byte code section. **No entry in the stream has a value
+anywhere near it.**
+
+Two readings of that, and the bytes do not choose between them:
+
+* if those values are section-0 offsets, the loader relocates only the opening 8 KB of
+  the code — the section headers and the C++ runtime's construction tables, which is
+  what a PEF normally relocates most heavily — and the branch is simply not patched, in
+  which case `0x1c60a4` really is its target and my instruction decode is wrong
+  somewhere I have not found;
+* or the values are not offsets at all, in which case I have the entry format's
+  semantics backwards and the measurement says nothing about the branch.
+
+Distinguishing them needs the documented PEF opcode semantics — what bits 15–12 select,
+what the low field carries, and what the repeated `0x0200` means. This repository does
+not hold it and I do not have a source for it, and inventing one is the guess
+`AGENTS.md` forbids.
+
+So this is the third consecutive turn that has narrowed the same branch without
+reaching it, and the honest summary is that the step is not another measurement: it is
+the PEF relocation format, or a PowerPC debugger break at `0x1633ec` to read `r12`
+directly. Both are outside what this workspace can do.
