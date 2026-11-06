@@ -389,7 +389,13 @@ fn texcoords_of(payload: &[u8], records: &anim::Records) -> Option<Vec<[f32; 2]>
             payload[at + 6],
             payload[at + 7],
         ]);
-        out.push([a, b]);
+        // The record is *detected* with a tolerance (`anim.rs` accepts
+        // `-0.001..=1.001`), because a float stored by the game is not exact at
+        // the boundary. What is written must be exact: a texture coordinate of
+        // `-0.000001` is the float representation of zero and a viewer reads it
+        // as a sample from outside the texture. Clamp into `0..=1` on the way
+        // out, so the detection stays loose and the output stays well-formed.
+        out.push([a.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]);
     }
     Some(out)
 }

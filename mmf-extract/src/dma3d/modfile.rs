@@ -122,10 +122,17 @@ fn plausible(f: f32) -> bool {
 /// an empty mesh, because for those the *reference* is the payload and the mesh
 /// is not the thing that is missing.
 pub fn parse_mesh(payload: &[u8]) -> Result<ModelMesh> {
-    // The magic, so a caller cannot hand us a wrong kind of payload by mistake.
-    if !payload.starts_with(b"mod II") {
-        bail!("not a `.mod` payload (no `mod II` magic)");
-    }
+    // The magic is a **hint**, not a gate. `docs/DMA3D.md` §3 says the counts
+    // are not in the header and the chain is located structurally, and that is
+    // what the loop below does. Requiring the magic at offset 0 rejected the
+    // Italian disc's meshes, whose `mod II` sits at scattered offsets (3, 24,
+    // 35, 44, 50, …) behind a header: 9 of its 460 payloads carry the chain and
+    // none of them starts with the magic. The structural signature — a count,
+    // that many zero-based indices below the vertex count, that many vertices
+    // whose `w` is 1.0, and a second count equal to it — is strong enough on its
+    // own, and the caller's mistake is caught by it failing rather than by the
+    // magic being absent.
+    //
     // The header is not decoded, so the search starts past it and the mesh is
     // found by its signature. 6000 is well past every measured header (163-263)
     // and keeps a corrupt file from being scanned end to end.

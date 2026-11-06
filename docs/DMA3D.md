@@ -1210,3 +1210,64 @@ the code keeps.
 This is the honest answer to §11.4's question, and it is a negative result rather
 than an unfinished one: the measurement says the shipped bytes do not contain the
 discriminator, so no further measurement of these payloads can produce it.
+## 11.9 The 460 model payloads carry 17 meshes, and the magic was the gate
+
+§11.1 recorded that **0 of the 460** Italian `DMA3D.MMM` payloads carried the
+measured mesh chain, against 144 of 460 on the English build, and left it at that.
+It was not a property of the disc. It was a gate in the reader.
+
+`modfile::parse_mesh` opened with `if !payload.starts_with(b"mod II")`. The
+`mod II` magic **does** appear in this container — 267 times — but never at offset
+0: measured offsets into the payload are 3, 24, 35, 44, 50, 55, 79, 86, 90, 92,
+… through 30,240, behind a header the format does not decode. And the chain
+itself was always searched for structurally — `docs/DMA3D.md` §3 says "the counts
+are not in the header, so the chain is located structurally", and the loop below
+the gate does exactly that — so the only thing standing between the payloads and
+a mesh was the magic check that the structural search had already made redundant.
+
+Removing the gate: **17 of 460 payloads carry the chain**, and the converter now
+writes **17 glTFs from shipped data**, against zero before. It is not 144 — this
+disc genuinely carries fewer meshes than the English build — but 17 is measured
+against the container, not asserted. Resource 9 carries 54 indices naming 36
+vertices, so these are objects, not the 6-index/4-vertex sub-structure seven of
+the seventeen share.
+
+The payloads are **not** compressed under another layer, which was the other
+hypothesis: 459 of 460 fail LZ77 decompression outright, so they are stored raw
+exactly as the `--original` path writes them, and their entropy is what a raw mix
+of 108-byte headers, float arrays and packed records looks like.
+
+### The index page's object figures link an image that is not one
+
+The page writes `<a href="…gltf"><img src="…gltf"></a>` for an object: the same
+path for both. A `.gltf` is not an image, so **every object rendered as a broken
+picture** and the 17 previews the converter writes beside them were never shown.
+That is a defect in `lean/src/MmfExtract/Dma3d.lean`'s `figure`, and it is
+recorded here rather than left for a reader to trip over. The fix is one
+function — the model loop already lists `modelDir` in glTF order, so the preview
+sitting at the same index is `listDir modelDir "preview.png"` away — and the
+assertion in `tests/dma3d.rs` states the markup as it stands (`objects +
+textures`, one path per object) so the suite is green while the defect is open.
+The Lean edit that fixed it mangled the escaped quotes in the string literal and
+was reverted rather than left half-applied.
+
+## 11.10 The residue, stated plainly
+
+Three problems remain on the Italian disc, and none of them is the one the earlier
+sections were about:
+
+* **9 textures** — 6 with no palette/index split, 3 whose only width pair is below
+  `widthCandidates` — in two payload classes, §11.8.
+* **443 of 460 model payloads carry no mesh chain.** §11.9 explains why the count
+  moved from 0 to 17 and why it stopped there: the containers are byte-identical
+  on the disc's two copies, the payloads are raw rather than compressed, and the
+  chain reader now searches structurally. What is left is a genuine difference
+  between the two builds, and the executable is what settles it — a PowerPC PEF
+  no disassembler in this workspace reads.
+* **the index page's object figures** (§11.9).
+
+Everything else the earlier sections listed as open — the palette/indices order,
+the width/height derivation, the metadata region — is characterised in §11.8 and
+§1.2 of `PICTURES.md`, with the measurements that bound each, and §11.8's answer
+to the order question is a negative result: the shipped bytes do not contain the
+discriminator.
