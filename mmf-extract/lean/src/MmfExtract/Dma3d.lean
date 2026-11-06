@@ -210,13 +210,17 @@ def listDir (dir : System.FilePath) (extension : String) : IO (Array (Nat × Str
   return out.qsort (·.1 ≤ ·.1)
 
 /-- One `<figure>` of the index page. -/
-private def figure (dirPrefix : String) (name : String) (index : Nat) : String :=
-  ("<figure><a href=\"" ++ dirPrefix ++ "/" ++ name
+private def figureLink (dirPrefix : String) (linkName imageName : String) (index : Nat) : String :=
+  ("<figure><a href=\"" ++ dirPrefix ++ "/" ++ linkName
     ++ "\" title=\"Open " ++ Path.padIndex index
-    ++ "\" ><img src=\"" ++ dirPrefix ++ "/" ++ name
+    ++ "\" ><img src=\"" ++ dirPrefix ++ "/" ++ imageName
     ++ "\" alt=\"" ++ Path.padIndex index
     ++ "\" loading=\"lazy\"></a><figcaption>" ++ Path.padIndex index
     ++ "</figcaption></figure>\n")
+
+/-- One figure whose link and image are the same path. -/
+private def figure (dirPrefix : String) (name : String) (index : Nat) : String :=
+  figureLink dirPrefix name name index
 
 /-- The index page, built from what was written rather than from what the
 container claims it holds. It goes at `base`, beside both directories, and
@@ -230,6 +234,7 @@ def writeIndex (base : System.FilePath) (textureDir modelDir : System.FilePath) 
   try
     let textures ← listDir textureDir "png"
     let models ← listDir modelDir "gltf"
+    let previews ← listDir modelDir "preview.png"
 
     let texturePrefix := relativeTo base textureDir
     let modelPrefix := relativeTo base modelDir
@@ -239,10 +244,16 @@ def writeIndex (base : System.FilePath) (textureDir modelDir : System.FilePath) 
     page := page ++
       "<p>Every object below is a rendered picture of the model itself, made from the model's own vertices. The file next to it is a <code>.gltf</code>, which is the model. <a href=\"#how\">How to open one</a>.</p>\n"
     page := page ++ "<div class=\"grid\">\n"
+    -- The preview beside each glTF, so the figure shows the object and links
+    -- it. A `.gltf` is not an image, and the page used the same path for both
+    -- the link and the `<img>`, so every object rendered as a broken picture
+    -- and the previews the converter writes were never shown.
     for (index, name) in models.toList do
-      -- A model without a preview still gets a figure; its image is simply
-      -- missing rather than the model being left out.
-      page := page ++ figure modelPrefix name index
+      let image :=
+        match previews.find? (fun p => p.1 == index) with
+        | some (_, preview) => preview
+        | none => name
+      page := page ++ figureLink modelPrefix name image index
     page := page ++ "</div>\n"
 
     page := page ++ s!"<h2>Textures <span class=\"count\">{textures.size}</span></h2>\n"

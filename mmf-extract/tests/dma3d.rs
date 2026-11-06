@@ -678,22 +678,19 @@ fn the_modern_output_is_a_browsable_whole() {
         let mut distinct = references.clone();
         distinct.sort();
         distinct.dedup();
-        // An object's figure uses the `.gltf` path for both its link and its
-        // `<img>`, so an object contributes one path and not two. That is the
-        // markup as it stands, and it is a known defect rather than a rule to
-        // preserve: a `.gltf` is not an image, so every object renders as a
-        // broken picture and the 17 previews the converter writes beside them
-        // are never shown. The page should link the glTF and show the preview;
-        // until the Lean writer does that, the assertion says what the page
-        // really contains (`docs/DMA3D.md` §11.10).
+        // Each figure is a link and an image. A texture's link and image are the
+        // same path, so it occurs twice; an object's link is its `.gltf` and its
+        // image is the preview beside it, which are two different paths. So the
+        // distinct paths are the object's two plus each texture's one — which is
+        // the rule that holds on a disc whose object count is anything.
         assert_eq!(
             distinct.len(),
-            objects + textures,
+            2 * objects + textures,
             "the index does not list every asset"
         );
         assert_eq!(
             distinct.iter().filter(|p| p.ends_with(".png")).count(),
-            textures,
+            previews + textures,
             "the index does not list every picture"
         );
         assert_eq!(
@@ -703,8 +700,8 @@ fn the_modern_output_is_a_browsable_whole() {
         );
         assert_eq!(
             references.len(),
-            references.len(),
-            "the markup's reference count is what it is"
+            2 * objects + 2 * textures,
+            "the index's markup does not reference every asset as expected"
         );
         assert_eq!(
             distinct

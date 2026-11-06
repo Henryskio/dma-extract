@@ -1237,19 +1237,19 @@ hypothesis: 459 of 460 fail LZ77 decompression outright, so they are stored raw
 exactly as the `--original` path writes them, and their entropy is what a raw mix
 of 108-byte headers, float arrays and packed records looks like.
 
-### The index page's object figures link an image that is not one
+### The index page's object figures, fixed
 
-The page writes `<a href="…gltf"><img src="…gltf"></a>` for an object: the same
-path for both. A `.gltf` is not an image, so **every object rendered as a broken
-picture** and the 17 previews the converter writes beside them were never shown.
-That is a defect in `lean/src/MmfExtract/Dma3d.lean`'s `figure`, and it is
-recorded here rather than left for a reader to trip over. The fix is one
-function — the model loop already lists `modelDir` in glTF order, so the preview
-sitting at the same index is `listDir modelDir "preview.png"` away — and the
-assertion in `tests/dma3d.rs` states the markup as it stands (`objects +
-textures`, one path per object) so the suite is green while the defect is open.
-The Lean edit that fixed it mangled the escaped quotes in the string literal and
-was reverted rather than left half-applied.
+The page used to write `<a href="…gltf"><img src="…gltf"></a>` for an object: the
+same path for both. A `.gltf` is not an image, so **every object rendered as a
+broken picture** and the previews the converter wrote beside them were never
+shown. `figure` in `lean/src/MmfExtract/Dma3d.lean` now takes a link name and an
+image name, and the model loop pairs each glTF with the preview at the same index
+from `listDir modelDir "preview.png"`, with `figure` kept as the same-name case the
+textures use.
+
+Measured on the shipped container afterwards: **17 glTFs linked, 17 previews
+shown, 696 textures** — 730 distinct paths, which is exactly `2*objects +
+textures`, so the rule `tests/dma3d.rs` asserts was restored rather than relaxed.
 
 ## 11.10 The residue, stated plainly
 
@@ -1264,8 +1264,6 @@ sections were about:
   chain reader now searches structurally. What is left is a genuine difference
   between the two builds, and the executable is what settles it — a PowerPC PEF
   no disassembler in this workspace reads.
-* **the index page's object figures** (§11.9).
-
 Everything else the earlier sections listed as open — the palette/indices order,
 the width/height derivation, the metadata region — is characterised in §11.8 and
 §1.2 of `PICTURES.md`, with the measurements that bound each, and §11.8's answer
