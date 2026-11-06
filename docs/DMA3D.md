@@ -1870,6 +1870,23 @@ which is a reader this repository has not written, and it is the thing to write
 next — one tag table per family, starting from `0x2580`, which is 1,920 and is
 carried by every `UIdmnd` record in the shipped container.
 
+**The record is confirmed across the majority of the container.** Scanning all 460
+payloads for a repeating period at which an `f32 = 1.0` (`00 00 80 3f`) sits at a
+fixed phase, **251 of 460 payloads carry one**, and the winning period is **8
+bytes** in every case — the record is `[2 bytes][f32 = 1.0][2 bytes]`. The phase
+runs 0..7 with 42, 41, 38, 30, 29, 26, 21 and 14 payloads respectively, so each
+payload picks its own phase, which is what a per-record 2-byte leading tag does.
+`UIdmnd` is one of the minority whose period is 16 rather than 8, carrying
+`1.0`, `-0.05`, `+0.05` in one 16-byte record.
+
+**That closes §11.16.** 251 payloads with a constant `1.0` recurring at a fixed
+period and phase is not a property of ciphertext or of compressed data — neither
+retains a value at a fixed position — and it is not a property of a flat
+coordinate list either, which is why the flat scan failed and the entropy looked
+high. It is the property of a tagged record stream whose `f32` fields have 24-bit
+mantissas, and the 209 payloads without a confirmed period are the ones whose tag
+table is still unread.
+
 **What this costs the claim of the previous sections.** §11.15's "big-endian
 `f32`" was wrong twice over: the values are little-endian, and they are `f32` at
 a *tagged* stride rather than at a flat one. §11.16's entropy argument survives
