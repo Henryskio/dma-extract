@@ -2881,3 +2881,61 @@ wrong. Measured directly over the 154 that were left then, the spread is continu
 from 1.1 to 6.2 bits per byte rather than falling into buckets, and 48 of them had no
 period explaining even 30% of their bytes. The goal's second half is not met at 345 of
 460.
+
+## 11.42 `f64` is not a sub-format here, and the 115 carry no strong period
+
+The two probes nobody had run over the 115 payloads that fit no reader both come back
+negative, and the negatives are measured rather than inferred.
+
+### `f64` streams: the runs are exponent-field noise
+
+A naive filter finds 14 payloads with a run of six or more finite little-endian
+`f64` values spread over more than half a unit, and 51 with a majority of non-zero
+values in a run. Reading the payloads those runs come from shows what they are:
+
+```text
+r156 (24,328 B) at phase 4:
+  272673532539941065451609642541870716047106739442726423206137885783213222311060...
+  416066793120265071543356310325975717798970860059261045619978588827178750308333...
+r247 createModShapePrimCone.mod (20,358 B) at phase 6:
+  first 8 values: -0.000, -0.000, -0.000, -0.000, -0.000, -0.000, -0.000, -0.000
+```
+
+`2.7e308` is an exponent field, not a coordinate, and a run of negative zeros is
+padding. Both payloads carry the alternating `00 XX` byte shape §11.37 already named,
+and reading eight bytes of it as a double produces those. So `f64` is not a sub-format
+in this container, and no reader is written for it.
+
+### Period: nothing left with a strong one
+
+Over the 115, the smallest period that explains at least 90% of the bytes:
+
+| | count |
+| --- | --- |
+| ≥ 90% | **0** |
+| 60–90% | 11 |
+| under 60%, or too short | 104 |
+
+The 19 payloads that carry a texture-name table have a period of 32 at 96% agreement —
+that is how §11.40 found them — and they are already read. What is left has **no period
+explaining even 60% of its bytes** in 104 of 115 cases.
+
+So the probes that found every reader this project has are exhausted against the
+residue: no mesh chain, no constant-slot `f32` stream, no `mod II` magic, no parameter
+table, no texture-name table, no `f32` value stream, no `f64` stream, no strong period.
+
+### What that means, stated plainly
+
+The 115 payloads carry bytes that no probe tried has found a structure in. Two things
+follow, and both are in the run's output rather than in an argument:
+
+* the goal's second half is **not met** at 345 of 460, and
+* the remaining step is not another threshold. A reader written now would be a
+  threshold tuned until the payloads fit, which is the guess `AGENTS.md` forbids —
+  and the payload bytes do not supply the schemas the readers have needed so far.
+
+The one route that would settle it is the same one §11.23, §11.24, §11.35 and §11.36
+named: the relocation entry that patches the `bl` at `0x1633ec` in `DMA3D.exe`, which
+is what tells the game's own reader what these payloads are. It needs the PEF
+relocation format applied by the loader, or a debugger break to read `r12` at run
+time. Neither is a disassembly step, and neither has been done.
