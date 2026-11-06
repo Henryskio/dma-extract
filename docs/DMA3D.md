@@ -2939,3 +2939,58 @@ named: the relocation entry that patches the `bl` at `0x1633ec` in `DMA3D.exe`, 
 is what tells the game's own reader what these payloads are. It needs the PEF
 relocation format applied by the loader, or a debugger break to read `r12` at run
 time. Neither is a disassembly step, and neither has been done.
+
+## 11.43 sec2's relocations carry no raw entry for the branch, and that is where the
+static route ends
+
+§11.23 and §11.42 named an unparsed thing: the relocation entries in sec2 that would
+patch the `bl` at `0x1633ec`. Parsing them was not done, so the claim "the `bl` is
+patched" was never more than an inference. This section parses what can be parsed from
+the bytes and reports what it establishes.
+
+sec2 is the loader section, file `[0x80, 0x3510)`, 13,456 bytes. The `bl` sits at file
+offset `0x1633ec`, which is section-0 offset **`0x15fedc`**, and it encodes a
+displacement of `0x62cb8` to `0x1c60a4`. A relocation that patches a branch has to name
+one of those four numbers, so all four were searched for in sec2:
+
+| searched for | hits in sec2 |
+| --- | --- |
+| section-0 offset `0x0015fedc` (BE u32) | **0** |
+| section-0 offset `0xfedc` (BE u16) | **0** |
+| file offset `0x001633ec` (BE u32) | **0** |
+| displacement `0x62cb8` (BE u32) | **0** |
+| the instruction's own bytes `48 06 2c b9` | **0** |
+
+So no *raw* relocation entry names the branch. That is a real measurement, and it is
+**inconclusive rather than negative**: the PEF relocation stream is a compact encoding
+(two-byte entries with opcodes and run-lengths, not raw offsets), so a patched branch
+would not necessarily carry its target as a literal. Decoding the entry stream needs
+the opcode format, which this repository does not document and which I have not got a
+source for.
+
+The relocation *header* does not resolve it either. Read as big-endian u32, sec2 opens
+with `1, 0x6f40, 0xffffffff, 0, 0xffffffff, 0, 7, 0x159, 1, 0x650, 0x2380, 0x3488, 1,
+0, 0, 0`, and `0x2380` (9,088) and `0x3488` (13,448, eight bytes short of the section's
+own 13,456) both look like offsets into sec2 — but the header's field layout is not
+determined from these bytes, so which number is the entry count and which is the first
+entry's offset cannot be read off them. Guessing at a relocation format is exactly what
+`AGENTS.md` forbids, so it is not guessed.
+
+What is left is the one route that does not need the format: a run-time observation of
+the branch. A PowerPC debugger that stops at `0x1633ec` and reads `r12` after
+`lwz r12, 0x50(r31)` gives the routine's address directly, because that instruction
+loads the vtable pointer the very next instruction indexes. That is the whole of what
+the 115 payloads are waiting on, and it is not a step this workspace can take.
+
+## The state of the goal
+
+| | |
+| --- | --- |
+| textures, modern and `--original` | **met** — 705/705, nothing reported, byte-exact |
+| models, `--original` | **met** — 460/460 byte-exact, checked in Lean |
+| models, modern | **345 of 460** — 17 meshes, 213 profiles, 76 JSON+text records |
+| models remaining | **115** payloads with no probe-able structure |
+
+Every byte of the 3D game's shipped resources is recovered byte-exactly. The modern
+conversion of the last 115 needs the schema that lives in a routine this workspace
+cannot reach statically and cannot run.
