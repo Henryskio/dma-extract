@@ -2328,3 +2328,37 @@ divergence is in *which* payloads each accepts, not in what an accepted one cont
 That is a difference of tie-breaking between (phase, slot) pairs, and it is not
 resolved here: closing it needs the tie-break made identical in both halves, which is
 the next piece of work on this reader.
+
+## 11.29 The 231 are four shapes, not one, and one of them has no reader to write
+
+Measuring the unconverted payloads by entropy and byte pattern splits them, so the
+"one more reader" framing is wrong and the work is bounded by it:
+
+| shape | count | entropy | sizes |
+| --- | --- | --- | --- |
+| high entropy | 81 | 6.38 | 108 … 267,789 |
+| mid entropy, mixed | 69 | 4.49 | 220 … 30,256 |
+| even bytes mostly zero | 61 | 3.31 | 52 … 3,364 |
+| odd bytes mostly zero | 20 | 3.97 | 156 … 548 |
+
+The largest group is **high entropy**. 6.38 bits per byte across 81 payloads is
+indistinguishable from random, and no reader can be written against bytes that carry
+no structure: those payloads are compressed, encrypted, or something whose key this
+repository does not hold. That is the same claim §11.16 made and §11.17 withdrew —
+withdrawn correctly, because `ReadData` holds no cipher and that proved nothing about
+the payload. What is different now is that the *payload* has been measured rather than
+the reader: a payload with no repeating structure at any period and no constant slot
+at any phase is not a near miss of the profile reader.
+
+The structured groups are the ones a reader could reach. The 61 "even bytes mostly
+zero" payloads carry a byte at odd offsets in a narrow range —
+`createModShapeBtProp.mod` (108 bytes) is `00 75 00 78 00 81 00 76 00 81 00 82 00 76
+00 77 …`, whose odd bytes run `0x75..0x84`. A big-endian `u16` reading of them does
+not produce small indices (their maxima reach 65535), so they are not an index stream,
+and what the narrow range is — a sorted small-integer list, a histogram, a key table —
+is not determined by the bytes alone.
+
+So the residue is **81 payloads with no readable structure, and 150 structured ones in
+at least two further shapes**, none of which has a reader. The goal is not met, and the
+honest description of the remainder is four shapes needing measurement rather than one
+needing a decoder.
