@@ -1126,5 +1126,61 @@ inventing the region.
 
 The 9 that remain are not the damaged band. Measured on the shipped container, **6**
 admit no palette/index split at all, and **3** admit one whose only width pair is below
-`widthCandidates` and are therefore reported rather than decoded. The arithmetic
+`widthCandidates` and are therefore reported rather than decoded. §11.8 separates them
+into the two payload classes they come from and measures both orders of the split
+against them. The arithmetic
 closes: 696 decoded + 9 reported = 705, which is the container's own declared count.
+## 11.8 What the remaining 9 are, and the two measurements that bear on them
+
+The 9 are not all the same problem, and splitting them is what lets each part be
+attacked separately.
+
+**Six admit no palette/index split at all** — `bike_frame.TGA`, `bike_seat.TGA`,
+`createModDefaultTex.TGA`, `orange.TGA`, `opUIpPlant.TGA`, and one payload whose
+name is garbage. **Three admit a split but no allocatable width** — `balloon.TGA`
+(8 index bytes), `orange.TGA` (32) and `Rotate.TGA` (16), whose only splits leave
+4x2, 8x4 or 2x4.
+
+They belong to two payload classes that the shared English-build measurements never
+saw, and the names say what they are:
+
+* **the 260-byte class, 11 payloads**, all flat colours: `balloon`, `bike_frame`,
+  `bike_seat`, `createModDefaultTex`, `dark_grey`, `grey`, `mickey_body`, `orange`,
+  `purple`, `tan`, `white`. Six of the eleven decode under the documented
+  palette-first rule and five do not, and the difference is measurable: the ones
+  that decode have low index maxima in their tails (1, 1, 1, 58, 74, 75) and the
+  ones that do not have high ones (74, 109, 175, 242, 255). `white`, `tan` and
+  `purple` carry a body of 256 bytes using only the values `0` and `1`.
+* **the 68-byte class, 2 payloads** (`createBkFloorDefault.TGA`,
+  `createBkFloorSolid.TGA`), the smallest in the container.
+
+### The order, measured on both readings
+
+`§11.4` left the palette/indices order open because both fit and the difference was
+four resources out of 502. Measured over the whole container now that the boundaries
+are right — 705 resources, both readings, engine-width filter applied:
+
+|| | decoded | sub-width | no split | failures |
+|---|---|---|---|---|
+| palette-first (documented) | **696** | 3 | 6 | 9 |
+| indices-first | **699** | 4 | 2 | 6 |
+
+Indices-first decodes three more textures and fails three fewer times. That is a
+measurement, not a decision: the documented order is the one the **English** build
+decodes 705/705 with (`docs/DMA3D.md` §4, `tests/dma3d_numbers.rs`), and this
+workspace holds no English disc carved, so switching would trade a verified
+reading for a three-texture gain on a different build. The order therefore stays
+open, with the size of the difference now recorded: three resources, not four.
+
+### What is not established
+
+* which of the two orders this build uses, and therefore what the 260-byte and
+  68-byte classes are;
+* the width/height derivation, which `§4.2` validated on the English build's 678
+  squares and which cannot be re-measured while the split is undecided;
+* the width of resource 0's leading palette ramp, i.e. where its indices begin
+  (`§11.3`).
+
+Nothing in this section should be read as having resolved them. What it does
+establish is the shape of the residue: 6 + 3, in two payload classes, against an
+order question that the English build answers and this one cannot.
