@@ -1433,3 +1433,44 @@ trace's state, recorded so it is not repeated: the reader core is the constructo
 of the resource object, and the palette decision is in the routines it drives or
 is driven by (`ReadData`'s other calls at `0x191fd4` for the names, `0x1c8574`
 for the interface dispatch, and `0x147d44`).
+### What the nine share, measured
+
+Enumerating every `(prefix, power-of-two area)` pair — the payload split at a
+prefix of 0, 4, 8, 12, 16, 36, 72 or 1024 bytes, with the remainder the area —
+each of the nine has **exactly one**, and the shape is not a general one:
+
+| resource | payload | prefix | area | the `K` its indices need |
+| --- | --- | --- | --- | --- |
+| `balloon.TGA` | 260 | 4 | 256 | 110 |
+| `bike_frame.TGA` | 260 | 4 | 256 | **256** |
+| `bike_seat.TGA` | 260 | 4 | 256 | 176 |
+| `createBkFloorDefault.TGA` | 68 | 4 | 64 | 241 |
+| `createModDefaultTex.TGA` | 260 | 4 | 256 | 243 |
+| `orange.TGA` | 260 | 4 | 256 | 75 |
+| `Rotate.TGA` | 548 | 36 | 512 | **256** |
+| *(garbage name)* | 292 | 36 | 256 | 249 |
+| `opUIpPlant.TGA` | 328 | 72 | 256 | 251 |
+
+Two things follow, and both are measurements:
+
+* **the area is `payload - 4`, `payload - 36` or `payload - 72`** — never the whole
+  payload, and never `payload - 4*K` for a palette that fits. So the payload has a
+  small header and its index area behind it, and the header is 4, 36 or 72 bytes.
+* **five of the nine need a full 256-entry palette**, which is 1024 bytes — the
+  same size as the picture containers' palette bank (`docs/PICTURES.md` §4.1) and
+  far more than the payload can hold. So for those the palette is **not in the
+  payload at all**, which is what `kind == 2` (a palette owned by another
+  resource) would mean, and the container's metadata region — where a shared
+  palette would be named — does not fit (§1.2).
+
+`balloon` and `orange` need only 110 and 75 entries, and their prefix is 4 bytes,
+so they are the two whose palette could still be in the payload if the header were
+4 bytes — but 110 entries is 440 bytes, leaving 260 - 4 - 440 < 0. So no: none of
+the nine can hold its own palette, and **the header is the part that is not a
+palette**.
+
+What still settles this is the part of the reader that consumes the payload, which
+is deeper than the constructor §11.12 traced. The immediate next step is the
+payload-consuming half of `MM3DTextureResourceFile::ReadData`, whose `bl` targets
+(`0x191fd4`, `0x1c8574`, `0x147d44`) §11.12 lists — and a palette bank of 1024
+bytes is what to look for in it, since five of the nine need exactly one.
