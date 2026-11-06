@@ -1409,3 +1409,27 @@ derivation live — which is what §11.11's six payloads need (their palette is
 demonstrably not in the payload) and what §11.8's order question needs (the bytes
 alone cannot answer it). This is the concrete step, and it is now available: the
 executable is readable, and this is the part of it that reads a texture.
+### One level traced: `bl 0x174fe4` is a constructor, not the pixel decoder
+
+`MM3DTextureResourceFile::ReadData`'s `bl 0x174fe4` lands mid-instruction; the
+callee's own prologue (`lis r16,0 ; mflr r0 ; stmw r26,-0x18(r1) ; li r31,0 ; stw
+r0,8(r1) ; stwu r1,-0xa0(r1)`) is at **`0x175000`**. Read from there it is a
+**constructor for a texture record**, not a pixel decoder:
+
+* two virtual calls (`lwz r12,0(r28) ; lwz r12,0x10(r12) ; bl 0x1c8574`, and the
+  same pattern again on `this->0x50`) — it drives an interface it is handed;
+* it reads **four consecutive halfwords from a pointer** (`lha r0,0(r30)` …
+  `2(r30)` … `4(r30)` … `6(r30)`) and stores them as consecutive halfwords
+  (`sth r0,0x64(r1)` … `0x66` … `0x68` … `0x6a`), then a call, then two more from
+  another pointer — a pair of four-halfword tuples, which is the shape of a
+  rectangle;
+* it validates them (`cmpw` / `bf lt`), derives **fixed-point scale factors**
+  (`sub`, `slwi …,0x10`, `divw`) and stores them at `this->0x8`, `0xc`, `0x10`,
+  `0x14`, and sets a success byte at `this->0x4c`.
+
+So the dimension tuple the container's records carry is read here as halfwords,
+and the numbers that decide how a payload splits are further in. This is the
+trace's state, recorded so it is not repeated: the reader core is the constructor
+of the resource object, and the palette decision is in the routines it drives or
+is driven by (`ReadData`'s other calls at `0x191fd4` for the names, `0x1c8574`
+for the interface dispatch, and `0x147d44`).
