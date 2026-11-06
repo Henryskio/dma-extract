@@ -1904,3 +1904,50 @@ but its conclusion "encrypted or compressed" does not, because the same entropy
 is what a stream of `f32` fields with 24-bit mantissas produces. §11.20's
 "layout unidentified" is now identified to the record level, and the tag table is
 what remains.
+
+## 11.22 The record stride is 16 in most of the container, and one earlier claim was wrong
+
+Measuring each payload's **exact** period — the smallest `P ≤ 64` for which
+`p[i] == p[i+P]` over at least 60% of the payload — 114 of 460 payloads have one,
+and the histogram is not flat:
+
+| period | payloads |
+| --- | --- |
+| **16** | **65** |
+| 32 | 16 |
+| 4 | 11 |
+| 1 | 6 |
+| 20 | 6 |
+| 64 | 5 |
+| 6, 28, 2, 8 | 1 each |
+
+So 16 bytes is the stride, with 32 and 20 as its multiples and near-multiples, and
+4 as a sub-stride inside records whose varying part is only 4 bytes wide. That is a
+measurement of the record rather than an inference from where a `1.0f` happened to
+sit, and it agrees with §11.21's `UIdmnd` reading.
+
+**This corrects §11.21's `tateStatic` claim.** §11.21 (in the previous session's
+§11.21 continuation) described `tateStatic.mod`'s 16-byte records as repeating in
+near-identical pairs across the payload. Measured exactly, that is **false**: its
+first two 16-byte records are byte-identical, the third differs in two bytes
+(`1b`→`1c`, `e5 8e 50`→`e5 8f 50`, both increments), and the payload as a whole has
+**no period** at the 60% threshold. The apparent repetition was the head of the
+payload, not the payload.
+
+**And the magic's offset is a real prefix, not noise.** In `r83` the `mod II`
+magic sits at **offset 3**, behind three zero bytes; in `r79` at offset 24, behind
+sixteen zero bytes; in `r77` (`BmpPict`, which decodes) at offset 92, behind sixteen
+zero bytes. The prefix length is not fixed, so it is either a length field or a
+record count that the reader has to consume before the magic, and whichever it is
+it is the first thing a reader has to get right.
+
+After `mod II` in `r83` comes the `u32` `16` (§11.20), and then a **`u16` stream**
+that pairs cleanly from offset 13: `1, 1, 495, 0, 1, 0, 1, 0, 2, 0, 0, 0, 1, 0, 0,
+4, 0, 5, 0` — a small integer alternating with a small index, with `495` where the
+other payloads carry a small value. That shape is a tagged list, and the `16` is
+most plausibly its entry count.
+
+So the record layout is pinned to 16 bytes and the prefix is pinned as variable,
+and the two things still missing are what the `16` counts and what the `u16` pairs
+mean. Neither is derivable from the payloads alone, and both are in the reader at
+`this->0x50` slot `0x0c`, which §11.19 records as reachable only at run time.
