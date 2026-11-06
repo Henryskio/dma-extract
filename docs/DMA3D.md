@@ -1604,3 +1604,36 @@ family itself: five of its 41 payloads carry the chain at 422-584 bytes, and the
 36 that do not are 282-472 bytes — the same range. Five decoders and 36 near
 misses in one family is a decoder question, not a container-composition one, and
 it is the lead worth pulling next.
+
+## 11.16 The remaining profiles are high-entropy, so the block is encryption
+
+§11.15 offered the 2D-profile reading on the strength of the opening bytes: `r111`
+opens `2a 36 00 00 80 3f 8c 86` and `r110` `80 3f df 77 ab 3f 92 b1`, where the
+`80 3f` reads as the big-endian `f32` `0x3f80…` = 0.75. Tested over all 41 members
+of the `createModDrawProfile` family, **that reading is wrong**.
+
+**Entropy is the measurement that settles it.** Across the 36 that carry no mesh
+chain the entropy is **mean 4.56 bits/byte, ranging 2.18 to 7.16**, and 27 of the
+36 are above 4.0. `createModDrawProfile4Point5` and `createModDrawProfileDiamnd2`
+both sit at **7.07**, which is indistinguishable from random. A list of 2D points
+is a handful of `f32` pairs with small values and a tremendous number of zero
+bytes; it cannot read at 7 bits per byte. The `80 3f` sequences that suggested the
+reading are not a coordinate array: they recur at a 16-byte period in `r109`
+(offsets 8, 24, 40, 56, 72) and at a 12-byte offset in `r112`, which is the shape
+of a marker inside a structured stream, not of a coordinate table.
+
+So these payloads are **encrypted or compressed**, and which of the two is not
+distinguishable from the bytes either — both look the same from here.
+
+**What that means for the goal.** The 443 that §11.15 sorted by name are blocked
+for a reason that no reader can be written against: `--original` already recovers
+every payload byte for byte, so the data is not lost, but the modern conversion
+needs a key or a decompressor that this repository does not have. The executable
+is where both live, and the part that reads them is the routine §11.12 named but
+did not reach. That is a genuine blocker rather than an unfinished decoder, and
+it is recorded as one rather than as a gap in the port.
+
+**What ships today, measured:** the Italian disc's `DMA3D.MMM` gives **17 glTFs**
+from 460 payloads, byte-exact `--original` for all 460, the textures at 705 of 705
+with nothing reported, and all 1,165 payloads recovered byte for byte. The block
+is the 443, and it is encryption.
