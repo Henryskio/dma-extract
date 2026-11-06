@@ -2572,3 +2572,45 @@ the contiguous-from-0 mapping, the one section that could hold it is compressed,
 the loader section that could patch the branch is present. All three are now
 *measured* rather than assumed, and none of them is a run-time-only observation —
 though reading the patched target still needs the loader to run.
+
+## 11.36 sec1 is a symbol table, not a compressed section, and the magic `bl` is still unmapped
+
+§11.35 concluded that sec1 was the "one section that could hold" the thunk because it
+was compressed (`0x16a4b` on disc, `0x1f959` in memory). Reading sec1's first bytes
+shows that is wrong:
+
+```text
+0x198490: 4d 41 62 73 74 72 61 63 74 54 68 72 65 61 64 46   |MAbstractThreadF|
+0x1984a0: 50 43 76 50 76 5f 76 3e 5f 5f 46 50 31 36 4d 4d   |PCvPv_v__FP16MAbstractThreadM1|
+0x1984b0: 41 62 73 74 72 61 63 74 54 68 72 65 61 64 4d 31   |MAbstractThreadM1|
+```
+
+It is a **CodeWarrior symbol table**: 367 printable runs, all mangled C++ names from
+the runtime library — `UUFileSystem`, `UUReader`, `UUCheckSum`,
+`ParsePathName__12UUFileSystemFRC23UUFileSystemString<256>P11UUDirectoryP22UUFileSystemSt…`.
+Nothing compressed would begin with ASCII class names, so the `packedSize` /
+`unpackedSize` pair describes the section's stored and in-memory sizes and not a
+compressor, and §11.35's "the one section that could hold it is compressed" is
+withdrawn.
+
+So the three sections are what their kinds say: **sec0 is the machine code, sec1 is
+the runtime library's symbol table, sec2 is the loader**. And the game's own class
+names — `ReadData__21MM3DModelResourceFileFv`, which is how the model reader was found
+at all — live in **sec0**, embedded beside the code, not in sec1.
+
+That leaves the magic `bl` with no home. The two virtual calls at `0x1633d8` and
+`0x1633ec` both decode to `0x1c60a4` by the same arithmetic that correctly decodes the
+function's other six `bl`s (`0x179e44`, `0x114ab0`, `0x196e34` twice, `0x17a014`,
+`0x17981c`, all of which land on real instructions), so the decode method is sound and
+the target is genuinely unmapped: past sec0's end at `0x198484`, past sec1's at
+`0x1aeedb`, and past the whole image at `0x1b63a4`.
+
+What is left is the one route that has not been tried, and it is the one this workspace
+cannot take: **sec2, the loader section (`0x80..0x3510`), holds the PEF relocations**,
+and a `bl` whose target is patched by the loader would land somewhere the raw
+displacement does not. Parsing it needs the relocation-entry format, which is not
+documented in this repository, and applying it needs the loader to run.
+
+So the blocker is now a single specific thing: the relocation entry that patches
+`0x1633ec`. Everything else about the routine is located, and the `u32` record schema
+that follows the `mod II` magic is behind this one branch.
