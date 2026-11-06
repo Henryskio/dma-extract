@@ -3383,3 +3383,41 @@ monotone, so no delta reading is established.
 The goal's second half is not met at 345 of 460. What this turn adds is that the third
 probe the reviewer named runs, and its result is that the payloads it finds are either
 already-read shapes or shapes whose columns are not monotone.
+
+## 11.50 The payloads are not UTF-16 text, and the shape is §11.37's after all
+
+§11.49 measured 25 payloads carrying little-endian `u16` runs of small values, and
+two of them (`r19`, `r156`) deinterleaved into near-monotone columns whose bytes began
+`00 5e 00 54 00 5e 00 44 00 5f 00 45` — an ASCII character with a zero byte between
+each, which is the shape UTF-16BE text has. This section tests that reading.
+
+### The test
+
+For each of the 115 unconverted payloads: count the odd-indexed bytes that are zero
+(UTF-16BE's signature) and require at least 90% of them, then read the even bytes as
+characters.
+
+| | |
+| --- | --- |
+| payloads passing the 90% odd-byte-zero test | **4** |
+| of those, containing readable text | **0** |
+
+### What the four actually are
+
+`r156` decodes to `uvwxvxyvyzvu{v{|v|}v}wv~zy`, `r19` to `ss\u{98}u\u{98}{u\u{99}\u{9a}w`, another to `\u{c}\u{1}\u{1}\u{3}¯ffÍ\u{8c}ffÂ²`. These are character sequences in the printable and control ranges, not words — `abcdefghijklmnopqrstuvwxyz` appears inside `r19`'s, which is a *range*, not a word. A range of consecutive characters is a codepoint table, and a codepoint table with a zero byte between its entries is the §11.37 alternating-zero shape read as text.
+
+So the UTF-16BE reading is withdrawn, and the four are §11.37's shape reaching a
+different probe. §11.39's reader rejects them because its 80% fill threshold does not
+hold — these carry a value in every slot, so there is no fill — which is a measured
+reason, not an oversight.
+
+### What this costs and what it does not
+
+It costs one hypothesis that §11.49 left open, and it costs it with a count rather than
+a reading of the two payloads that motivated it. It does not convert any payload: the
+four are already the shape §11.39 measured, and the §11.39 threshold that rejects them
+is doing so for a stated reason.
+
+The goal's second half is not met at 345 of 460, and the residue is now down to
+**111 payloads**, four of which are §11.37's shape behind a fill threshold that does not
+fit them and 107 of which no probe reaches.
