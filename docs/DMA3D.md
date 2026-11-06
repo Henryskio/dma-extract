@@ -3044,3 +3044,103 @@ So this is the third consecutive turn that has narrowed the same branch without
 reaching it, and the honest summary is that the step is not another measurement: it is
 the PEF relocation format, or a PowerPC debugger break at `0x1633ec` to read `r12`
 directly. Both are outside what this workspace can do.
+
+## 11.45 The PEF relocation format is now documented in the repository
+
+Three sessions named "the undocumented PEF relocation format" as the blocker. It is
+documented — in *Inside Macintosh: Mac OS Runtime Architectures*, Chapter 8 — and
+three web lookups retrieved it. It is written here in full so the next session does not
+have to fetch it again.
+
+### The relocation header table
+
+```c
+struct PEFLoaderRelocationHeader {   // 12 bytes each
+    UInt16 sectionIndex;            // which section these relocations apply to
+    UInt16 reservedA;               // must be 0
+    UInt32 relocCount;              // number of 16-bit relocation BLOCKS (not
+                                    // instructions — most are 2 bytes but some
+                                    // are 4, so instructionCount <= relocCount)
+    UInt32 firstRelocOffset;        // byte offset from the start of the
+                                    // relocations area to this section's first
+                                    // relocation instruction
+};
+```
+
+Relocations are grouped by section and executed **in order**; state is kept in
+pseudo-registers, so a decoder must replay the stream rather than sample it:
+
+| register | initial value |
+| --- | --- |
+| `relocAddress` | base address of the section being relocated |
+| `importIndex` | 0 |
+| `sectionC` | memory address of section 0 minus its `defaultAddress` |
+| `sectionD` | memory address of section 1 minus its `defaultAddress` |
+
+### The instruction set — opcodes are the high-order 7 bits of the first block
+
+| 7-bit opcode | instruction | operand layout |
+| --- | --- | --- |
+| `00xxxxx` (`0x00`–`0x1F`) | `RelocBySectDWithSkip` | `skipCount*4` byte skip, then `relocCount` contiguous words relocated |
+| `0100000` (`0x20`) | `RelocBySectC` | `runLength` words (stored as length-1) |
+| `0100001` (`0x21`) | `RelocBySectD` | `runLength` words |
+| `0100010` (`0x22`) | `RelocTVector12` | `runLength` 12-byte items (C to word 0, D to word 1) |
+| `0100011` (`0x23`) | `RelocTVector8` | `runLength` 8-byte items |
+| `0100100` (`0x24`) | `RelocVTable8` | `runLength` 8-byte items (D to word 0 only) |
+| `0100101` (`0x25`) | `RelocImportRun` | `runLength` words, `importIndex` advanced by `runLength` |
+| `0110000` (`0x30`) | `RelocSmByImport` | `index`; 1 word |
+| `0110001` (`0x31`) | `RelocSmSetSectC` | `index` |
+| `0110010` (`0x32`) | `RelocSmSetSectD` | `index` |
+| `0110011` (`0x33`) | `RelocSmBySection` | `index`; 1 word |
+| `1000xxx` (`0x40`–`0x47`) | `RelocIncrPosition` | `offset` bytes (stored as offset-1) |
+| `1001xxx` (`0x48`–`0x4F`) | `RelocSmRepeat` | `blockCount-1`, `repeatCount-1` |
+| `101000x` (`0x50`/`0x51`) | `RelocSetPosition` | **4 bytes**; 26-bit section offset |
+| `101001x` (`0x52`/`0x53`) | `RelocLgByImport` | 4 bytes; 26-bit symbol index |
+| `101100x` (`0x58`/`0x59`) | `RelocLgRepeat` | 4 bytes; `repeatCount` (not -1), `blockCount-1` |
+| `101101x` (`0x5A`/`0x5B`) | `RelocLgSetOrBySection` | 4 bytes; 22-bit section index |
+
+Every relocation acts on **4-byte words**, so `relocAddress` advances in fours.
+
+Two facts from the spec that bear directly on the earlier dead ends:
+
+* *"If the Code Fragment Manager can place the instance in the preferred memory
+  location, the load-time and link-time addresses are identical and no internal
+  relocations need to be performed."* Section headers may declare
+  `defaultAddress = 0` and still never be moved, which is consistent with §11.35's
+  finding that all three of `DMA3D.exe`'s sections declare address 0.
+* The stream is *not* a list of offsets. §11.44 read a 4-byte pattern of an increasing
+  word plus `0x0200` and assumed the increasing word was an offset; it is an opcode
+  block, and `0x0200` is opcode `0x01` = `RelocBySectDWithSkip` with both counts
+  stored as one-less.
+
+### What this turns the earlier dead ends into
+
+Decoding with the documented opcodes, sec2 (file `[0x80, 0x3510)`, 13,456 bytes) holds:
+
+* **6,728 BE `u16` blocks**, of which the opcode histogram is dominated by
+  `0x00` (`RelocBySectDWithSkip`, 3,600 blocks), `0x01` (675), `0x02` (99);
+* **17 `RelocSetPosition` blocks** — the only instructions that can set
+  `relocAddress` to an arbitrary section offset, at file offsets
+  `0x84a, 0x84e, 0x89e, 0x1168, 0x118a, 0x11e0, 0x11e6, 0x1244, 0x124e, 0x1a94,
+  0x1ad6, 0x1aea, 0x1afe, 0x1b72, 0x2892, 0x2cf0, 0x2dd0`;
+* 10 `RelocLgByImport`, 16 `RelocLgRepeat`, 10 `RelocLgSetOrBySection`.
+
+So the branch at section-0 offset `0x15fedc` is *reachable* by a decoder that replays
+`relocAddress` from zero through the stream. That is the test to run, and it is now a
+mechanical one rather than an unknown: walk the stream, keep `relocAddress`, and record
+every byte range it touches.
+
+### What is still not done
+
+The operand split of `RelocSetPosition` is not yet right. Taking the low 9 bits of the
+first block as the offset's high bits gives offsets like `0x11 9a12d` — about 18 MB,
+where section 0 is 1,658,740 bytes — and taking the low 10 bits gives the same set
+shifted, which is also out of range. So the bit split is `(something other than
+9 or 10) << 16 | second block`, and which split is right is not determined by the
+bytes. The spec's figure is an image that the text fetch did not carry.
+
+That is the one remaining unknown, and it is now a single question rather than a
+format: **where do the 26 offset bits sit across the two blocks?** Answering it needs
+the spec's figure, or one known-good sample — a `RelocSetPosition` whose target offset
+can be read back from the code — and then the stream can be replayed to settle whether
+the `bl` at `0x1633ec` is patched at all.
