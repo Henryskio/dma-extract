@@ -2722,3 +2722,50 @@ readable structure, 69 of mid entropy, and the 32 remaining of the alternating-z
 shape that §11.37 measured as a small-value table rather than geometry. The goal's
 second half is not met at 278 of 460, and the honest description of the remainder is a
 measured shape with no reader yet, not an unknown format.
+
+## 11.39 The parameter tables are written as JSON+text, and 287 of 460 have output
+
+`parse_param_table` reads the shape §11.37 measured — small values at alternating byte
+positions with zero fill — and `write_param_json` writes it as JSON+text. The run now
+reports:
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 173
+glTF 230   json 57   previews 230   png 935   .mod 173
+```
+
+**17 meshes + 213 profiles + 48 records + 9 tables = 287 of 460** payloads produce
+modern output, against 278 before. The Lean reader agrees exactly — `mesh 17, profile
+213, record 48, param 9, other 173` — and the harness reports `all checks passed`.
+
+### The thresholds are stated, not tuned
+
+§11.37 measured the shape as *small values at alternating byte positions with zero
+fill*. A payload is accepted when **at least 80% of one parity is zero, at least 95% of
+the other is below 128, and there are at least eight values**, and the fill parity is
+**measured** rather than assumed, because §11.37 found both parities in the container.
+
+The thresholds are deliberately not loosened to fit more payloads. At 70/90 the reading
+takes 13 payloads and at 60/85 it takes 19, and the extra ones are mixtures whose fill
+is only 51-60% zero — reading them as this shape would be the guess `AGENTS.md`
+forbids. So nine payloads convert and the rest are reported.
+
+### The first documents were not valid JSON
+
+The first version wrote strings with Rust's `\` line continuation, which puts a
+backslash **and a newline** into a JSON string literal, and wrote the percentages
+unquoted (`"fill is zero for": 89% of its bytes` — not a JSON value). Both were caught
+by reading the output back with `json.load`, which is the reader that will judge it,
+and `gltf::param_json_tests::a_written_table_document_is_valid_json` now pins both.
+
+That is the second time this turn a reader produced a document it could not read back,
+and the reason is the same in both cases: the output was written by hand rather than
+checked against the reader. The lesson is already in `AGENTS.md` — every new decoder
+ships with a test that reads its output back — and this section is where it was applied.
+
+### What is left
+
+**173 payloads** fit no reader. §11.29's census says they are 81 with no readable
+structure and the rest of mid entropy, and the alternating-zero shape now takes only
+the payloads whose fill is genuinely dominant. The goal's second half is not met at 287
+of 460.

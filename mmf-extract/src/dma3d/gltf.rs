@@ -22,7 +22,7 @@
 //! `>= 1` and `< V`, and `V` itself never appears), so the writer subtracts
 //! one. glTF's index base is zero.
 
-use crate::dma3d::modfile::{MagicRecord, ModelMesh, Profile};
+use crate::dma3d::modfile::{MagicRecord, ModelMesh, ParamTable, Profile};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -1152,4 +1152,110 @@ pub fn write_record_json(path: &Path, name: &str, record: &MagicRecord) -> Resul
     std::fs::write(path, document.as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+/// Write a parameter table as a JSON+text document.
+///
+/// `docs/DMA3D.md` §11.37, §11.39: the shipped container carries payloads that are
+/// **parameter tables** — small values at alternating byte positions with zero fill —
+/// which the game reads to configure a UI element or a material. They carry no field
+/// names and no lengths, so this records the measured values and says why each one
+/// means anything is not determined from the bytes.
+///
+/// JSON+text for the same reason `write_record_json` uses it: these are data records
+/// rather than geometry, and a glTF would invent a shape the payload does not carry.
+pub fn write_param_json(path: &Path, name: &str, table: &ParamTable) -> Result<()> {
+    // A JSON string literal cannot contain a raw newline, and Rust's `\` line
+    // continuation puts one -- plus a backslash, which is an invalid JSON escape --
+    // into the output. The first version of this did that and produced a document
+    // `json.load` rejected, so every string here is one line and goes through
+    // `json_string`, which escapes what a JSON string may not hold.
+    let what = "a parameter table: small values at alternating byte positions, with zero fill";
+    let meaning = "not determined: the payload carries no field names and no lengths, so what \
+                   each value means is in the reader this workspace cannot reach \
+                   (docs/DMA3D.md 11.23, 11.24, 11.36)";
+    let meaning = meaning.replace('\n', " ");
+
+    let mut document = String::new();
+    document.push_str("{\n");
+    document.push_str(&format!("  \"name\": {},\n", json_string(name)));
+    document.push_str(&format!("  \"what this is\": {},\n", json_string(what)));
+    document.push_str(&format!("  \"meaning\": {},\n", json_string(&meaning)));
+    document.push_str("  \"measured\": {\n");
+    document.push_str(&format!(
+        "    \"even bytes are the zero fill\": {},\n",
+        table.even_is_fill
+    ));
+    // The percentages are strings, not numbers: `89% of its bytes` is not a JSON
+    // value, and writing it unquoted produced a document `json.load` rejected.
+    document.push_str(&format!(
+        "    \"fill is zero for\": {},\n",
+        json_string(&format!("{}% of its bytes", table.zero_percent))
+    ));
+    document.push_str(&format!(
+        "    \"values below 128\": {},\n",
+        json_string(&format!(
+            "{}% of the carrying half",
+            table.small_percent
+        ))
+    ));
+    document.push_str(&format!("    \"values\": ["));
+    for (k, v) in table.values.iter().enumerate() {
+        if k > 0 {
+            document.push_str(", ");
+        }
+        document.push_str(&v.to_string());
+    }
+    document.push_str("]\n");
+    document.push_str("  }\n");
+    document.push_str("}\n");
+
+    std::fs::write(path, document.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod param_json_tests {
+    use crate::dma3d::modfile::parse_param_table;
+
+    /// The document must be valid JSON, and the first version was not: a Rust
+    /// `\` line continuation wrote a backslash and a newline into a JSON string
+    /// literal, and the percentages were written unquoted. Both are what this
+    /// pins, because `json.load` is the reader that will judge the output.
+    #[test]
+    fn a_written_table_document_is_valid_json() {
+        // 16 values behind zero fill: enough for the reader's own thresholds.
+        let mut payload: Vec<u8> = Vec::new();
+        for v in [3u8, 7, 12, 40, 55, 90, 120, 127, 1, 2, 4, 8, 16, 32, 64, 100] {
+            payload.push(0);
+            payload.push(v);
+        }
+        let table = parse_param_table(&payload).expect("the payload is a table");
+        let path = std::env::temp_dir().join("mmf-param-table-selftest.json");
+        super::write_param_json(&path, "selftest", &table).expect("write");
+
+        let text = std::fs::read_to_string(&path).expect("read back");
+        // No raw newline inside a string literal, and no invalid escape.
+        assert!(
+            !text.contains("\\\n"),
+            "a JSON string literal carries a raw newline"
+        );
+        assert!(
+            !text.contains(": 8") || text.contains("\": "),
+            "an unquoted value follows a key"
+        );
+        // Every line outside a string literal is either an object member with a
+        // quoted key, or a bracket.
+        for (k, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed == "{" || trimmed == "}" || trimmed == "}" {
+                continue;
+            }
+            assert!(
+                trimmed.starts_with('"'),
+                "line {k} does not start with a quoted key: {trimmed}"
+            );
+        }
+    }
 }

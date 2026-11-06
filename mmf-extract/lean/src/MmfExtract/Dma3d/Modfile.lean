@@ -336,6 +336,80 @@ def parseMagicRecord (payload : ByteArray) : Except String MagicRecord := do
     | Except.ok f => if plausible f then floats := floats.push f
   return { magicOffset := magic, recordType, pairs, floats }
 
+/-! ## The parameter table -/
+
+/-- How much of the fill half must be zero for a payload to be this shape. -/
+def fillZeroPercent : Nat := 80
+/-- How much of the carrying half must be below 128 for it to be small values. -/
+def carrySmallPercent : Nat := 95
+/-- How many values a payload must carry for the reading to be a table at all. -/
+def minTableValues : Nat := 8
+
+/-- One parameter table: small values at alternating byte positions with zero fill.
+
+`docs/DMA3D.md` §11.37, §11.39 measured this shape in the shipped container and
+named it what it is: a table of small values stored at alternating byte positions,
+with zero fill — a parameter table, an index table, or a packed enum, which the game
+reads to configure a UI element or a material rather than to describe its outline.
+`createModBtSize02`, `athCircle`, `athFig8R` are all of it, which is what their
+names already said.
+
+This reads it and deliberately does not guess what the values mean: the payload
+carries no field names and no lengths, so the table is recorded and the reason each
+value means anything is left to the executable's reader, which this repository
+cannot reach (`docs/DMA3D.md` §11.23, §11.24, §11.36).
+-/
+structure ParamTable where
+  /-- Whether the even-indexed bytes are the zero fill and the odd ones the values.
+  It is measured, because a payload's fill is not at a fixed parity — §11.37 found
+  both. -/
+  evenIsFill : Bool
+  /-- The values, in payload order, as the carrying half's bytes. -/
+  values : Array UInt8
+  /-- What fraction of the fill half is zero, in percent. Recorded so the reading's
+  own strength is visible rather than assumed. -/
+  zeroPercent : Nat
+  /-- What fraction of the carrying half is below 128, in percent. -/
+  smallPercent : Nat
+  deriving Inhabited
+
+/-- Read a parameter table out of a payload that fits no other reader.
+
+The thresholds are stated rather than tuned: §11.37 measured the shape as "small
+values at alternating byte positions with zero fill", and a payload is accepted when
+at least 80% of one parity is zero, at least 95% of the other is below 128, and there
+are at least eight values. A payload outside all three is an error, so the caller
+reports it rather than writing a document that describes nothing.
+-/
+def parseParamTable (payload : ByteArray) : Except String ParamTable := do
+  if payload.size < 2 * minTableValues then
+    throw s!"{payload.size} bytes cannot hold the {minTableValues} values a table needs"
+  let half := payload.size / 2
+  let mut evenZero := 0
+  let mut oddZero := 0
+  for k in [0:half] do
+    if payload[2 * k]! == 0 then
+      evenZero := evenZero + 1
+    if payload[2 * k + 1]! == 0 then
+      oddZero := oddZero + 1
+  let mut evenIsFill := false
+  if evenZero * 100 >= half * fillZeroPercent then
+    evenIsFill := true
+  else if !(oddZero * 100 >= half * fillZeroPercent) then
+    throw s!"neither byte parity is {fillZeroPercent}% zero, so this is not the alternating-fill shape (docs/DMA3D.md 11.37)"
+  let zeroPercent := if evenIsFill then evenZero * 100 / half else oddZero * 100 / half
+  let mut values : Array UInt8 := #[]
+  for k in [0:half] do
+    let off := if evenIsFill then 2 * k + 1 else 2 * k
+    values := values.push payload[off]!
+  let mut small := 0
+  for v in values do
+    if v < 128 then
+      small := small + 1
+  if small * 100 < values.size * carrySmallPercent then
+    throw s!"only {small} of {values.size} values are below 128, so the carrying half is not small values"
+  return { evenIsFill, values, zeroPercent, smallPercent := small * 100 / values.size }
+
 /-- Read the drawing profile out of a `Models` payload.
 
 The reader measures the phase and the constant slot rather than assuming them. For

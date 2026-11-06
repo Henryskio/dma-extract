@@ -52,6 +52,9 @@ structure Extract3DReport where
   /-- Payloads written as JSON+text, i.e. `mod II` record streams whose record
   schema the bytes do not determine (`docs/DMA3D.md` §11.38). -/
   records : Nat := 0
+  /-- Payloads written as JSON+text, i.e. parameter tables of small values at
+  alternating byte positions with zero fill (`docs/DMA3D.md` §11.37, §11.39). -/
+  params : Nat := 0
   deriving Inhabited
 
 /-- The output file name's stem: the resource name, sanitised.
@@ -287,10 +290,6 @@ def extractGltf (container : Container) (outDir : System.FilePath) :
         -- (§11.38) and the record schema is not, so the document says so rather
         -- than asserting a meaning the bytes do not carry.
         match Modfile.parseMagicRecord payload with
-        | Except.error recordErr =>
-          report := { report with
-            failed := report.failed.push (index, name,
-              s!"{e}; the record reading also fails ({recordErr})") }
         | Except.ok _record =>
           -- Counted in `records` but **not** written, and not in `written`
           -- either: the Rust converter is the writer of modern models in this
@@ -298,6 +297,19 @@ def extractGltf (container : Container) (outDir : System.FilePath) :
           -- halves under the same name would be counted twice. That is the same
           -- rule the profile reading already follows.
           report := { report with records := report.records + 1 }
+        | Except.error recordErr =>
+          -- Neither a record stream nor a mesh chain nor a point stream. It may
+          -- still be a parameter table -- small values at alternating byte
+          -- positions with zero fill (`docs/DMA3D.md` §11.37, §11.39) -- counted
+          -- here and written by the Rust converter, for the same reason the
+          -- profile and record paths above do not write.
+          match (Modfile.parseParamTable payload).toOption with
+          | none =>
+              report := { report with
+                failed := report.failed.push (index, name,
+                  s!"{e}; the record reading also fails ({recordErr})") }
+          | some _table =>
+              report := { report with params := report.params + 1 }
   return report
 
 /-- Extract a `Models` container: the glTF path when modern, the payload when

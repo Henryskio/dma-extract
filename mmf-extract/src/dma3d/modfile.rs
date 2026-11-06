@@ -812,3 +812,152 @@ mod magic_record_tests {
         );
     }
 }
+
+/// One parameter table: small values at alternating byte positions with zero fill.
+///
+/// `docs/DMA3D.md` §11.37 measured this shape in the shipped container and named it
+/// what it is: **a table of small values stored at alternating byte positions, with
+/// zero fill** — a parameter table, an index table, or a packed enum, which the game
+/// reads to configure a UI element or a material rather than to describe its
+/// outline. `createModBtSize02`, `athCircle`, `athFig8R` are all of it, which is what
+/// their names already said.
+///
+/// This reads it and deliberately does not guess what the values mean: the payload
+/// carries no field names and no lengths, so the table is recorded and the reason
+/// each value means anything is left to the executable's reader, which this
+/// repository cannot reach (`docs/DMA3D.md` §11.23, §11.24, §11.36).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamTable {
+    /// Which parity of byte positions carries the values.
+    ///
+    /// `true` means the values are the odd-indexed bytes, so the even ones are the
+    /// zero fill; `false` is the reverse. It is measured, because a payload's fill
+    /// is not at a fixed parity — §11.37 found both.
+    pub even_is_fill: bool,
+    /// The values, in payload order, as the carrying half's bytes.
+    pub values: Vec<u8>,
+    /// What fraction of the fill half is zero, in percent. Recorded so the
+    /// reading's own strength is visible rather than assumed.
+    pub zero_percent: usize,
+    /// What fraction of the carrying half is below 128, in percent.
+    pub small_percent: usize,
+}
+
+/// How much of the fill half must be zero for a payload to be this shape.
+pub const FILL_ZERO_PERCENT: usize = 80;
+/// How much of the carrying half must be below 128 for it to be small values.
+pub const CARRY_SMALL_PERCENT: usize = 95;
+/// How many values a payload must carry for the reading to be a table at all.
+pub const MIN_TABLE_VALUES: usize = 8;
+
+/// Read a parameter table out of a payload that fits no other reader.
+///
+/// The thresholds are stated rather than tuned: `docs/DMA3D.md` §11.37 measured the
+/// shape as "small values at alternating byte positions with zero fill", and a
+/// payload is accepted when at least 80% of one parity is zero, at least 95% of the
+/// other is below 128, and there are at least eight values. A payload outside all
+/// three is an error, so the caller reports it rather than writing a document that
+/// describes nothing.
+pub fn parse_param_table(payload: &[u8]) -> Result<ParamTable> {
+    if payload.len() < 2 * MIN_TABLE_VALUES {
+        bail!(
+            "{} bytes cannot hold the {} values a table needs",
+            payload.len(),
+            MIN_TABLE_VALUES
+        );
+    }
+    let half = payload.len() / 2;
+    let even_zero = (0..half).filter(|k| payload[2 * k] == 0).count();
+    let odd_zero = (0..half).filter(|k| payload[2 * k + 1] == 0).count();
+    let (even_is_fill, zero_percent) = if even_zero * 100 >= half * FILL_ZERO_PERCENT {
+        (true, even_zero * 100 / half)
+    } else if odd_zero * 100 >= half * FILL_ZERO_PERCENT {
+        (false, odd_zero * 100 / half)
+    } else {
+        bail!(
+            "neither byte parity is {FILL_ZERO_PERCENT}% zero, so this is not the \\
+             alternating-fill shape (`docs/DMA3D.md` §11.37)"
+        );
+    };
+    let values: Vec<u8> = (0..half)
+        .map(|k| {
+            let at = if even_is_fill { 2 * k + 1 } else { 2 * k };
+            payload.get(at).copied().unwrap_or(0)
+        })
+        .collect();
+    let small = values.iter().filter(|b| **b < 128).count();
+    let value_count = values.len();
+    if small * 100 < value_count * CARRY_SMALL_PERCENT {
+        bail!(
+            "only {small} of {} values are below 128, so the carrying half is not \\
+             small values",
+            values.len()
+        );
+    }
+    Ok(ParamTable {
+        even_is_fill,
+        values,
+        zero_percent,
+        small_percent: small * 100 / value_count,
+    })
+}
+
+#[cfg(test)]
+mod param_table_tests {
+    use super::*;
+
+    /// The measured shape: small values at alternating byte positions with zero
+    /// fill. `docs/DMA3D.md` §11.37.
+    #[test]
+    fn a_table_of_small_values_behind_zero_fill_is_read() {
+        let mut payload: Vec<u8> = Vec::new();
+        for v in [3u8, 7, 12, 40, 55, 90, 120, 127] {
+            payload.push(0); // the fill
+            payload.push(v); // the value
+        }
+        let table = parse_param_table(&payload).expect("the payload is a table");
+        assert!(table.even_is_fill, "the even bytes are the fill here");
+        assert_eq!(table.values, vec![3, 7, 12, 40, 55, 90, 120, 127]);
+        assert_eq!(table.zero_percent, 100);
+        assert_eq!(table.small_percent, 100);
+    }
+
+    /// The fill is not at a fixed parity: §11.37 found both, so the reading
+    /// measures which one it is rather than assuming.
+    #[test]
+    fn the_fill_parity_is_measured_not_assumed() {
+        let mut payload: Vec<u8> = Vec::new();
+        for v in [8u8, 33, 64, 100, 11, 77, 5, 120] {
+            payload.push(v); // the value
+            payload.push(0); // the fill
+        }
+        let table = parse_param_table(&payload).expect("the payload is a table");
+        assert!(!table.even_is_fill, "the odd bytes are the fill here");
+        assert_eq!(table.values, vec![8, 33, 64, 100, 11, 77, 5, 120]);
+    }
+
+    /// A payload with no zero fill is not this shape, and is reported rather than
+    /// made to fit (`AGENTS.md`).
+    #[test]
+    fn a_payload_without_zero_fill_is_reported() {
+        let payload: Vec<u8> = (0..40u8).collect();
+        assert!(
+            parse_param_table(&payload).is_err(),
+            "a payload with no zero fill was read as a table"
+        );
+    }
+
+    /// Values above 128 mean the carrying half is not small values.
+    #[test]
+    fn values_above_128_are_not_a_small_value_table() {
+        let mut payload: Vec<u8> = Vec::new();
+        for v in [200u8, 210, 220, 230, 240, 250, 1, 2] {
+            payload.push(0);
+            payload.push(v);
+        }
+        assert!(
+            parse_param_table(&payload).is_err(),
+            "large values were read as a small-value table"
+        );
+    }
+}
