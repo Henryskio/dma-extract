@@ -1672,3 +1672,41 @@ not been read.
 
 That is the honest boundary of what this trace gives, and it is where the reading
 stops rather than where it concludes.
+
+## 11.18 The vtable is stored at offset 0, and that is where the trace resumes
+
+§11.17 named the payload routine as the virtual method at `this->0x50` slot
+`0x0c`. Resolving it needs the object that `this->0x50` points to, and this is the
+step that gets there, verified rather than assumed.
+
+The constructors on the path store their vtable pointer at the object's **offset
+0**, which is the CodeWarrior C++ convention (`stw r0, 0(r3)` after loading the
+address into `r0`):
+
+```text
+0x00179e44  stw r0, 0(r3)   ; the object MM3DModelResourceFile is
+0x00179ea8  bl  0x179ef0    ; a sub-constructor
+0x00179ef0  stw r0, 0(r3)   ; the sub-object it holds
+0x00196e40  stw r0, 0(r4)   ; a subfile object
+```
+
+So `ReadData`'s `lwz r12, 0x50(r31)` loads that sub-object, `lwz r12, 0xc(r12)`
+loads the third pointer of its vtable, and `bl 0x1c60a4` calls it. To name the
+routine, read the vtable address out of the sub-constructor at `0x179ef0` and
+then the word at `vtable + 0x0c` **as data** (`px` rather than `pd`), which gives
+the function address directly. That is the next instruction, and it is not a
+guess: the vtable's slot offsets are visible as the `lwz r12, 0xN(r12)` immediates
+that precede each `bl 0x1c60a4` in this function, and the one that matters is
+`0x0c`.
+
+Two facts from this trace that constrain whatever the routine turns out to do:
+
+* it is called with `r3 = r30 = this + 0x54` and a count `lha r5, 0x2b4(r31)`, so
+  it is handed the subfile object and `N`, which is a *per-resource* reader rather
+  than a per-container one;
+* the constructor's `li r0, 2` at `0x1632f4` means the model resource is a
+  **version-2** resource while the texture resource is version 1, so a payload
+  reader found for one must not be assumed to apply to the other.
+
+This is where the trace stops this session. What it leaves is a named function
+address one `px` away, not an unlocated reader.
