@@ -3210,3 +3210,54 @@ argument, because the relocation argument was wrong.
 
 The goal's second half is still not met at 345 of 460, and it is now not met with one
 fewer lead rather than one more.
+
+## 11.47 The 3D container's name table is 520 slots, and Rust reads only 460
+
+§11.15 and §11.29 classified the unconverted payloads by name, and this section
+corrects the base that classification used.
+
+### What the name table actually is
+
+The `Models` container's resource names are **32-byte NUL-padded ASCII slots**
+beginning at **`0x75a` (1882)**, which is `0x24 + 4*461 + 2` — the offset table's
+extent plus its two-byte padding. The first payload begins at `0x486e`, so the table
+holds:
+
+| | |
+| --- | --- |
+| slots between `0x75a` and `0x486e` | **520** |
+| slots holding a valid `.mod` name | **390** |
+| slots holding something else | **130** |
+
+`src/container.rs` reads **`32 * n` bytes with `n = resource_count = 460`**, so it
+reads the first 460 slots and stops. That is why `name(455)` through `name(459)`
+return garbage (`"\u{fffd}O\u{fffd}O\u{7}\u{1e}"`, `""`, `".mod"`) while `name(0)`
+through `name(100)` are correct: the reader stops short of the end of the real table,
+and the last 130 slots are never read at all.
+
+The 130 slots that hold no name are the same payload-shape bytes as the regions
+§11.37 measured as parameter tables — the region is a name table with other records
+interleaved, or it is a table with 130 empty slots, and the bytes do not say which.
+
+### What this does and does not fix
+
+It does **not** mean the 115 unconverted payloads are misclassified by name. The
+families the names gave them (§11.15, §11.29) stand, because the names that are
+readable are the ones those sections used, and the 24 payloads `names115` reported as
+unnamed are the ones whose slot Rust never reaches or whose slot holds no name.
+
+It does mean **one thing that is now known wrong and was asserted**: §11.29's census of
+the 115 by family counted "(unnamed)" as a family of 24, and that count is an artefact
+of reading 460 of 520 slots rather than a measurement of the payloads.
+
+### What the measurement is for
+
+The names are the only handle the 115 payloads have on *what they are*, and the handle
+is now known to cover 390 of 460 resources rather than all of them. Reading the
+remaining 70 needs either the container's own reader in `DMA3D.exe` — which §11.17
+located at `0x1632c8` and §11.19 found unreachable — or a decision about what the 130
+non-name slots hold.
+
+The goal's second half is still not met at 345 of 460, and the residue is now
+characterised as **115 payloads, 24 of which cannot be named because the name table is
+read short**.
