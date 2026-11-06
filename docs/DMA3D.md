@@ -1351,3 +1351,12 @@ palette and indices are stored in (§11.8's negative result says the bytes alone
 cannot answer), and the count of mesh-bearing model payloads. The previous audit's
 conclusion that these were unreachable was drawn from the tools it had; with
 `ppc.as` they are not.
+
+**Where the code is.** 4,286 PowerPC prologues (`7c 08 02 a6` = `mflr r0`,
+followed by `stw r0,8(r1)` and `stwu r1,-N(r1)`) run from **`0x3c30` to
+`0x1aedb4`**, so the code starts there — the PEF container header calls section 0 a
+data section, and it holds both: the loader's strings at its start and the whole
+program from `0x3c30` onward. `lean/BINARY-AUDIT.md` measured the loader's own
+strings (`MM2D*`, 109 `DMA3D.exe` hits) in that first stretch, which is what made
+section 0 look like pure data. From `0x3c30` the executable is readable as code,
+and `MM3DTextureResourceFile::ReadData`'s symbol entry is the place to start.
