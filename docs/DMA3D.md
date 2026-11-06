@@ -3518,3 +3518,80 @@ the count is 42 rather than 115.
 The goal's second half is not met at 418 of 460, but it is met for 91% of the shipped
 model payloads, and the residue is now small enough to characterise individually rather
 than as a class.
+
+## 11.53 The reader's thresholds are calibrated, and the 42 fall below the boundary
+
+The obvious next move on the 42 unconverted payloads was to relax
+`parse_value_stream`'s two thresholds until they fit. Before doing that, the
+thresholds were checked against the population the reader already accepts, because a
+threshold that has never been measured against anything is a guess whatever its value.
+
+### The calibration
+
+Calling the reader over the whole container and recording what it accepts:
+
+| | the 112 value streams it accepts |
+| --- | --- |
+| run length, in values | **min 16**, median 55, max 513 |
+| spread between extremes | **min 0.519**, median 4.295, max 527,536 |
+
+The reader declares `MIN_STREAM_VALUES = 16` and `MIN_STREAM_SPREAD = 0.5`. Both sit
+**exactly on the measured boundary of the accepted population** — the shortest accepted
+run is 16 values and the narrowest accepted spread is 0.519, which is 0.5 rounded up in
+binary floating point. The calibration also covers the drawing profiles, whose shortest
+accepted run is 17 values.
+
+So neither threshold is arbitrary. They are not numbers chosen to make a decision; they
+are the boundary the corpus itself draws.
+
+### What the 42 look like against it
+
+| group | count | their longest run |
+| --- | --- | --- |
+| no run at all | **10** | under 8 values |
+| short runs | **21** | 8–15 values |
+| narrow runs | **11** | 16+ values, spread 0.05–0.35 |
+
+The 21 have runs *shorter than anything the corpus accepts* — `r6` has 15 values
+spanning `[0.0, 1.0]`, `r37` 15 values spanning `[0.0, 1.667]`, `r76` 11 values spanning
+`[-0.309, 1.191]`. The 11 have runs long enough but **narrower than anything accepted** —
+`r367` 29 values spanning `[0.027, 0.296]`, `r306` 68 values spanning `[0.025, 0.353]`.
+
+### Why the thresholds were not lowered
+
+Every measurement that motivated the earlier readers came from comparing an accepted
+population with a rejected one. Applied here, the comparison says the opposite of what
+relaxing the threshold assumes: **the 42 are on the wrong side of a boundary the
+accepted 325 payloads define**, not behind a boundary drawn too tight. Lowering
+`MIN_STREAM_VALUES` to 8 would admit 14 payloads whose runs are half the shortest run
+the corpus has ever accepted, and lowering `MIN_STREAM_SPREAD` to 0.05 would admit 5
+whose spread is a tenth of the accepted minimum. Neither number is derived from the
+payloads; both are derived from wanting them to fit.
+
+That is the guess `AGENTS.md` forbids, and it is the third distinct shape of guess this
+session has withdrawn rather than committed: §11.46's misaligned branch, §11.50's
+UTF-16 reading, and now these thresholds.
+
+### One more probe: a magic variant
+
+`r37`'s bytes are a record stream — `c2 a4 b2 3f` (1.3958), `00 00 80 3f` (1.0), `55 55
+d5 3f` (1.6667), `cd cc 4c 3e` (0.2), interleaved with `u32` counts — which is what the
+48 `mod II` record streams in §11.31 look like, except that it carries no `mod II`
+magic. So a variant magic was looked for: every 4-to-8-byte window at each fixed offset
+in the first 96 bytes of all 42, counted across the set, requiring at least 8 payloads to
+share it and at least one byte to be printable ASCII.
+
+**Nothing.** There is no repeated ASCII tag at a fixed offset, so the 42 do not carry a
+magic under another spelling.
+
+### Where the 42 now stand
+
+| | |
+| --- | --- |
+| recorded as converted | **418 of 460** — 17 meshes, 213 profiles, 188 JSON+text |
+| reported per resource | **42** — 10 with no run, 21 with short runs, 11 with narrow runs |
+| their shape | not the `f32` stream, and not behind the threshold |
+
+The goal's second half is not met at 418 of 460. The 42 are characterized by what they
+are *not* against every shape this project has read, which is the first time the residue
+has been characterized that completely — and it is characterization, not conversion.
