@@ -1308,3 +1308,46 @@ palette is 8 bytes — more than the 4 the payload leaves. The container's metad
 region, which is where a shared palette would be named, does not fit at all (§1.2).
 So the class is a sub-format nothing in this repository has read, and the
 executable is what reads it.
+## 11.12 Two more hypotheses, one closed and one opening
+
+### The run-length format does not apply to this class
+
+`docs/PICTURES.md` §7.3 documents a two-section run-length format, and it is the
+obvious candidate for a payload whose power-of-two area leaves only a 4-byte
+prefix: `260 - 4 = 256`, and in the run-length form a 260-byte payload holds a
+`u16[2h+1]` offset table plus run lengths plus one colour per foreground pixel.
+
+Tested against all eleven members of the 260-byte class and both `kind` values,
+with the table search allowed at **any** offset in the payload (not just at 0):
+the table's own size must be `2*(2h+1)`, every row's run-length slice must sit
+inside the payload, its runs must sum to a consistent width, and the doc's own
+score — **one colour record per foreground pixel** — must hold for every row.
+
+**None of the eleven carries it.** The score fails for all payloads at every
+offset, so §7.3's format is specific to the picture containers and does not reach
+the 3D game's textures. Recorded so it is not retried.
+
+### The executable can be disassembled after all
+
+`lean/BINARY-AUDIT.md` records `DMA3D.exe` as a PowerPC CodeWarrior PEF that the
+connected REA provider rejects and that Rizin "reports `format any` and cannot
+disassemble". The second half of that is wrong, and this is the correction:
+
+```
+$ rizin -qq -c "e asm.arch=ppc; e asm.bits=32; s 0x3510; pd 20" DMA3D.exe
+```
+
+Rizin **does** disassemble it. `rizin -L` lists a `ppc.as` plugin; setting
+`asm.arch=ppc` and seeking into the executable produces real PowerPC instructions
+(`xoris`, `rlwimi`, `addis`, `andi.`, `bcl`, `lmw`, `cmplwi`, `subfic`) at the
+section boundaries the PEF container header names. The first two sections are data
+(their immediates are ASCII — `0x414d` `0x7274` `0x5474` — the loader's own
+strings), so the code is further in and has to be located; but the blocker is the
+plugin, not the format, and it exists on this machine.
+
+That reopens every question this document leaves to the executable: the split the
+260-byte and 68-byte classes use, the width/height derivation, which order the
+palette and indices are stored in (§11.8's negative result says the bytes alone
+cannot answer), and the count of mesh-bearing model payloads. The previous audit's
+conclusion that these were unreachable was drawn from the tools it had; with
+`ppc.as` they are not.
