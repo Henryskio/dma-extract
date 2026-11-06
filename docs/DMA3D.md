@@ -2527,3 +2527,48 @@ steps as well as the 0..8 phase scan.
 Both read 460 payloads: 17 mesh chains, 213 drawing profiles, 230 written through as
 the original bytes with a reported reason. The Lean harness reports
 `all checks passed`, and `cargo test` is green.
+
+## 11.35 The thunk address is 0xfd00 past the image, and the only section that
+could hold it is compressed
+
+§11.23 concluded the thunk at `0x1c60a4` was "not in this artifact". Parsing the PEF
+section headers from the disc image settles how far that was from right.
+
+The container at `0x1ee1460` of `Disney Creazioni in 3D (Italy).bin` (same date-time
+stamp as the carved file) declares three sections, and **the carve is complete** — two
+of the three ranges and the loader's tile the file exactly:
+
+```text
+sec0  kind 0 code    addr 0x0  total 0x194f74  packed 0x194f74  container 0x3510
+                     file [0x3510, 0x198484)
+sec1  kind 2 data    addr 0x0  total 0x21430  unpacked 0x1f959  packed 0x16a4b
+                     container 0x198490   file [0x198490, 0x1aeedb)
+sec2  kind 4 loader  addr 0x0  total 0        packed 0x3490     container 0x80
+                     file [0x80, 0x3510)
+file size 0x1aeedb — sec1's range ends exactly there
+```
+
+Loaded contiguously from VA 0 the image ends at **`0x1b63a4`** (`0x194f74` for sec0
+plus sec1's `totalSize` `0x21430`). So `0x1c60a4` is **`0xfd00` bytes past the end of
+the image** — 64,768 bytes, not the 0x171c9 bytes §11.23 reported against the raw EOF.
+§11.23 was measuring the wrong bound: it compared against the file's size rather than
+against the image the loader builds.
+
+Two things that gap leaves open, both of which are narrower than "not in this
+artifact":
+
+* **`sec1` is compressed.** `0x16a4b` bytes on disc expand to `0x1f959` in memory — a
+  ratio of 1.39, the only compressed section in the container — and it sits at the end
+  of the file, which is also where the libjpeg routines and the CodeWarrior export
+  entries live in the carved bytes. A thunk in a compressed section does not appear in
+  the carved file at any offset, which is why the `mtctr r12; bctr` search found
+  nothing in the code region.
+* **The `bl` displacement may be relocation-patched.** PEF loader relocations are
+  stored in the loader section, which the carve *does* hold verbatim; a patched `bl`
+  would target a different address than the bytes suggest.
+
+So the honest statement of the blocker is: the address is 0xfd00 past the image under
+the contiguous-from-0 mapping, the one section that could hold it is compressed, and
+the loader section that could patch the branch is present. All three are now
+*measured* rather than assumed, and none of them is a run-time-only observation —
+though reading the patched target still needs the loader to run.
