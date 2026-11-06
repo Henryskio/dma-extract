@@ -2320,14 +2320,11 @@ payload shape*, not a near miss of this one. The families among them are the one
 §11.15 named — `createModShrMaterial*`, `file*` icons, `createModShapePrim*`, UI
 records — and they need readers of their own written against measured bytes.
 
-**One divergence is open and recorded rather than hidden.** The Lean reader accepts
-218 payloads where Rust accepts 212 profiles (229 with the meshes), an 11-payload
-difference. Both halves pass their own byte-level checks — every accepted payload's
-records compare against the payload's own bytes in both languages — so the
-divergence is in *which* payloads each accepts, not in what an accepted one contains.
-That is a difference of tie-breaking between (phase, slot) pairs, and it is not
-resolved here: closing it needs the tie-break made identical in both halves, which is
-the next piece of work on this reader.
+**A note on the two halves, corrected in §11.30.** The Lean reader and the Rust
+reader accept nested sets — Rust accepts every payload Lean accepts, and the six
+Lean-only entries are payloads Rust's mesh reader takes first — so there is no
+divergence to close. The real gap is that Lean has no mesh reader, which is a missing
+reader rather than a disagreement between two working ones.
 
 ## 11.29 The 231 are four shapes, not one, and one of them has no reader to write
 
@@ -2362,3 +2359,39 @@ So the residue is **81 payloads with no readable structure, and 150 structured o
 at least two further shapes**, none of which has a reader. The goal is not met, and the
 honest description of the remainder is four shapes needing measurement rather than one
 needing a decoder.
+
+## 11.30 The Lean/Rust "divergence" was a miscount, and it is not a divergence
+
+§11.28 recorded an 11-payload divergence between the Lean and Rust readers. Diffing
+the two accepted sets properly shows that is wrong, and the diff is the evidence:
+
+```text
+rust profiles: 212   lean profiles: 218
+=== LEAN accepts, RUST does not ===
+138  141  144  146  149  366
+=== RUST accepts, LEAN does not ===
+(nothing)
+```
+
+**Rust accepts every payload Lean accepts**, so the two sets are nested rather than
+divergent, and there is no tie-break to fix. What the six payloads are is the answer:
+`138, 141, 144, 146, 149, 366` are all in Rust's **mesh** set, so `parse_mesh` takes
+them there and they never reach `parse_profile`. Lean has no mesh reader, so its
+`Modfile.parse` reads them as point streams instead.
+
+So the "11-payload difference" was the arithmetic of two different questions:
+
+* Rust reads 17 meshes + 212 profiles = **229 payloads**;
+* Lean reads 218 profiles, 6 of which Rust calls meshes;
+* 11 of Rust's meshes are not point streams, so Lean does not read them.
+
+The real gap is that **Lean has no mesh reader**, which is a missing reader rather
+than a disagreement between two working ones. That is what should have been said in
+§11.28, and it is corrected here rather than left standing.
+
+It is worth recording how the wrong number survived: the first diff used `comm` on
+files sorted with `sort -n`, and `comm` requires lexical order, so it compared
+misaligned lines and reported twelve payloads as disagreeing when three of them
+(`14`, `15`, `10`) are accepted by both — which the direct check confirmed. A tool
+contract that is not checked produces a confident wrong answer, and the check is
+`comm` needing lexicographic input.

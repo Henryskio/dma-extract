@@ -70,7 +70,7 @@ payload of identical padding read as a profile at phase 3 with a marker of
 exactly `0.0`, which is how that case was caught (`docs/DMA3D.md` §11.26).
 -/
 def plausible (f : Float) : Bool :=
-  f.isFinite && f.abs < 1.0e7 && (f == 0.0 || f.abs >= 1.1754944e-38)
+  f.isFinite && f.abs < 1.0e7 && (f == 0.0 || f.abs >= 1.1754943508222875e-38)
 
 /-! ## The reading -/
 

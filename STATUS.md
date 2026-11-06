@@ -448,8 +448,10 @@ and that naming stays per `AGENTS.md`. Its own document is
   records whose constant slot is bit-repeating, because a payload carries its record
   run and then something else, exactly as a mesh payload is a chain plus a tail
   (§11.28). The profile reader is ported to Lean (`MmfExtract/Dma3d/Modfile.lean`) and
-  both halves pass their own byte-level checks (§11.27); an 11-payload difference in
-  which payloads each accepts is open and recorded in §11.28 rather than hidden. The nine that used to fail are **8-bit coverage masks** —
+  both halves pass their own byte-level checks (§11.27), and their accepted sets are
+  nested rather than divergent — the six Lean-only entries are payloads Rust's mesh
+  reader takes first, so the real gap is Lean's missing mesh reader, not a
+  disagreement (§11.30). The nine that used to fail are **8-bit coverage masks** —
   the sub-format `docs/PICTURES.md` §4.2 documents for the picture containers,
   where an 8-bit payload with no 1024-byte prefix is an alpha mask rather than a
   palette image. That is why §11.11 could not find a palette in them: they have
