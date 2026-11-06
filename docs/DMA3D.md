@@ -1951,3 +1951,62 @@ So the record layout is pinned to 16 bytes and the prefix is pinned as variable,
 and the two things still missing are what the `16` counts and what the `u16` pairs
 mean. Neither is derivable from the payloads alone, and both are in the reader at
 `this->0x50` slot `0x0c`, which §11.19 records as reachable only at run time.
+
+## 11.23 The dispatch is a single shared thunk, and it is not in this file
+
+§11.19 recorded the payload routine as unreachable because the vtable at
+`this->0x50` is delegated. Tracing the two dispatches in `MM3DModelResourceFile::ReadData`
+by hand rather than trusting rizin's target arithmetic gives the sharper answer.
+
+`ReadData` makes two virtual calls, and their encodings are:
+
+```text
+0x001633d4  lwz  r12, 0x18(r12)    ; the names object, vtable slot 0x18
+0x001633d8  bl   0x1c60a4
+0x001633e0  lwz  r12, 0x50(r31)    ; this->0x50, vtable slot 0x0c
+0x001633e4  addi r3, r31, 0x50
+0x001633e8  lwz  r12, 0xc(r12)
+0x001633ec  bl   0x1c60a4          ; the same target
+```
+
+**Both `bl`s target the same address**, `0x1c60a4`, and neither carries a
+relocation-branch marker. A single shared target for two different `r12` values is a
+CodeWarrior **dispatch thunk** — a stub that does `mtctr r12; bctr` — which is why
+`r12` is loaded immediately before each call and why the pattern
+(`lwz r12, slot(reg)` … `bl` … `lwz r2, 0x14(r1)`) repeats verbatim.
+
+The arithmetic matters here and was got wrong before. The PPC `b`/`bl` displacement is
+the 24-bit `LI` field shifted left two and **sign-extended from 26 bits**, so a field
+whose top bit is set is a backward branch. `bl` at `0x1632ec` is exactly that case:
+rizin reports `0x114ab0`, and the hand computation gives `0x4114ab0` if the extension
+is skipped. Getting that wrong is what made §11.9's "the routine at `0x196848`" look
+like code, when it is a mid-instruction read.
+
+Applying the extension correctly, the two targets stay **`0x1c60a4`**, and:
+
+```text
+DMA3D.exe size          : 0x1aee db
+target 0x1c60a4         : past EOF by 0x171c9 bytes
+last bytes of the file  : 58 38 21 00 50 7c 08 03 a6 bb 61 ff ec 4e 80 00 20
+```
+
+The file ends on a `blr` (`4e 80 00 20`), so it is not truncated mid-instruction, and
+every other `bl` in `ReadData` lands in-file (`0x179e44`, `0x196e34` twice,
+`0x17a014`, `0x17981c`) — so the thunk is not merely elsewhere in this code, it is
+**not in this artifact at all**. That is a PEF section the carve did not take, or a
+section mapped at a different `defaultAddress` than its container offset.
+
+So the payload-consuming routine is behind a stub that this workspace does not hold.
+That is a sharper statement than §11.19's delegated-vtable one, and it is the reason
+the tag table cannot be finished from the bytes available: the routine that would
+name the record's fields is in a section of `DMA3D.exe` that was never carved.
+
+What would close it, in order of cost:
+
+1. re-carve `DMA3D.exe` from the disc image (`Disney Creazioni in 3D (Italy).bin` is in
+   `/workspace/.tmp/dma3d`) with the PEF section headers parsed, so the thunk's section
+   is taken whole;
+2. or break at `0x1633ec` in a PowerPC-capable debugger and read `r12` at run time,
+   which §11.19 already named.
+
+Neither is a disassembly step, and neither has been done.
