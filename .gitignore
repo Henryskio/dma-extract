@@ -1,22 +1,13 @@
-# Generated extraction output (30k PNGs, several hundred MB).
-/extracted/
+# This branch holds documentation only. Nothing here is built, so the rules
+# below exist to keep a cloned copy of this branch clean rather than to cover
+# the code's build outputs (which live on lean-rewrite and main).
 
-# Isolated per-asset-type working copies used by parallel reverse-engineering.
-/mmex-sound/
-/mmex-script/
-/mmex-film/
-
-# Scratch/analysis artifacts that are not part of the deliverable.
-/.tmp-channeltest/
+# Editor and agent scratch.
 /.claude/
-/check_hidden_files
+/.agents/
 *.log
+.DS_Store
 
-# Rust build output (also covered by mmf-extract/.gitignore).
-**/target/
-
-# Python bytecode from the ISO tools.
-/__pycache__/
-
-#temporary media files
-.tmp/
+# Python bytecode.
+__pycache__/
+*.pyc
