@@ -105,7 +105,7 @@ lean/src/MmfExtract/
   Sound.lean       sound format detection, DPCM decode, FLAC invocation
   Png.lean         the PNG encoder
   Dma3d.lean       the 3D game's run loop and writers
-  Dma3d/Modfile.lean  the six model-payload readers
+  Dma3d/Modfile.lean  the seven model-payload readers
   Dma3d/Texfile.lean  the texture readers
   Dma3d/Verify.lean   the --original verification harness
 ```
@@ -291,7 +291,7 @@ image-codec dependency.
 
 ---
 
-## 6. `Dma3d/Modfile.lean` — the six model readers
+## 6. `Dma3d/Modfile.lean` — the seven model readers
 
 The 3D game's `Models` container ships 460 payloads. No single reader covers them; a
 **dispatch chain** does, in this order, and the first reader that accepts a payload
@@ -364,11 +364,12 @@ resource_count`.
 
 Every non-glTF output is a JSON+text document with the same four keys — `name`,
 `what this is`, `meaning`, `measured` — where `meaning` says plainly what is *not*
-determined and `measured` carries only what the bytes show. Six writers exist:
-`writeRecordJson`, `writeParamJson`, `writeNameJson`, `writeStreamJson`,
-`writeIndexJson` and the glTF writers. Each has a unit test that reads its own output
-back, because three times this session a writer produced a document its reader
-rejected (`docs/DMA3D.md` §11.39, §11.54, §11.55).
+determined and `measured` carries only what the bytes show. Five JSON+text writers
+exist — `writeRecordJson`, `writeParamJson`, `writeNameJson`, `writeStreamJson`,
+`writeIndexJson` — beside the glTF writers and `writeIndex` for `index.html`. Each has
+a unit test that reads its own output back, because **four times** this session a writer
+produced a document its reader rejected (`docs/DMA3D.md` §11.39 twice, §11.54, §11.55;
+the full record is `docs/MISTAKES.md` §2.1).
 
 ### 7.3 The texture readers
 
