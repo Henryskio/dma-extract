@@ -3660,3 +3660,78 @@ reader agrees exactly — `mesh 17, profile 213, record 48, param 9, names 21, s
 have runs of 8–15 values against an accepted minimum of 16, the 11 narrow ones have a
 spread of 0.05–0.35 against an accepted minimum of 0.519, and 10 have no run. `r76` and
 `r80` carry no names at all. The goal's second half is not met at 420 of 460.
+
+## 11.55 The index tables are read, and 425 of 460 payloads have output
+
+§11.53 characterized the 40 unconverted payloads and stopped at the f32 shape. Five
+of them carry a structure that the same measurement found and that no reader took:
+the alternating-zero layout `parse_param_table` reads, with values that reach
+`0xf2`.
+
+```text
+r311 mod (276 B):  79 00 7f 00 80 00 81 00 77 00 82 00 5c 00 80 00 ...
+r105 createModBtSize04.mod (472 B): 73 00 73 00 98 00 75 00 98 00 7b 00 ...
+```
+
+Every other byte is zero and the ones between are byte values. The reader
+`parse_param_table` rejects them because its rule requires **95% of the carrying half
+below 128**, and 34–53% of these values are at or above it.
+
+### Why this is a separate population and not a loosened threshold
+
+The two populations were measured before anything was written:
+
+| | carrying values ≥ 128 |
+| --- | --- |
+| the nine accepted parameter tables | **0–3%** |
+| these five payloads | **34–53%** |
+
+There is no overlap, so the 128 rule is not a threshold that excludes these by
+accident; it is the boundary between two measured populations. Writing a reader that
+kept the alternating-zero layout but dropped the 128 rule would read the second
+population, and that is what `parse_index_table` does — with its own stated
+thresholds (≥90% of one parity zero, ≥90% of the other nonzero, ≥16 values) rather
+than an inherited one.
+
+### What the run reports
+
+```text
+models: 1165   ambiguous: 696   total: 1165   failed: 35
+glTF 230   json 195   previews 230   png 935   .mod 35
+```
+
+**17 meshes + 213 profiles + 195 JSON+text = 425 of 460**, against 420 before. The
+Lean reader agrees exactly — `mesh 17, profile 213, record 48, param 9, names 21,
+streams 112, index 5, other 35` → `output 425` — and the harness reports `all checks
+passed`.
+
+The documents record the values verbatim and state the meaning as undetermined, which
+is the same form the other five JSON+text families take and the reason is the same:
+the payload carries no field names and no lengths.
+
+### Two writer bugs, and what they have in common
+
+The first version of `write_index_json` wrote `"fill is zero for": 89% of its bytes`
+and `"values range from": 0x33 to 0xc2` — neither of which is a JSON value.
+`json.load` rejected 5 of the 190 documents the run had just written. Then its
+`meaning` literal, written with a Rust `\` line continuation, put a backslash into a
+JSON string literal, which is an invalid escape.
+
+Both are now fixed and both are covered by `gltf::index_json_tests`, which reads the
+document its own writer produced.
+
+That is the **third and fourth time** this session a hand-written document was not
+checked against its reader (§11.39's percentages, §11.54's empty list, and now these
+two). The pattern is not carelessness about JSON; it is that the writer and the reader
+were written by the same pass. `AGENTS.md` already says every new decoder ships with a
+test that reads its output back — this is where that rule earned its place, four
+times over.
+
+### What is left
+
+**35 payloads** fit no reader: 21 with `f32` runs of 8–15 values against an accepted
+minimum of 16, 10 with no run at all, and 4 whose only shape is a carrying half of
+the full byte range with no dominant zero parity. `r203 athCircle.mod` carries
+0x00–0xf5 at 89% nonzero, which is one byte short of the index reader's 90% and whose
+bytes are full-range rather than index-range. The goal's second half is not met at
+425 of 460.
