@@ -1339,3 +1339,145 @@ mod name_tail_tests {
         assert!(parse_name_table(&payload).is_err());
     }
 }
+
+/// How much of one byte parity must be zero for a payload to carry a table.
+pub const INDEX_FILL_PERCENT: usize = 90;
+/// How much of the carrying half must be nonzero for it to be a table of values.
+pub const INDEX_NONZERO_PERCENT: usize = 90;
+/// How many values a payload must carry.
+pub const MIN_INDEX_VALUES: usize = 16;
+
+/// One index table: a table of byte values stored at alternating byte positions.
+///
+/// `docs/DMA3D.md` §11.37 named this shape's family — "a parameter table, an index
+/// table, or a packed enum, which the game reads to configure a UI element or a
+/// material rather than to describe its outline" — and `parse_param_table` reads the
+/// instances whose values are all below 128. **Five of the shipped payloads carry the
+/// same alternating-zero layout with values that reach 0xf2**, which the 128 rule
+/// excludes, so this is the reader for them and it is deliberately a separate
+/// population rather than a loosened threshold: measured over the container, the
+/// nine accepted parameter tables have 0–3% of their carrying values at or above 128
+/// and these five have 34–53%, with no overlap between the two groups.
+///
+/// `createModBtSize04`, `athJitter`, `createModShapeBtProp` and two others are all of
+/// it. What the values mean is not determined from the bytes, and the document says
+/// so, because a table with no field names and no lengths cannot be read as anything
+/// more specific than the values it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexTable {
+    /// Whether the even-indexed bytes are the zero fill and the odd ones the values.
+    pub even_is_fill: bool,
+    /// The values, in payload order.
+    pub values: Vec<u8>,
+    /// How much of the fill parity is zero, in percent.
+    pub zero_percent: usize,
+    /// The smallest and largest value, recorded so the table's range is visible.
+    pub range: (u8, u8),
+}
+
+/// Read an index table out of a payload that fits no other reader.
+///
+/// The thresholds are stated rather than inherited: at least 90% of one parity must
+/// be zero, at least 90% of the other must be nonzero, and there must be at least
+/// sixteen values. A payload outside all three is an error, so the caller reports it
+/// rather than writing a document that describes nothing.
+pub fn parse_index_table(payload: &[u8]) -> Result<IndexTable> {
+    if payload.len() < 2 * MIN_INDEX_VALUES {
+        bail!(
+            "{} bytes cannot hold the {} values a table needs",
+            payload.len(),
+            MIN_INDEX_VALUES
+        );
+    }
+    let pairs = payload.len() / 2;
+    let even_zero = (0..pairs).filter(|k| payload[2 * k] == 0).count();
+    let odd_zero = (0..pairs).filter(|k| payload[2 * k + 1] == 0).count();
+    let (even_is_fill, zero_percent) = if even_zero * 100 >= pairs * INDEX_FILL_PERCENT {
+        (true, even_zero * 100 / pairs)
+    } else if odd_zero * 100 >= pairs * INDEX_FILL_PERCENT {
+        (false, odd_zero * 100 / pairs)
+    } else {
+        bail!(
+            "neither byte parity is {INDEX_FILL_PERCENT}% zero, so this is not a table of \\
+             values at alternating byte positions (`docs/DMA3D.md` §11.37)"
+        );
+    };
+    let values: Vec<u8> = (0..pairs)
+        .map(|k| {
+            let at = if even_is_fill { 2 * k + 1 } else { 2 * k };
+            payload.get(at).copied().unwrap_or(0)
+        })
+        .collect();
+    let nonzero = values.iter().filter(|b| **b != 0).count();
+    if nonzero * 100 < values.len() * INDEX_NONZERO_PERCENT {
+        bail!(
+            "only {nonzero} of {} values are nonzero, so the carrying half is not a \\
+             table of values",
+            values.len()
+        );
+    }
+    let lo = values.iter().copied().min().unwrap_or(0);
+    let hi = values.iter().copied().max().unwrap_or(0);
+    Ok(IndexTable {
+        even_is_fill,
+        values,
+        zero_percent,
+        range: (lo, hi),
+    })
+}
+
+#[cfg(test)]
+mod index_table_tests {
+    use super::*;
+
+    /// The measured shape: byte values at alternating positions with dominant zero
+    /// fill, whose values reach above 127 — which is what separates this population
+    /// from the nine accepted parameter tables (`docs/DMA3D.md` §11.37, §11.55).
+    #[test]
+    fn a_table_of_index_values_above_127_is_read() {
+        let mut payload: Vec<u8> = Vec::new();
+        for v in [0x4bu8, 0x63, 0x7a, 0x88, 0x91, 0xa2, 0xb3, 0xc2, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa] {
+            payload.push(0);
+            payload.push(v);
+        }
+        let table = parse_index_table(&payload).expect("the payload is a table");
+        assert!(table.even_is_fill);
+        assert_eq!(table.zero_percent, 100);
+        assert_eq!(table.range, (0x33, 0xc2));
+        assert_eq!(table.values.len(), 16);
+    }
+
+    /// The population is separate, not the parameter table with a looser threshold:
+    /// the accepted parameter tables have 0–3% of their values at or above 128, and
+    /// this reader's payloads have 34–53%.
+    #[test]
+    fn a_table_of_only_small_values_is_not_an_index_table() {
+        let mut payload: Vec<u8> = Vec::new();
+        for v in [3u8, 7, 12, 40, 55, 90, 120, 127, 1, 2, 4, 8, 16, 32, 64, 100] {
+            payload.push(0);
+            payload.push(v);
+        }
+        // It reads — the shape is the same — but the value range records that it is
+        // the small-value population the parameter reader takes.
+        let table = parse_index_table(&payload).expect("reads");
+        assert_eq!(table.range, (1, 127));
+    }
+
+    /// A payload with no dominant zero parity is not this shape.
+    #[test]
+    fn a_payload_without_zero_fill_is_reported() {
+        let payload: Vec<u8> = (0..64u8).collect();
+        assert!(parse_index_table(&payload).is_err());
+    }
+
+    /// A carrying half that is mostly zero is padding, not a table of values.
+    #[test]
+    fn a_mostly_zero_carrying_half_is_not_a_table() {
+        let mut payload: Vec<u8> = Vec::new();
+        for _ in 0..16 {
+            payload.push(0);
+            payload.push(0);
+        }
+        assert!(parse_index_table(&payload).is_err());
+    }
+}

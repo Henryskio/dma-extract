@@ -22,7 +22,7 @@
 //! `>= 1` and `< V`, and `V` itself never appears), so the writer subtracts
 //! one. glTF's index base is zero.
 
-use crate::dma3d::modfile::{MagicRecord, ModelMesh, NameTable, ParamTable, Profile, ValueStream};
+use crate::dma3d::modfile::{IndexTable, MagicRecord, ModelMesh, NameTable, ParamTable, Profile, ValueStream};
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -1390,5 +1390,97 @@ mod name_json_tests {
             "the sliced name is not recorded separately: {text}"
         );
         let _ = NameTable { names: Vec::new(), truncated: Vec::new() };
+    }
+}
+
+/// Write an index table as a JSON+text document.
+///
+/// `docs/DMA3D.md` §11.37, §11.55: five payloads carry the alternating-zero layout
+/// `parse_param_table` reads, but with values that reach `0xf2`, which the 128 rule
+/// excludes. The nine accepted parameter tables have 0–3% of their carrying values at
+/// or above 128 and these five have 34–53%, so this is a separate measured population
+/// rather than a loosened threshold, and it is written for the same reason
+/// `write_param_json` is: the values are recorded verbatim and the meaning is stated
+/// as undetermined, because the payload carries no field names and no lengths.
+pub fn write_index_json(path: &Path, name: &str, table: &IndexTable) -> Result<()> {
+    let what = "an index table: byte values at alternating byte positions, with zero fill";
+    // One line, built by concatenation: a Rust `\` line continuation puts a
+    // backslash into the literal, which is an invalid escape in the JSON this
+    // document is read back as. The first version of this had one and the document
+    // carried `the payload \                    carries no field names` (§11.55).
+    let meaning = concat!(
+        "the values are determined; what they index is not -- the payload ",
+        "carries no field names and no lengths, so each value's meaning is in ",
+        "the reader this workspace cannot reach (docs/DMA3D.md 11.23, 11.36)"
+    );
+    let mut document = String::new();
+    document.push_str("{\n");
+    document.push_str(&format!("  \"name\": {},\n", json_string(name)));
+    document.push_str(&format!("  \"what this is\": {},\n", json_string(what)));
+    document.push_str(&format!("  \"meaning\": {},\n", json_string(&meaning)));
+    document.push_str("  \"measured\": {\n");
+    document.push_str(&format!(
+        "    \"even bytes are the zero fill\": {},\n",
+        table.even_is_fill
+    ));
+    // Both of these are strings, not numbers: `89% of its bytes` and
+    // `0x33 to 0xc2` are not JSON values, and writing them unquoted produced a
+    // document `json.load` rejected -- the same mistake §11.39 and §11.54 made, and
+    // the reason `write_param_json` quotes its percentages.
+    document.push_str(&format!(
+        "    \"fill is zero for\": {},\n",
+        json_string(&format!("{}% of its bytes", table.zero_percent))
+    ));
+    document.push_str(&format!(
+        "    \"values range from\": {},\n",
+        json_string(&format!(
+            "{:#04x} to {:#04x}",
+            table.range.0, table.range.1
+        ))
+    ));
+    document.push_str(&format!("    \"count\": {},\n", table.values.len()));
+    let nums: Vec<String> = table.values.iter().map(|v| v.to_string()).collect();
+    document.push_str(&format!("    \"values\": [{}]\n", nums.join(", ")));
+    document.push_str("  }\n");
+    document.push_str("}\n");
+    std::fs::write(path, document.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod index_json_tests {
+    use crate::dma3d::modfile::parse_index_table;
+
+    /// The document must be valid JSON, and the first version was not: it wrote
+    /// `"fill is zero for": 89% of its bytes` and `"values range from": 0x33 to
+    /// 0xc2`, neither of which is a JSON value. Both are now strings, and this pins
+    /// it the same way `param_json_tests` and `name_json_tests` do.
+    #[test]
+    fn a_written_index_document_is_valid_json() {
+        let mut payload: Vec<u8> = Vec::new();
+        for v in [0x4bu8, 0x63, 0x7a, 0x88, 0x91, 0xa2, 0xb3, 0xc2, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa] {
+            payload.push(0);
+            payload.push(v);
+        }
+        let table = parse_index_table(&payload).expect("read");
+        let path = std::env::temp_dir().join("mmf-index-table-selftest.json");
+        super::write_index_json(&path, "selftest", &table).expect("write");
+
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            !text.contains("\": \n"),
+            "a member has no value after its colon"
+        );
+        for (k, line) in text.lines().enumerate() {
+            let t = line.trim();
+            if t.is_empty() || t == "{" || t == "}" {
+                continue;
+            }
+            assert!(t.starts_with('"'), "line {k} does not start with a quoted key: {t}");
+        }
+        // The percentage and the range are strings.
+        assert!(text.contains("\"fill is zero for\": \"100% of its bytes\""), "{text}");
+        assert!(text.contains("\"values range from\": \"0x33 to 0xc2\""), "{text}");
     }
 }

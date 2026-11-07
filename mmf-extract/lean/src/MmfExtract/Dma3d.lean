@@ -55,6 +55,9 @@ structure Extract3DReport where
   /-- Payloads written as JSON+text, i.e. parameter tables of small values at
   alternating byte positions with zero fill (`docs/DMA3D.md` §11.37, §11.39). -/
   params : Nat := 0
+  /-- Payloads written as JSON+text, i.e. index tables of byte values whose values
+  reach above the parameter reader's 128 rule (`docs/DMA3D.md` §11.37, §11.55). -/
+  index : Nat := 0
   deriving Inhabited
 
 /-- The output file name's stem: the resource name, sanitised.
@@ -209,6 +212,15 @@ def extractPngs (container : Container) (outDir : System.FilePath) : IO Extract3
             { index, name, path, bytes := texture.width * texture.height * 4 } }
   return report
 
+/-- A JSON string literal: the quotes, and a backslash or quote escaped. -/
+def jsonStr (x : String) : String := Id.run do
+  let mut out := "\""
+  for c in x.toList do
+    if c == '"' || c == '\\' then
+      out := out.push '\\'
+    out := out.push c
+  return out ++ "\""
+
 /-- Write a `mod II` record stream as a JSON+text document.
 
 `docs/DMA3D.md` §11.38: 48 of the shipped payloads carry the magic and the `u32`
@@ -239,15 +251,40 @@ def writeRecordJson (path : System.FilePath) (name : String) (r : Modfile.MagicR
     "  }\n" ++
     "}\n"
   IO.FS.writeBinFile path document.toUTF8
-where
-  /-- A JSON string literal: the quotes, and a backslash or quote escaped. -/
-  jsonStr (s : String) : String := Id.run do
-    let mut out := "\""
-    for c in s.toList do
-      if c == '"' || c == '\\' then
-        out := out.push '\\'
-      out := out.push c
-    return out ++ "\""
+
+/-- Write an index table as a JSON+text document.
+
+`docs/DMA3D.md` §11.37, §11.55: five payloads carry the alternating-zero layout
+`parseParamTable` reads, but with values that reach `0xf2`, which the 128 rule
+excludes. The nine accepted parameter tables have 0-3% of their carrying values at or
+above 128 and these five have 34-53%, so this is a separate measured population rather
+than a loosened threshold, and it is written for the same reason `writeParamJson` is:
+the values are recorded verbatim and the meaning is stated as undetermined, because
+the payload carries no field names and no lengths.
+-/
+def writeIndexJson (path : System.FilePath) (name : String) (t : Modfile.IndexTable) : IO Unit := do
+  let what := "an index table: byte values at alternating byte positions, with zero fill"
+  let meaning := "the values are determined; what they index is not -- the payload carries no \
+                  field names and no lengths, so each value's meaning is in the reader this \
+                  workspace cannot reach (docs/DMA3D.md 11.23, 11.36)"
+  let meaning := meaning.replace "\n" " "
+  let pct := jsonStr s!"{t.zeroPercent}% of its bytes"
+  let rng := jsonStr s!"{t.range.1} to {t.range.2}"
+  let nums := String.intercalate ", " (t.values.toList.map toString)
+  let document :=
+    "{\n" ++
+    s!"  \"name\": {jsonStr name},\n" ++
+    s!"  \"what this is\": {jsonStr what},\n" ++
+    s!"  \"meaning\": {jsonStr meaning},\n" ++
+    "  \"measured\": {\n" ++
+    s!"    \"even bytes are the zero fill\": {t.evenIsFill},\n" ++
+    s!"    \"fill is zero for\": {pct},\n" ++
+    s!"    \"values range from\": {rng},\n" ++
+    s!"    \"count\": {t.values.size},\n" ++
+    s!"    \"values\": [{nums}]\n" ++
+    "  }\n" ++
+    "}\n"
+  IO.FS.writeBinFile path document.toUTF8
 
 /-- The modern model path.
 
@@ -305,9 +342,18 @@ def extractGltf (container : Container) (outDir : System.FilePath) :
           -- profile and record paths above do not write.
           match (Modfile.parseParamTable payload).toOption with
           | none =>
-              report := { report with
-                failed := report.failed.push (index, name,
-                  s!"{e}; the record reading also fails ({recordErr})") }
+              -- None of the readers above took it. It may still be an index table
+              -- -- byte values at alternating byte positions whose values reach
+              -- above 127, which the parameter reader's 128 rule excludes for the
+              -- measured reason of §11.55 -- counted here and written by the Rust
+              -- converter, for the same reason the paths above do not write.
+              match (Modfile.parseIndexTable payload).toOption with
+              | none =>
+                  report := { report with
+                    failed := report.failed.push (index, name,
+                      s!"{e}; the record reading also fails ({recordErr})") }
+              | some _table =>
+                  report := { report with index := report.index + 1 }
           | some _table =>
               report := { report with params := report.params + 1 }
   return report

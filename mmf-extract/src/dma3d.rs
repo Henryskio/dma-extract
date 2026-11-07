@@ -123,6 +123,10 @@ pub struct Extract3DReport {
     /// Payloads written as JSON+text, i.e. `f32` value streams with no
     /// constant slot (`docs/DMA3D.md` §11.41).
     pub streams: usize,
+    /// Payloads written as JSON+text, i.e. index tables of byte values whose
+    /// values reach above the parameter reader's 128 rule
+    /// (`docs/DMA3D.md` §11.37, §11.55).
+    pub index: usize,
     /// Payloads that are neither a mesh nor a drawing profile, and are therefore
     /// written through as the original bytes rather than as modern geometry.
     /// Counted, not skipped: `AGENTS.md` requires a per-resource report.
@@ -429,6 +433,31 @@ fn extract_gltf(
                                                     continue;
                                                 }
                                                 Err(stream_err) => {
+                                            // None of the readers above took it. It may
+                                            // still be an index table -- byte values at
+                                            // alternating byte positions whose values reach
+                                            // above 127, which the parameter reader's 128
+                                            // rule excludes for the measured reason of
+                                            // §11.55 -- which is written as JSON+text.
+                                            match modfile::parse_index_table(payload) {
+                                                Ok(table) => {
+                                                    let path = out_dir
+                                                        .join(format!("{index:05}_{stem}.json"));
+                                                    gltf::write_index_json(&path, name, &table)
+                                                        .with_context(|| {
+                                                            format!("writing the index table of {name}")
+                                                        })?;
+                                                    report.written += 1;
+                                                    report.index += 1;
+                                                    report.resources.push(Extracted3D {
+                                                        index,
+                                                        name: name.to_string(),
+                                                        path,
+                                                        bytes: payload.len(),
+                                                    });
+                                                    continue;
+                                                }
+                                                Err(index_err) => {
                                             report.unconverted += 1;
                                             report.failed.push((
                                                 index,
@@ -437,7 +466,7 @@ fn extract_gltf(
                                                     "{mesh_err:#}; the profile reading also fails \
                                                      ({profile_err}); the record reading also fails \
                                                      ({record_err}); the parameter-table reading also \
-                                                     fails ({table_err}); the name-table reading also fails ({name_err}); the value-stream reading also fails ({stream_err})"
+                                                     fails ({table_err}); the name-table reading also fails ({name_err}); the value-stream reading also fails ({stream_err}); the index-table reading also fails ({index_err})"
                                                 ),
                                             ));
                                             // Nothing modern was produced, so the
@@ -455,6 +484,8 @@ fn extract_gltf(
                                                 bytes: payload.len(),
                                             });
                                             continue;
+                                                }
+                                            }
                                                 }
                                             }
                                                 }

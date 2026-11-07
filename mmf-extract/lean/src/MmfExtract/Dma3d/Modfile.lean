@@ -410,6 +410,76 @@ def parseParamTable (payload : ByteArray) : Except String ParamTable := do
     throw s!"only {small} of {values.size} values are below 128, so the carrying half is not small values"
   return { evenIsFill, values, zeroPercent, smallPercent := small * 100 / values.size }
 
+/-! ## The index table -/
+
+/-- How much of one byte parity must be zero for a payload to carry a table. -/
+def indexFillPercent : Nat := 90
+/-- How much of the carrying half must be nonzero for it to be a table of values. -/
+def indexNonzeroPercent : Nat := 90
+/-- How many values a payload must carry. -/
+def minIndexValues : Nat := 16
+
+/-- One index table: a table of byte values stored at alternating byte positions.
+
+`docs/DMA3D.md` §11.37 named this shape's family -- "a parameter table, an index
+table, or a packed enum, which the game reads to configure a UI element or a material
+rather than to describe its outline" -- and `parseParamTable` reads the instances whose
+values are all below 128. **Five of the shipped payloads carry the same
+alternating-zero layout with values that reach 0xf2**, which the 128 rule excludes, so
+this is the reader for them and it is deliberately a separate population rather than a
+loosened threshold: measured over the container, the nine accepted parameter tables
+have 0-3% of their carrying values at or above 128 and these five have 34-53%, with no
+overlap between the two groups.
+-/
+structure IndexTable where
+  /-- Whether the even-indexed bytes are the zero fill and the odd ones the values. -/
+  evenIsFill : Bool
+  /-- The values, in payload order. -/
+  values : Array UInt8
+  /-- How much of the fill parity is zero, in percent. -/
+  zeroPercent : Nat
+  /-- The smallest and largest value, recorded so the table's range is visible. -/
+  range : UInt8 × UInt8
+  deriving Inhabited
+
+/-- Read an index table out of a payload that fits no other reader.
+
+The thresholds are stated rather than inherited: at least 90% of one parity must be
+zero, at least 90% of the other must be nonzero, and there must be at least sixteen
+values. A payload outside all three is an error, so the caller reports it rather than
+writing a document that describes nothing.
+-/
+def parseIndexTable (payload : ByteArray) : Except String IndexTable := do
+  if payload.size < 2 * minIndexValues then
+    throw s!"{payload.size} bytes cannot hold the {minIndexValues} values a table needs"
+  let pairs := payload.size / 2
+  let mut evenZero := 0
+  let mut oddZero := 0
+  for k in [0:pairs] do
+    if payload[2 * k]! == 0 then
+      evenZero := evenZero + 1
+    if payload[2 * k + 1]! == 0 then
+      oddZero := oddZero + 1
+  let mut evenIsFill := false
+  if evenZero * 100 >= pairs * indexFillPercent then
+    evenIsFill := true
+  else if !(oddZero * 100 >= pairs * indexFillPercent) then
+    throw "neither byte parity is 90% zero, so this is not a table of values at alternating byte positions (docs/DMA3D.md 11.37)"
+  let zeroPercent := if evenIsFill then evenZero * 100 / pairs else oddZero * 100 / pairs
+  let mut values : Array UInt8 := #[]
+  for k in [0:pairs] do
+    let offset := if evenIsFill then 2 * k + 1 else 2 * k
+    values := values.push payload[offset]!
+  let mut nonzero := 0
+  for v in values do
+    if v != 0 then
+      nonzero := nonzero + 1
+  if nonzero * 100 < values.size * indexNonzeroPercent then
+    throw s!"only {nonzero} of {values.size} values are nonzero, so the carrying half is not a table of values"
+  let lo := values.foldl (fun a v => if v < a then v else a) 255
+  let hi := values.foldl (fun a v => if v > a then v else a) 0
+  return { evenIsFill, values, zeroPercent, range := (lo, hi) }
+
 /-! ## The texture-name table -/
 
 /-- The shortest run of printable characters that counts as a name.

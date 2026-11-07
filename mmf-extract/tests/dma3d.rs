@@ -404,6 +404,7 @@ fn every_3d_payload_round_trips_byte_exactly() {
         let mut params = 0usize;
         let mut names = 0usize;
         let mut streams = 0usize;
+        let mut index = 0usize;
         let mut passthrough = 0usize;
         for entry in &report.resources {
             let payload = container.payload(entry.index);
@@ -515,7 +516,23 @@ fn every_3d_payload_round_trips_byte_exactly() {
                                                     streams += 1;
                                                     continue;
                                                 }
-                                                Err(stream_err) => {
+                                                Err(_) => {
+                                                    // It may still be an index
+                                                    // table -- byte values at
+                                                    // alternating positions whose
+                                                    // values reach above the
+                                                    // parameter reader's 128 rule
+                                                    // (§11.55) -- written as
+                                                    // JSON+text; if it is not, the
+                                                    // payload is written through.
+                                                    match mmf_extract::dma3d::modfile::parse_index_table(
+                                                        payload,
+                                                    ) {
+                                                        Ok(_table) => {
+                                                            index += 1;
+                                                            continue;
+                                                        }
+                                                        Err(_) => {
                                             passthrough += 1;
                                             assert_eq!(
                                                 std::fs::read(&entry.path).expect("read passthrough"),
@@ -525,6 +542,8 @@ fn every_3d_payload_round_trips_byte_exactly() {
                                                 entry.index
                                             );
                                             continue;
+                                                        }
+                                                    }
                                                 }
                                             }
                                                 }
@@ -633,9 +652,9 @@ fn every_3d_payload_round_trips_byte_exactly() {
         // the accounting: every payload is a mesh, a profile, or a
         // passthrough, and the three counts close on the container's own.
         assert_eq!(
-            meshes + profiles + records + params + names + streams + passthrough,
+            meshes + profiles + records + params + names + streams + index + passthrough,
             container.resource_count as usize,
-            "the seven model outputs do not account for every payload"
+            "the eight model outputs do not account for every payload"
         );
         assert_eq!(
             report.profiles, profiles,
@@ -656,6 +675,10 @@ fn every_3d_payload_round_trips_byte_exactly() {
         assert_eq!(
             report.streams, streams,
             "the report's value-stream count differs from what was written"
+        );
+        assert_eq!(
+            report.index, index,
+            "the report's index-table count differs from what was written"
         );
         assert_eq!(
             report.unconverted, passthrough,
@@ -696,6 +719,7 @@ fn every_3d_payload_round_trips_byte_exactly() {
                     && mmf_extract::dma3d::modfile::parse_param_table(payload).is_err()
                     && mmf_extract::dma3d::modfile::parse_name_table(payload).is_err()
                     && mmf_extract::dma3d::modfile::parse_value_stream(payload).is_err()
+                    && mmf_extract::dma3d::modfile::parse_index_table(payload).is_err()
             })
             .count();
         assert_eq!(report.failed.len(), neither, "the reported failures are not the unconverted");
@@ -802,6 +826,7 @@ fn the_modern_output_is_a_browsable_whole() {
                     && mmf_extract::dma3d::modfile::parse_param_table(c.payload(*i)).is_err()
                     && mmf_extract::dma3d::modfile::parse_name_table(c.payload(*i)).is_err()
                     && mmf_extract::dma3d::modfile::parse_value_stream(c.payload(*i)).is_err()
+                    && mmf_extract::dma3d::modfile::parse_index_table(c.payload(*i)).is_err()
             })
             .count();
         assert_eq!(
