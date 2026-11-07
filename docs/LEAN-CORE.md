@@ -295,7 +295,9 @@ image-codec dependency.
 
 The 3D game's `Models` container ships 460 payloads. No single reader covers them; a
 **dispatch chain** does, in this order, and the first reader that accepts a payload
-writes it:
+writes it. Against the shipped container the chain converts **425 of 460** payloads to a
+modern form and writes the remaining 35 through as `.mod`, each reported per resource
+rather than skipped:
 
 | # | reader | structure | what it reads |
 | --- | --- | --- | --- |
@@ -380,8 +382,9 @@ choosing.
 The `--original` harness. It reads back what was written, base64-decodes the embedded
 payload from each glTF's data URI (`base64Decode`, `uriPayload`), and asserts the
 bytes match the container slice. `checkOriginal` returns a per-resource result and the
-harness reports the count of byte-exact files; the third game's 460 textures and 460
-models are both verified byte-exact here.
+harness reports the count of byte-exact files; the third game's **705 textures** and
+**460 models** are both verified byte-exact here, which is the claim that every payload
+the game ships is recoverable byte-for-byte even where a modern form does not exist yet.
 
 ---
 
