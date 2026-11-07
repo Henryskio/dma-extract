@@ -7,6 +7,12 @@ does it that way, what was measured, what was got wrong, and what is still open.
 The code lives on the `lean-rewrite` branch (and its `main` ancestor). Everything here
 describes that code; nothing here is needed to build it.
 
+**Paths quoted in these documents resolve on `lean-rewrite`, not here.** The docs name
+about two hundred source paths — `src/sound.rs`, `MmfExtract/Container.lean`,
+`src/dma3d/modfile.rs` and so on — as the witness for each fact. Those files are on the
+code branch; the paths are quoted rather than renamed because that is what lets a reader
+go and check the claim.
+
 ## Where to start
 
 | If you want… | read |
